@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window x:Class="WinPieGestures.ShellActionPickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="从系统增强与右键扩展中选择功能"
+        Icon="app_icon.ico"
+        Height="560" Width="720"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        ResizeMode="CanResizeWithGrip"
+        WindowStyle="SingleBorderWindow"
+        FontFamily="Segoe UI, Microsoft YaHei UI, Arial">
+  <FrameworkElement.Resources>
+    <ResourceDictionary>
+      <Style x:Key="ModernButtonStyle" TargetType="{x:Type Button}">
+        <Setter Property="Background" Value="{DynamicResource ButtonDefaultBgBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ButtonDefaultBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{DynamicResource ButtonDefaultFgBrush}" />
+        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="Padding" Value="14,6" />
+        <Setter Property="FrameworkElement.Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="{x:Type Button}">
+              <Border Name="border" Background="{TemplateBinding Control.Background}" BorderBrush="{TemplateBinding Control.BorderBrush}" BorderThickness="{TemplateBinding Control.BorderThickness}" CornerRadius="6" SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Control.Padding}" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="UIElement.IsMouseOver" Value="True">
+                  <Setter Value="{DynamicResource ButtonHoverBgBrush}" Property="Background" />
+                  <Setter Value="{DynamicResource AccentPrimaryBrush}" Property="BorderBrush" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                  <Setter Value="{DynamicResource ItemHoverBrush}" Property="Background" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                  <Setter Property="Opacity" Value="0.4" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+      <Style x:Key="PrimaryButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource ModernButtonStyle}">
+        <Setter Property="Background" Value="{DynamicResource AccentPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource AccentHoverBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="{x:Type Button}">
+              <Border Name="border" Background="{TemplateBinding Control.Background}" BorderBrush="{TemplateBinding Control.BorderBrush}" BorderThickness="{TemplateBinding Control.BorderThickness}" CornerRadius="6" SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Control.Padding}" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="UIElement.IsMouseOver" Value="True">
+                  <Setter Value="{DynamicResource AccentHoverBrush}" Property="Background" />
+                  <Setter Value="{DynamicResource AccentHoverBrush}" Property="BorderBrush" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                  <Setter Value="{DynamicResource AccentHoverBrush}" Property="Background" />
+                  <Setter Property="UIElement.Opacity" Value="0.9" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                  <Setter Property="Opacity" Value="0.4" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+      <Style x:Key="CategoryChipStyle" TargetType="{x:Type Button}">
+        <Setter Property="Background" Value="{DynamicResource SubtleCardBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+        <Setter Property="FontSize" Value="11.5" />
+        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="Padding" Value="12,5" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="{x:Type Button}">
+              <Border Name="chipBorder" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="14" SnapsToDevicePixels="True">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter Property="Background" Value="{DynamicResource ButtonHoverBgBrush}" />
+                  <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+    </ResourceDictionary>
+  </FrameworkElement.Resources>
+
+  <Grid Margin="20">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- 头部标题 -->
+    <StackPanel Grid.Row="0" Margin="0,0,0,12">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <Border Width="28" Height="28" CornerRadius="6" Background="{DynamicResource AccentPrimaryBrush}" Margin="0,0,10,0">
+          <TextBlock Text="⚡" FontSize="16" FontFamily="Segoe UI Emoji, Segoe UI Symbol, Segoe UI" Foreground="{DynamicResource AccentTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+        </Border>
+        <TextBlock Text="系统增强与右键工具库 (Shell &amp; System Tools)" FontSize="17" FontWeight="Bold" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" />
+      </StackPanel>
+      <TextBlock Text="自动嗅探与汇集系统常用增强扩展（压缩解压、路径复制、VS Code 打开、Git Bash、OCR 等），支持一键极速绑定。" FontSize="11.5" Foreground="{DynamicResource TextSecondaryBrush}" Margin="38,4,0,0" />
+    </StackPanel>
+
+    <!-- 搜索与分类导航栏 -->
+    <Grid Grid.Row="1" Margin="0,0,0,10">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
+      </Grid.RowDefinitions>
+
+      <!-- 搜索框 -->
+      <Grid Grid.Row="0" Margin="0,0,0,8">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <TextBox Name="SearchTextBox" Height="32" Padding="10,0" VerticalContentAlignment="Center" Background="{DynamicResource InputBackgroundBrush}" Foreground="{DynamicResource TextPrimaryBrush}" BorderBrush="{DynamicResource InputBorderBrush}" FontSize="12" ToolTip="搜索工具名称、动词或提供方 (如: 7-Zip, 路径, Code, OCR...)" TextChanged="SearchTextBox_TextChanged" />
+        <Button Name="ClearSearchBtn" Grid.Column="1" Content="✕" Width="28" Height="28" Margin="4,0,0,0" Style="{StaticResource ModernButtonStyle}" Padding="0" Click="ClearSearchBtn_Click" Visibility="Collapsed" />
+      </Grid>
+
+      <!-- 分类 Chips -->
+      <WrapPanel Grid.Row="1" VerticalAlignment="Center">
+        <Button Name="CatAllBtn" Content="全部" Style="{StaticResource CategoryChipStyle}" Margin="0,0,6,0" Click="CatBtn_Click" Tag="All" />
+        <Button Name="CatCompressBtn" Content="📦 压缩与解压" Style="{StaticResource CategoryChipStyle}" Margin="0,0,6,0" Click="CatBtn_Click" Tag="Compress" />
+        <Button Name="CatSystemBtn" Content="🛡️ 系统原生/OCR" Style="{StaticResource CategoryChipStyle}" Margin="0,0,6,0" Click="CatBtn_Click" Tag="System" />
+        <Button Name="CatDevBtn" Content="💻 开发与办公" Style="{StaticResource CategoryChipStyle}" Margin="0,0,6,0" Click="CatBtn_Click" Tag="Developer" />
+      </WrapPanel>
+    </Grid>
+
+    <!-- 动作卡片列表主体 -->
+    <Border Grid.Row="2" Background="{DynamicResource CardBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="8">
+      <ScrollViewer Name="ItemsScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Name="ActionItemsPanel">
+          <!-- 动态渲染的卡片项 -->
+        </StackPanel>
+      </ScrollViewer>
+    </Border>
+
+    <!-- 底部操作栏 -->
+    <Grid Grid.Row="3" Margin="0,12,0,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <TextBlock Text="已选中：" FontSize="11.5" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
+        <TextBlock Name="SelectedItemLabel" Text="未选择任何工具" FontSize="11.5" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}" VerticalAlignment="Center" Margin="4,0,0,0" />
+      </StackPanel>
+      <Button Name="CancelBtn" Grid.Column="1" Content="取消" Style="{StaticResource ModernButtonStyle}" Height="32" Padding="16,0" Margin="0,0,8,0" Click="CancelBtn_Click" />
+      <Button Name="ConfirmBtn" Grid.Column="2" Content="确认绑定到扇区" Style="{StaticResource PrimaryButtonStyle}" Height="32" Padding="18,0" IsEnabled="False" Click="ConfirmBtn_Click" />
+    </Grid>
+  </Grid>
+</Window>

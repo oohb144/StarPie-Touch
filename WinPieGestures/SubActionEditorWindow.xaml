@@ -1,0 +1,485 @@
+<Window x:Class="WinPieGestures.SubActionEditorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:WinPieGestures"
+        Title="扇区级联子菜单管理 (Sub-Actions Editor)"
+        Icon="app_icon.ico"
+        Height="680" Width="930" MinHeight="560" MinWidth="850"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        FontFamily="Segoe UI, Microsoft YaHei UI, Arial">
+  <Window.Resources>
+    <ResourceDictionary>
+      <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+      <!-- 自包含 iOS/Fluent 风格 ToggleSwitchStyle -->
+      <Style x:Key="ToggleSwitchStyle" TargetType="{x:Type CheckBox}">
+        <Setter Property="FrameworkElement.Cursor" Value="Hand" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="{x:Type CheckBox}">
+              <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Grid Width="38" Height="20" VerticalAlignment="Center">
+                  <Border Name="Track" Background="{DynamicResource InputBorderBrush}" CornerRadius="10" SnapsToDevicePixels="True" />
+                  <Ellipse Name="Thumb" Width="14" Height="14" Fill="#FFFFFFFF" HorizontalAlignment="Left" Margin="3,0,0,0">
+                    <UIElement.Effect>
+                      <DropShadowEffect BlurRadius="4" ShadowDepth="1" Color="#000000" Opacity="0.2" />
+                    </UIElement.Effect>
+                  </Ellipse>
+                </Grid>
+                <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" TextElement.Foreground="{DynamicResource TextPrimaryBrush}" />
+              </StackPanel>
+              <ControlTemplate.Triggers>
+                <Trigger Property="ToggleButton.IsChecked" Value="True">
+                  <Setter TargetName="Track" Value="{DynamicResource AccentPrimaryBrush}" Property="Border.Background" />
+                  <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right" />
+                  <Setter TargetName="Thumb" Property="Margin" Value="0,0,3,0" />
+                </Trigger>
+                <Trigger Property="UIElement.IsMouseOver" Value="True">
+                  <Setter TargetName="Track" Property="UIElement.Opacity" Value="0.9" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+    </ResourceDictionary>
+  </Window.Resources>
+
+  <Grid Margin="20">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- 顶部状态栏 -->
+    <Border Grid.Row="0" Background="{DynamicResource CardBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="16,14" Margin="0,0,0,14">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <StackPanel VerticalAlignment="Center">
+          <TextBlock Name="SectorInfoTitle" Text="扇区级联子菜单设置" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" />
+          <TextBlock Name="SubCountLimitText" Text="当光标向外划向该扇区时展开二级子菜单。当前模式下最高支持配置 4 个二级子动作。" FontSize="11.5" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,4,0,0" />
+        </StackPanel>
+        <Button Name="AddSubActionButton" Grid.Column="1" Content="➕ 添加二级子动作" Style="{StaticResource PrimaryButtonStyle}" Height="34" Padding="16,0" Click="AddSubActionButton_Click" />
+      </Grid>
+    </Border>
+
+    <!-- 子动作卡片列表 -->
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,0,12">
+      <StackPanel>
+        <ItemsControl Name="SubActionsItemsControl">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <!-- 单个子动作折叠功能卡片 -->
+              <Border Background="{DynamicResource CardBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="14,12" Margin="0,0,0,10">
+                <StackPanel>
+                  <!-- 1. 卡片顶部概览横条 -->
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" /> <!-- 序号微标 -->
+                      <ColumnDefinition Width="Auto" /> <!-- 图标选择按钮 -->
+                      <ColumnDefinition Width="150" />  <!-- 名称输入框 -->
+                      <ColumnDefinition Width="Auto" /> <!-- 动作类型胶囊徽标 -->
+                      <ColumnDefinition Width="*" />    <!-- 参数摘要 -->
+                      <ColumnDefinition Width="Auto" /> <!-- 操作按钮群 -->
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 序号微标 -->
+                    <Border Grid.Column="0" Width="26" Height="26" CornerRadius="13" Background="#188B5CF6" BorderBrush="#8B5CF6" BorderThickness="1.2" VerticalAlignment="Center" Margin="0,0,10,0">
+                      <TextBlock Foreground="#8B5CF6" FontSize="11.5" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" Text="{Binding IndexNumber}" />
+                    </Border>
+
+                    <!-- 图标按钮 -->
+                    <Button Grid.Column="1" Style="{StaticResource ModernButtonStyle}" Height="32" Padding="6,0" Margin="0,0,10,0" ToolTip="选取子动作矢量图标" Click="SubPickIcon_Click">
+                      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Image Width="15" Height="15" Stretch="Uniform" Margin="0,0,5,0" Source="{Binding InheritedAppIcon}" Visibility="{Binding HasInheritedAppIcon, Converter={StaticResource BoolToVis}}" />
+                        <Path Width="14" Height="14" Stretch="Uniform" Fill="{DynamicResource AccentPrimaryBrush}" Margin="0,0,5,0" Data="{Binding VectorIconData}" Visibility="{Binding ShowVectorIcon, Converter={StaticResource BoolToVis}}" />
+                        <TextBlock FontSize="11" Foreground="{DynamicResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" MaxWidth="50" Text="{Binding IconDisplayText}" />
+                      </StackPanel>
+                    </Button>
+
+                    <!-- 名称输入框 -->
+                    <TextBox Grid.Column="2" Height="32" FontSize="12" VerticalContentAlignment="Center" Margin="0,0,10,0" ToolTip="子动作显示名称 (Action Name)" Text="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+                    <!-- 动作类型胶囊徽标 -->
+                    <Border Grid.Column="3" Background="{DynamicResource SubtleCardBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="6" Height="28" Padding="8,0" VerticalAlignment="Center" Margin="0,0,10,0">
+                      <TextBlock Text="{Binding TypeBadgeText}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}" VerticalAlignment="Center" />
+                    </Border>
+
+                    <!-- 参数摘要 -->
+                    <TextBlock Grid.Column="4" Text="{Binding SummaryText}" FontSize="11.5" Foreground="{DynamicResource TextSecondaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,10,0" ToolTip="{Binding SummaryText}" />
+
+                    <!-- 操作按钮群 -->
+                    <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
+                      <Button Content="▲" Style="{StaticResource ModernButtonStyle}" Width="28" Height="28" Padding="0" Margin="0,0,4,0" ToolTip="上移此动作" IsEnabled="{Binding CanMoveUp}" Click="SubMoveUp_Click" />
+                      <Button Content="▼" Style="{StaticResource ModernButtonStyle}" Width="28" Height="28" Padding="0" Margin="0,0,6,0" ToolTip="下移此动作" IsEnabled="{Binding CanMoveDown}" Click="SubMoveDown_Click" />
+                      <Button Content="▶ 测试" Style="{StaticResource ModernButtonStyle}" Height="28" Padding="8,0" Margin="0,0,6,0" ToolTip="立即测试触发此子动作" Click="SubTest_Click" />
+                      <Button Content="🗑️" Style="{StaticResource DangerButtonStyle}" Width="28" Height="28" Padding="0" Margin="0,0,8,0" ToolTip="删除此子动作" Click="DeleteSubAction_Click" />
+                      <Button Style="{StaticResource ModernButtonStyle}" Height="28" Padding="8,0" Click="ToggleExpand_Click" ToolTip="展开或收起高级参数配置">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding ExpandToggleArrow}" FontSize="10" Margin="0,0,4,0" Foreground="{DynamicResource TextSecondaryBrush}" />
+                          <TextBlock Text="{Binding ExpandToggleText}" FontSize="11" FontWeight="Medium" Foreground="{DynamicResource TextPrimaryBrush}" />
+                        </StackPanel>
+                      </Button>
+                    </StackPanel>
+                  </Grid>
+
+                  <!-- 2. 折叠展开后的全量参数配置面板 -->
+                  <StackPanel Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVis}}" Margin="0,12,0,0">
+                    <!-- 分割线 -->
+                    <Border Height="1" Background="{DynamicResource CardBorderBrush}" Margin="0,0,0,12" />
+
+                    <!-- 触发动作类型选择 -->
+                    <Grid Margin="0,0,0,10">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Text="触发动作类型:" VerticalAlignment="Center" FontSize="11.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,10,0" />
+                      <ComboBox Grid.Column="1" Style="{StaticResource FlatComboBoxStyle}" Height="30" SelectedValuePath="Tag" DisplayMemberPath="DisplayText" ItemsSource="{Binding AggregatedActionTypes}" SelectedValue="{Binding AggregatedType, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    </Grid>
+
+                    <!--
+                      插件动作子下拉：仅当类型选为「插件动作」时出现。
+                      候选动作按插件分组呈现，分组头就是插件显示名，且分组头本身不可选中。
+                    -->
+                    <Grid Margin="0,0,0,10" Visibility="{Binding IsPluginType, Converter={StaticResource BoolToVis}}">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Text="插件动作:" VerticalAlignment="Center" FontSize="11.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,10,0" />
+                      <ComboBox Grid.Column="1" Style="{StaticResource FlatComboBoxStyle}" Height="30" SelectedValuePath="FullId" DisplayMemberPath="DisplayName" ItemsSource="{Binding PluginActionOptions}" SelectedValue="{Binding SelectedPluginActionFullId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="同一插件的动作归入以该插件名命名的分组">
+                        <ComboBox.GroupStyle>
+                          <GroupStyle>
+                            <GroupStyle.HeaderTemplate>
+                              <DataTemplate>
+                                <TextBlock Text="{Binding Name}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}" Margin="4,6,0,3" />
+                              </DataTemplate>
+                            </GroupStyle.HeaderTemplate>
+                          </GroupStyle>
+                        </ComboBox.GroupStyle>
+                      </ComboBox>
+                    </Grid>
+                    <TextBlock FontSize="11" TextWrapping="Wrap" Foreground="#D97706" Margin="0,0,0,10" Visibility="{Binding IsPluginActionBroken, Converter={StaticResource BoolToVis}}" Text="⚠️ 原先引用的插件动作已不可用（插件可能已被停用或卸载），请重新选择。" />
+
+                    <!-- (1) 热键面板 -->
+                    <StackPanel Visibility="{Binding IsHotkeyType, Converter={StaticResource BoolToVis}}">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <local:HotkeyRecorderBox Height="32" FontSize="12" HotkeyText="{Binding Parameter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Grid.Column="1" Content="⚙️ 拼装组合" Style="{StaticResource ModernButtonStyle}" Height="32" Padding="10,0" Margin="6,0,0,0" ToolTip="打开按键拼装组合器 (支持单键、组合键、连续步进击键序列)" Click="SubHotkeyBuilder_Click" />
+                      </Grid>
+                    </StackPanel>
+
+                    <!-- (2) 启动程序面板 -->
+                    <StackPanel Visibility="{Binding IsLaunchType, Converter={StaticResource BoolToVis}}">
+                      <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Height="30" FontSize="11.5" VerticalContentAlignment="Center" ToolTip="应用程序可执行文件路径" Text="{Binding Parameter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Grid.Column="1" Content="📦 软件库选择..." Style="{StaticResource ModernButtonStyle}" Height="30" Padding="8,0" Margin="6,0,0,0" ToolTip="从已安装的软件、微软商店与开始菜单中模糊搜索选取" Click="SubPickProgramFromLibrary_Click" />
+                        <Button Grid.Column="2" Content="🎯 捕捉运行窗口..." Style="{StaticResource ModernButtonStyle}" Height="30" Padding="8,0" Margin="6,0,0,0" ToolTip="直接探测并捕捉桌面上正在运行的活跃窗口与程序执行路径" Click="SubCaptureRunningWindow_Click" />
+                        <Button Grid.Column="3" Content="📂 浏览..." Style="{StaticResource ModernButtonStyle}" Height="30" Padding="8,0" Margin="6,0,0,0" ToolTip="手动浏览可执行文件或快捷方式" Click="SubBrowseProgram_Click" />
+                      </Grid>
+                      <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="启动参数:" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,8,0" />
+                        <TextBox Grid.Column="1" Height="28" FontSize="11" VerticalContentAlignment="Center" ToolTip="启动命令行参数 (可选)" Text="{Binding Arguments, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                      </Grid>
+                      <CheckBox Style="{StaticResource ToggleSwitchStyle}" IsChecked="{Binding RunAsStandardUser, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                        <StackPanel Margin="6,0,0,0">
+                          <TextBlock Text="🛡️ 以常规普通权限启动 (解决高权限下外部文件无法拖入目标软件的问题)" FontSize="11" Foreground="{DynamicResource TextPrimaryBrush}" />
+                          <TextBlock Text="当 StarPie 以管理员权限运行时，通过 Windows Shell 降权启动目标程序，恢复外部文件拖放交互支持。" FontSize="10" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,2,0,0" />
+                        </StackPanel>
+                      </CheckBox>
+                    </StackPanel>
+
+                    <!-- (3) 打开网址面板 -->
+                    <StackPanel Visibility="{Binding IsWebUrlType, Converter={StaticResource BoolToVis}}">
+                      <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="145" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Height="30" FontSize="11.5" VerticalContentAlignment="Center" ToolTip="目标网址，如 https://github.com" Text="{Binding Parameter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <ComboBox Grid.Column="1" Style="{StaticResource FlatComboBoxStyle}" Height="30" Margin="6,0,0,0" SelectedValuePath="Tag" SelectedValue="{Binding BrowserChoice, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                          <ComboBoxItem Tag="Default" Content="🌐 系统默认" />
+                          <ComboBoxItem Tag="Chrome" Content="Google Chrome" />
+                          <ComboBoxItem Tag="Edge" Content="Microsoft Edge" />
+                          <ComboBoxItem Tag="Firefox" Content="Mozilla Firefox" />
+                          <ComboBoxItem Tag="Custom" Content="自定义浏览器..." />
+                        </ComboBox>
+                      </Grid>
+                      <StackPanel Visibility="{Binding IsCustomBrowser, Converter={StaticResource BoolToVis}}" Margin="0,0,0,6">
+                        <Grid>
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                          </Grid.ColumnDefinitions>
+                          <TextBox Height="28" FontSize="11" VerticalContentAlignment="Center" ToolTip="自定义浏览器可执行文件路径" Text="{Binding BrowserPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                          <Button Grid.Column="1" Content="📂 选择..." Style="{StaticResource ModernButtonStyle}" Height="28" Padding="8,0" Margin="6,0,0,0" Click="SubBrowseCustomBrowser_Click" />
+                        </Grid>
+                      </StackPanel>
+                      <WrapPanel Margin="0,2,0,0">
+                        <TextBlock Text="常用网址:" FontSize="10.5" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <Button Content="GitHub" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubUrlPreset_GitHub" />
+                        <Button Content="Bilibili" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubUrlPreset_Bilibili" />
+                        <Button Content="Bing 搜索" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubUrlPreset_Bing" />
+                        <Button Content="Google" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubUrlPreset_Google" />
+                      </WrapPanel>
+                    </StackPanel>
+
+                    <!-- (4) 打开文件夹面板 -->
+                    <StackPanel Visibility="{Binding IsFolderType, Converter={StaticResource BoolToVis}}">
+                      <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Height="30" FontSize="11.5" VerticalContentAlignment="Center" ToolTip="本地文件夹绝对路径" Text="{Binding Parameter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Grid.Column="1" Content="📂 浏览..." Style="{StaticResource ModernButtonStyle}" Height="30" Padding="8,0" Margin="6,0,0,0" Click="SubBrowseFolder_Click" />
+                      </Grid>
+                      <WrapPanel>
+                        <TextBlock Text="常用目录:" FontSize="10.5" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <Button Content="💻 此电脑" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubFolderPreset_ThisPC" ToolTip="直接打开系统「此电脑」命名空间" />
+                        <Button Content="🗑️ 回收站" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubFolderPreset_RecycleBin" ToolTip="直接打开系统「回收站」命名空间" />
+                        <Button Content="🖥️ 桌面" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubFolderPreset_Desktop" />
+                        <Button Content="📥 下载" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubFolderPreset_Downloads" />
+                        <Button Content="📄 文档" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubFolderPreset_Documents" />
+                      </WrapPanel>
+                    </StackPanel>
+
+                    <!-- (5) 运行命令面板 -->
+                    <StackPanel Visibility="{Binding IsCommandType, Converter={StaticResource BoolToVis}}">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="120" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Height="30" FontSize="11.5" VerticalContentAlignment="Center" ToolTip="要执行的命令行语句，如 ping -t 127.0.0.1" Text="{Binding Parameter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <ComboBox Grid.Column="1" Style="{StaticResource FlatComboBoxStyle}" Height="30" Margin="6,0,0,0" SelectedValuePath="Tag" DisplayMemberPath="DisplayText" ItemsSource="{Binding Terminals}" SelectedValue="{Binding CommandTerminal, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                      </Grid>
+                    </StackPanel>
+
+                    <!-- (6) 窗口管理面板 -->
+                    <StackPanel Visibility="{Binding IsWindowManagerType, Converter={StaticResource BoolToVis}}">
+                      <!-- 控制模式选择 -->
+                      <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="控制模式:" VerticalAlignment="Center" FontSize="11.5" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,8,0" />
+                        <ComboBox Grid.Column="1" Style="{StaticResource FlatComboBoxStyle}" Height="30" SelectedValuePath="Tag" DisplayMemberPath="DisplayText" ItemsSource="{Binding WindowManagerSubModes}" SelectedValue="{Binding WindowManagerSubMode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                      </Grid>
+
+                      <!-- 子模式 1: 平铺窗口排布 -->
+                      <StackPanel Visibility="{Binding IsTileSubMode, Converter={StaticResource BoolToVis}}">
+                        <ComboBox Style="{StaticResource FlatComboBoxStyle}" Height="30" SelectedValuePath="Tag" DisplayMemberPath="DisplayText" ItemsSource="{Binding TileLayoutOptions}" SelectedValue="{Binding TileLayout, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6" />
+                        <WrapPanel Margin="0,2,0,0">
+                          <TextBlock Text="常用布局:" FontSize="10.5" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                          <Button Content="左右对半 (2L)" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubTilePreset_2L" />
+                          <Button Content="上下对半 (2T)" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubTilePreset_2T" />
+                          <Button Content="左大列 (3L12)" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubTilePreset_3L12" />
+                          <Button Content="四宫格 (4G)" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubTilePreset_4G" />
+                          <Button Content="三等分 (3R)" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubTilePreset_3R" />
+                        </WrapPanel>
+                      </StackPanel>
+
+                      <!-- 子模式 2: 循环平铺 -->
+                      <StackPanel Visibility="{Binding IsCycleSubMode, Converter={StaticResource BoolToVis}}" Margin="0,2,0,0">
+                        <Border Background="{DynamicResource InputBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6">
+                          <TextBlock Text="💡 触发手势时，自动在平铺窗口设置中勾选的排布列表中循环轮换下一个布局。" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" />
+                        </Border>
+                      </StackPanel>
+
+                      <!-- 子模式 3: 还原平铺快照 -->
+                      <StackPanel Visibility="{Binding IsRestoreSubMode, Converter={StaticResource BoolToVis}}" Margin="0,2,0,0">
+                        <Border Background="{DynamicResource InputBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6">
+                          <TextBlock Text="⏪ 还原所有窗口到平铺前的初始大小与屏幕坐标位置。" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" />
+                        </Border>
+                      </StackPanel>
+
+                      <!-- 子模式 4: 窗口置顶 -->
+                      <StackPanel Visibility="{Binding IsTopmostSubMode, Converter={StaticResource BoolToVis}}" Margin="0,2,0,0">
+                        <Border Background="{DynamicResource InputBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6">
+                          <TextBlock Text="📌 将当前鼠标所在窗口或前台活动窗口固定置顶于最前（再次触发即可恢复）。" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" />
+                        </Border>
+                      </StackPanel>
+
+                      <!-- 子模式 5: 移到下一屏 -->
+                      <StackPanel Visibility="{Binding IsMoveMonitorSubMode, Converter={StaticResource BoolToVis}}" Margin="0,2,0,0">
+                        <Border Background="{DynamicResource InputBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6">
+                          <TextBlock Text="🖥️ 将当前活动窗口移动至下一个物理显示器对应的工作区位置。" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" />
+                        </Border>
+                      </StackPanel>
+
+                      <!-- 子模式 6: 窗口透明度 -->
+                      <StackPanel Visibility="{Binding IsOpacitySubMode, Converter={StaticResource BoolToVis}}" Margin="0,2,0,0">
+                        <Grid Margin="0,0,0,6">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="42" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock Text="不透明度:" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,8,0" />
+                          <Slider Grid.Column="1" Minimum="30" Maximum="100" SmallChange="5" LargeChange="10" VerticalAlignment="Center" Value="{Binding WindowOpacityValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                          <TextBlock Grid.Column="2" Text="{Binding WindowOpacityLabel}" FontSize="11.5" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                        </Grid>
+                        <WrapPanel>
+                          <TextBlock Text="快捷预设:" FontSize="10.5" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                          <Button Content="70% 极淡" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubOpacityPreset_70" />
+                          <Button Content="80% 查阅" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubOpacityPreset_80" />
+                          <Button Content="90% 透视" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubOpacityPreset_90" />
+                          <Button Content="100% 不透明" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubOpacityPreset_100" />
+                        </WrapPanel>
+                      </StackPanel>
+
+                      <!-- 子模式 7: 切换任务栏应用 -->
+                      <StackPanel Visibility="{Binding IsSwitchWindowSubMode, Converter={StaticResource BoolToVis}}" Margin="0,2,0,0">
+                        <Grid Margin="0,0,0,6">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="70" />
+                            <ColumnDefinition Width="*" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock Text="任务栏序号 (1~20):" VerticalAlignment="Center" FontSize="11.5" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,8,0" />
+                          <TextBox Grid.Column="1" Height="30" FontSize="12" TextAlignment="Center" VerticalContentAlignment="Center" Text="{Binding NthWindowIndex, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                          <TextBlock Grid.Column="2" Text="等同快捷键 Win + 序号" FontSize="10.5" Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center" Margin="8,0,0,0" />
+                        </Grid>
+                        <WrapPanel>
+                          <TextBlock Text="快速选择:" FontSize="10.5" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                          <Button Content="#1 槽位" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubSwitchPreset_1" />
+                          <Button Content="#2 槽位" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubSwitchPreset_2" />
+                          <Button Content="#3 槽位" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubSwitchPreset_3" />
+                          <Button Content="#4 槽位" Style="{StaticResource ModernButtonStyle}" Height="22" Padding="6,0" Margin="0,0,4,2" FontSize="10" Click="SubSwitchPreset_4" />
+                        </WrapPanel>
+                      </StackPanel>
+                    </StackPanel>
+
+                    <!-- (7) 系统控制面板 -->
+                    <StackPanel Visibility="{Binding IsSystemType, Converter={StaticResource BoolToVis}}">
+                      <ComboBox Style="{StaticResource FlatComboBoxStyle}" Height="30" SelectedValuePath="Key" DisplayMemberPath="Value" ItemsSource="{Binding Source={x:Static local:SlotViewModel.SystemPresets}}" SelectedValue="{Binding SelectedSystemPreset, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    </StackPanel>
+
+                    <!-- (8) 截屏识字 OCR 面板 -->
+                    <StackPanel Visibility="{Binding IsOcrType, Converter={StaticResource BoolToVis}}">
+                      <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Background="{DynamicResource InputBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6" VerticalAlignment="Center">
+                          <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="✂️" FontSize="14" FontFamily="Segoe UI Emoji, Segoe UI Symbol, Segoe UI" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <TextBlock Text="默认调用 Windows 本地原生 OCR 离线引擎 (0延迟 · 隐私安全)" FontSize="11.5" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" />
+                          </StackPanel>
+                        </Border>
+                        <Button Grid.Column="1" Content="✂️ 立即测试截屏" Style="{StaticResource ModernButtonStyle}" Height="32" Padding="10,0" Margin="6,0,0,0" Click="SubTestOcr_Click" ToolTip="立即启动全屏框选测试 OCR 识别效果" />
+                        <Button Grid.Column="2" Content="⚙️ 接口配置" Style="{StaticResource ModernButtonStyle}" Height="32" Padding="8,0" Margin="6,0,0,0" Click="SubOpenOcrSettings_Click" ToolTip="配置 OCR 引擎（本地引擎 / AI 视觉大模型 / 自定义 HTTP）" />
+                      </Grid>
+                    </StackPanel>
+
+                    <!-- (9) 系统与右键工具面板 -->
+                    <StackPanel Visibility="{Binding IsShellToolType, Converter={StaticResource BoolToVis}}">
+                      <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Background="{DynamicResource InputBackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6" VerticalAlignment="Center">
+                          <Grid>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="Auto" />
+                              <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="⚡" FontSize="18" FontFamily="Segoe UI Emoji, Segoe UI Symbol, Segoe UI" Foreground="{DynamicResource AccentPrimaryBrush}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                              <TextBlock Text="{Binding ShellToolTitle}" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" />
+                              <TextBlock Text="从系统原生增强与右键扩展中选择常用高频功能" FontSize="10.5" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,2,0,0" />
+                            </StackPanel>
+                          </Grid>
+                        </Border>
+                        <Button Grid.Column="1" Content="⚡ 挑选功能..." Style="{StaticResource ModernButtonStyle}" Height="34" Padding="12,0" Margin="6,0,0,0" ToolTip="打开系统与右键工具库，支持搜索与分类" Click="SubPickShellTool_Click" />
+                      </Grid>
+                    </StackPanel>
+
+                    <!-- 关联外部程序图标面板 (解耦执行与外观) -->
+                    <Border Background="{DynamicResource SubtleCardBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,8,0,0">
+                      <StackPanel>
+                        <Grid Margin="0,0,0,6">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Image Width="16" Height="16" Stretch="Uniform" Margin="0,0,6,0" Source="{Binding InheritedAppIcon}" Visibility="{Binding HasInheritedAppIcon, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Text="🏷️ 关联外部程序图标 (解耦执行与外观):" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding InheritStatusLabel}" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" />
+                          </StackPanel>
+                          <Button Grid.Column="1" Content="✕ 清除关联" Style="{StaticResource ModernButtonStyle}" Height="24" Padding="6,0" FontSize="10.5" Click="SubClearInheritedIcon_Click" ToolTip="清除关联的外部程序图标，恢复默认矢量图标" Visibility="{Binding HasInheritedAppIcon, Converter={StaticResource BoolToVis}}" />
+                        </Grid>
+                        <Grid>
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                          </Grid.ColumnDefinitions>
+                          <TextBox Height="28" FontSize="11" Foreground="{DynamicResource TextSecondaryBrush}" IsReadOnly="True" ToolTip="关联提取图标的外部程序或快捷方式路径" Text="{Binding InheritAppIconPath, Mode=OneWay}" VerticalContentAlignment="Center" />
+                          <Button Grid.Column="1" Content="📦 软件库..." Style="{StaticResource ModernButtonStyle}" Height="28" Padding="8,0" Margin="6,0,0,0" Click="SubInheritFromLibrary_Click" ToolTip="从已安装软件与微软商店应用中选取官方高清图标" />
+                          <Button Grid.Column="2" Content="🎯 捕捉窗口..." Style="{StaticResource ModernButtonStyle}" Height="28" Padding="8,0" Margin="6,0,0,0" Click="SubInheritFromCapture_Click" ToolTip="直接捕捉桌面上运行中的软件并继承其图标" />
+                          <Button Grid.Column="3" Content="📂 浏览..." Style="{StaticResource ModernButtonStyle}" Height="28" Padding="8,0" Margin="6,0,0,0" Click="SubInheritFromBrowse_Click" ToolTip="手动浏览提取 .exe / .ico / .lnk 图标" />
+                        </Grid>
+                      </StackPanel>
+                    </Border>
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <!-- 空状态占位卡片 -->
+        <Border Name="EmptyStateBorder" Visibility="Collapsed" Background="{DynamicResource SubtleCardBrush}" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="32" HorizontalAlignment="Stretch" Margin="0,10,0,0">
+          <StackPanel HorizontalAlignment="Center">
+            <TextBlock Text="🌟 暂无二级级联子动作" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" HorizontalAlignment="Center" />
+            <TextBlock Text="点击右上角「➕ 添加二级子动作」为此扇区配置外环展开菜单。" FontSize="11.5" Foreground="{DynamicResource TextSecondaryBrush}" HorizontalAlignment="Center" Margin="0,6,0,16" />
+            <Button Content="➕ 添加第 1 个二级子动作" Style="{StaticResource PrimaryButtonStyle}" Height="34" Padding="16,0" HorizontalAlignment="Center" Click="AddSubActionButton_Click" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+
+    <!-- 底部确认栏 -->
+    <Border Grid.Row="2" BorderBrush="{DynamicResource CardBorderBrush}" BorderThickness="0,1,0,0" Padding="0,14,0,0">
+      <Grid>
+        <TextBlock Text="💡 提示：划动至该主扇区后将平滑展开二级菜单，光标划向子动作即可极速触发。" FontSize="11.5" Foreground="{DynamicResource TextSecondaryBrush}" VerticalAlignment="Center" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+          <Button Content="取消" Style="{StaticResource ModernButtonStyle}" Width="85" Height="32" Margin="0,0,10,0" Click="CancelButton_Click" />
+          <Button Content="确定并保存" Style="{StaticResource PrimaryButtonStyle}" Width="105" Height="32" Click="SaveButton_Click" />
+        </StackPanel>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

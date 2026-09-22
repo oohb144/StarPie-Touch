@@ -1,0 +1,29 @@
+global using Point = System.Windows.Point;
+global using Size = System.Windows.Size;
+global using Rect = System.Windows.Rect;
+global using Color = System.Windows.Media.Color;
+global using Brush = System.Windows.Media.Brush;
+global using Brushes = System.Windows.Media.Brushes;
+global using Application = System.Windows.Application;
+global using Button = System.Windows.Controls.Button;
+global using Control = System.Windows.Controls.Control;
+global using TextBox = System.Windows.Controls.TextBox;
+global using Image = System.Windows.Controls.Image;
+global using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+global using ModifierKeys = System.Windows.Input.ModifierKeys;
+global using UserControl = System.Windows.Controls.UserControl;
+global using Orientation = System.Windows.Controls.Orientation;
+global using Panel = System.Windows.Controls.Panel;
+global using FontFamily = System.Windows.Media.FontFamily;
+global using ColorConverter = System.Windows.Media.ColorConverter;
+global using OpenFileDialog = Microsoft.Win32.OpenFileDialog;
+global using MessageBox = System.Windows.MessageBox;
+global using HorizontalAlignment = System.Windows.HorizontalAlignment;
+global using VerticalAlignment = System.Windows.VerticalAlignment;
+global using Cursors = System.Windows.Input.Cursors;
+global using ComboBox = System.Windows.Controls.ComboBox;
+// WinForms 的隐式 using 让 CheckBox 在「代码里 new 一个勾选框」时产生歧义。
+// 这里与 Button / TextBox / ComboBox 保持同一套处理方式，而不是在调用处逐个写全名。
+global using CheckBox = System.Windows.Controls.CheckBox;
+global using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
+global using SaveFileDialog = Microsoft.Win32.SaveFileDialog;

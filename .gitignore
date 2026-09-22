@@ -1,0 +1,64 @@
+# Visual Studio & .NET Build Artifacts
+**/[Bb]in/
+**/[Oo]bj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.vscode/
+
+# Executables, Assemblies & Release Binaries
+*.exe
+*.dll
+*.pdb
+*.zip
+releases/
+dist/
+publish/
+
+# Python & Test Artifacts
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+test_env_appdata/
+artifacts/
+.venv/
+
+# Large Third-Party Installers & Runtime Packages
+windowsdesktop-runtime-*.exe
+*.iso
+*.msi
+
+# Temporary & Working Files
+scratch/*
+!scratch/TouchRecognizerTests/
+WinPieGestures/scratch/
+StarPie.Plugin.Abstractions/scratch/
+*.tmp
+*.log
+*.old
+*.running
+*.running*
+.tolaria-rename-txn/
+
+# OS Specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+
+# AI Assistant Workspace Data
+.workbuddy/
+
+# Upstream release automation targets upstream version tags and retention policy.
+# This derivative publishes its own prerelease assets explicitly.
+.github/workflows/release.yml
+.github/workflows/release-retention.yml
+
+*.bak
+build-out-*/

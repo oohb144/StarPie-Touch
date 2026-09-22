@@ -1,0 +1,20467 @@
+using System;
+using System.CodeDom.Compiler;
+using System.Collections;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Forms;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+using System.Windows.Threading;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.Win32;
+using WinPieGestures.Plugins;
+
+namespace WinPieGestures;
+
+public partial class SettingsWindow : Window
+{
+	private const double SidebarExpandedWidth = 230.0;
+
+	private const double SidebarCollapsedWidth = 68.0;
+
+	private bool _isSidebarCollapsed = false;
+
+	private OfficialPluginCatalog? _officialPluginCatalog;
+	private bool _officialPluginsLoading;
+	/// <summary>上次拉取官方 catalog 的失败原因。留着是为了切换语言时能把进度行按当前语言重渲染。</summary>
+	private string? _officialPluginsError;
+
+	/// <summary>设置控制台当前已生效的界面缩放比例，用于按倍率换算窗口尺寸增量。</summary>
+	private double _appliedSettingsUiScale = 1.0;
+
+	private int _selectedLayoutTier = 1; // 1: 主轮盘, 2: 二级级联轮盘
+
+	private int _selectedLayoutSlotIndex = -1;
+
+	private int _selectedLayoutSubSlotIndex = -1;
+
+	private string GetDirectionDisplayName(int index, int totalCount)
+	{
+		string[] dirArray = ResolveDirectionNames(totalCount);
+		return (index >= 0 && index < dirArray.Length) ? dirArray[index] : $"扇区 {index + 1}";
+	}
+
+	/// <summary>
+	/// 解析指定档位下每个方位的显示名称（4键、8键、12键）。
+	/// </summary>
+	private static string[] ResolveDirectionNames(int sectorCount)
+	{
+		switch (sectorCount)
+		{
+			case 4: return Directions4;
+			case 12: return Directions12;
+			default: return Directions8;
+		}
+	}
+
+	private ActionItem? GetCurrentEditingAction()
+	{
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		if (profile?.Actions == null || _selectedLayoutSlotIndex < 0 || _selectedLayoutSlotIndex >= profile.Actions.Count)
+		{
+			return null;
+		}
+		ActionItem parentAction = profile.Actions[_selectedLayoutSlotIndex];
+		if (_selectedLayoutTier == 2 && _selectedLayoutSubSlotIndex >= 0)
+		{
+			if (parentAction.SubActions != null && _selectedLayoutSubSlotIndex < parentAction.SubActions.Count)
+			{
+				return parentAction.SubActions[_selectedLayoutSubSlotIndex];
+			}
+			return null;
+		}
+		return parentAction;
+	}
+
+	private bool _isRecordingTrigger;
+
+	private bool _isRecordingProcessTrigger;
+
+	private string? _recordingProcessName;
+
+	private System.Windows.Media.Brush? _originalBadgeBorderBrush;
+
+	private WheelProfile? _selectedProfile;
+
+	private readonly ObservableCollection<SlotViewModel> _slotViewModels = new ObservableCollection<SlotViewModel>();
+
+	private bool _isUpdatingUi = false;
+
+	private bool _isRenderingPreview;
+
+	private readonly List<System.Windows.Shapes.Path> _previewSectorPaths = new List<System.Windows.Shapes.Path>();
+
+	private readonly List<TranslateTransform> _previewTransforms = new List<TranslateTransform>();
+
+	private readonly List<double> _previewAngles = new List<double>();
+
+	private readonly List<System.Windows.Shapes.Path> _previewSubSectorPaths = new List<System.Windows.Shapes.Path>();
+
+	private readonly List<TranslateTransform> _previewSubTransforms = new List<TranslateTransform>();
+
+	private readonly List<int> _previewSubParentIndices = new List<int>();
+
+	private readonly List<int> _previewSubIndices = new List<int>();
+
+	private readonly List<double> _previewSubAngles = new List<double>();
+
+	private System.Windows.Media.Brush? _previewSubDefaultBrush;
+
+	private System.Windows.Media.Brush? _previewSubHighlightBrush;
+
+	private System.Windows.Media.Brush? _previewSubBorderBrush;
+
+	private System.Windows.Media.Brush? _previewSubHighlightBorderBrush;
+
+	private System.Windows.Media.Brush? _previewSubTextBrush;
+
+	private readonly List<Grid> _previewSubContainers = new List<Grid>();
+
+	private IRadialStyleRenderer? _previewStyleRenderer;
+
+	private IRadialStyleRenderer? _previewSubStyleRenderer;
+
+	private System.Windows.Media.Brush? _previewDefaultBrush;
+
+	private System.Windows.Media.Brush? _previewHighlightBrush;
+
+	private System.Windows.Media.Brush? _previewBorderBrush;
+
+	private System.Windows.Media.Brush? _previewHighlightBorderBrush;
+
+	private System.Windows.Media.Brush? _previewTextBrush;
+
+	private System.Windows.Media.Brush? _previewCoreBgBrush;
+
+	private System.Windows.Media.Brush? _previewCoreBorderBrush;
+
+	private Ellipse? _previewCoreCircle;
+
+	private Grid? _previewCoreGrid;
+
+	private ScaleTransform? _previewCoreScale;
+
+	private System.Windows.Shapes.Path? _previewExitIcon;
+
+	private UIElement? _previewCoreIconElement;
+
+	private Visibility _previewCoreIconDefaultVisibility = Visibility.Collapsed;
+
+	private double _previewCoreIconDefaultOpacity = 1.0;
+
+	private Effect? _previewCoreIconDefaultEffect;
+
+	private bool _previewCoreUsesCustomImage;
+
+	private Ellipse? _previewCoreSelectionOverlay;
+
+	private TextBlock? _previewCoreSelectionText;
+
+	// Tab 2 Mappings Focus Editor & Canvas Interactivity
+	private int _selectedSlotIndex = 0; // -1: Center Core, 0..11: Sector slot
+	private int? _selectedSubActionIndex = null; // null: Primary slot / Center Core; 0..3: Secondary subaction
+	private readonly List<int> _selectedMultiSlots = new List<int>(); // Ctrl + Click multi-selection
+	private List<ActionItem>? _lastSubActionsBackup = null;
+	private int _lastSubActionsBackupSlotIndex = -1;
+	private bool _isUpdatingFocusUi = true;
+
+	/// <summary>
+	/// 插件动作的参数表单。按需创建 —— 绝大多数动作没有参数，
+	/// 为它们提前维持一份控件树只是白占内存。
+	/// </summary>
+	private PluginParameterForm? _focusPluginParameterForm;
+	private Point? _mappingsDragStartPos = null;
+	private int _dragSourceSlotIndex = -999; // -1: Center Core, >=0: Sector slot
+	private bool _isDraggingSlot = false;
+	private Point? _mappingsPanStartPoint = null;
+	private Point _mappingsPanStartTranslate = default;
+	private readonly List<System.Windows.Shapes.Path> _mappingsSectorPaths = new List<System.Windows.Shapes.Path>();
+	private readonly List<System.Windows.Shapes.Path> _mappingsSubSectorPaths = new List<System.Windows.Shapes.Path>();
+	private readonly List<Tuple<int, int>> _mappingsSubSectorKeys = new List<Tuple<int, int>>();
+
+	private int _lastHoveredSector = -2;
+
+	private int _lastHoveredSubIndex = -2;
+
+	private ReleaseInfo? _latestReleaseInfo = null;
+	private List<ReleaseInfo>? _allFetchedReleases = null;
+	private ReleaseInfo? _selectedRollbackRelease = null;
+	private CancellationTokenSource? _downloadCts = null;
+	private readonly CancellationTokenSource _lifetimeCts = new CancellationTokenSource();
+	private string? _downloadedZipPath = null;
+
+	private static readonly string[] Directions4 = new string[4] { "右 (E / 0°)", "下 (S / 90°)", "左 (W / 180°)", "上 (N / 270°)" };
+
+	private static readonly string[] Directions8 = new string[8] { "右 (E / 0°)", "右下 (SE / 45°)", "下 (S / 90°)", "左下 (SW / 135°)", "左 (W / 180°)", "左上 (NW / 225°)", "上 (N / 270°)", "右上 (NE / 315°)" };
+
+	private static readonly string[] Directions12 = new string[12]
+	{
+		"右 3点钟 (E / 0°)", "右下 4点钟 (30°)", "右下 5点钟 (60°)", "下 6点钟 (S / 90°)", "左下 7点钟 (120°)", "左下 8点钟 (150°)", "左 9点钟 (W / 180°)", "左上 10点钟 (210°)", "左上 11点钟 (240°)", "上 12点钟 (N / 270°)",
+		"右上 1点钟 (300°)", "右上 2点钟 (330°)"
+	};
+
+	private static readonly ActionItem[] DefaultPresets4 = new ActionItem[4]
+	{
+		new ActionItem
+		{
+			Type = "Hotkey",
+			Name = "复制 (Copy)",
+			Parameter = "Ctrl+C",
+			IconKey = "Copy"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "显示桌面 (Desktop)",
+			Parameter = "ShowDesktop",
+			IconKey = "ShowDesktop"
+		},
+		new ActionItem
+		{
+			Type = "Hotkey",
+			Name = "粘贴 (Paste)",
+			Parameter = "Ctrl+V",
+			IconKey = "Paste"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "关闭窗口 (Close)",
+			Parameter = "CloseWindow",
+			IconKey = "CloseWindow"
+		}
+	};
+
+	private static readonly ActionItem[] DefaultPresets8 = new ActionItem[8]
+	{
+		new ActionItem
+		{
+			Type = "Hotkey",
+			Name = "复制 (Copy)",
+			Parameter = "Ctrl+C",
+			IconKey = "Copy"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "锁定电脑 (Lock)",
+			Parameter = "Lock",
+			IconKey = "Lock"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "显示桌面 (Desktop)",
+			Parameter = "ShowDesktop",
+			IconKey = "ShowDesktop"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "屏幕截图 (Capture)",
+			Parameter = "Screenshot",
+			IconKey = "Screenshot"
+		},
+		new ActionItem
+		{
+			Type = "Hotkey",
+			Name = "粘贴 (Paste)",
+			Parameter = "Ctrl+V",
+			IconKey = "Paste"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "音量减 (Vol Down)",
+			Parameter = "VolumeDown",
+			IconKey = "VolumeDown"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "关闭窗口 (Close)",
+			Parameter = "CloseWindow",
+			IconKey = "CloseWindow"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "音量增 (Vol Up)",
+			Parameter = "VolumeUp",
+			IconKey = "VolumeUp"
+		}
+	};
+
+	private static readonly ActionItem[] DefaultPresets12 = new ActionItem[12]
+	{
+		new ActionItem
+		{
+			Type = "Hotkey",
+			Name = "复制 (Copy)",
+			Parameter = "Ctrl+C",
+			IconKey = "Copy"
+		},
+		new ActionItem
+		{
+			Type = "Hotkey",
+			Name = "剪切 (Cut)",
+			Parameter = "Ctrl+X",
+			IconKey = "Cut"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "锁定电脑 (Lock)",
+			Parameter = "Lock",
+			IconKey = "Lock"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "显示桌面 (Desktop)",
+			Parameter = "ShowDesktop",
+			IconKey = "ShowDesktop"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "任务视图 (TaskView)",
+			Parameter = "TaskView",
+			IconKey = "TaskView"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "屏幕截图 (Screenshot)",
+			Parameter = "Screenshot",
+			IconKey = "Screenshot"
+		},
+		new ActionItem
+		{
+			Type = "Hotkey",
+			Name = "粘贴 (Paste)",
+			Parameter = "Ctrl+V",
+			IconKey = "Paste"
+		},
+		new ActionItem
+		{
+			Type = "Hotkey",
+			Name = "撤销 (Undo)",
+			Parameter = "Ctrl+Z",
+			IconKey = "Undo"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "音量减小 (Vol-)",
+			Parameter = "VolumeDown",
+			IconKey = "VolumeDown"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "关闭窗口 (Close)",
+			Parameter = "CloseWindow",
+			IconKey = "CloseWindow"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "音量增加 (Vol+)",
+			Parameter = "VolumeUp",
+			IconKey = "VolumeUp"
+		},
+		new ActionItem
+		{
+			Type = "System",
+			Name = "任务管理器 (TaskMgr)",
+			Parameter = "TaskManager",
+			IconKey = "TaskManager"
+		}
+	};
+
+	private DispatcherTimer? _autoSaveDebounceTimer;
+
+	private bool _isChangingSectorCount;
+
+	private bool _previewRenderPending;
+
+	private bool _isUiInitializing = false;
+	private bool _isUiInitialized = false;
+	private bool _isLoadingAutoStartState = false;
+	private bool _loadedAutoStartEnabled;
+	private bool _loadedAutoStartAsAdmin;
+
+	private static int _lastSelectedTabIndex;
+
+	private DispatcherTimer? _deferredCloseTimer;
+
+	private bool _isClosingForRelease;
+
+	private bool _rawMouseInputHookAttached;
+
+	private bool _rawKeyboardInputHookAttached;
+
+	private bool _exclusiveKeyboardHookAttached;
+
+	private volatile bool _resourcesReleased;
+
+	public static bool IsSilentLaunch()
+	{
+		return Environment.GetCommandLineArgs().Any((string a) =>
+			string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(a, "--autostart", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(a, "--silent", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(a, "-s", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(a, "-m", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(a, "/minimized", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(a, "/autostart", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(a, "/silent", StringComparison.OrdinalIgnoreCase));
+	}
+
+	public void EnsureUiInitialized()
+	{
+		if (_isUiInitialized || _isUiInitializing)
+		{
+			return;
+		}
+		_isUiInitializing = true;
+		_isUpdatingUi = true;
+		_isUpdatingFocusUi = true;
+		try
+		{
+			// 自愈受损的槽位动作（继承图标存在有效程序路径，但动作类型被误改写为 Tile / 2L）
+			if (ConfigManager.CurrentConfig?.Profiles != null)
+			{
+				foreach (var profile in ConfigManager.CurrentConfig.Profiles)
+				{
+					if (profile?.Actions == null) continue;
+					foreach (var action in profile.Actions)
+					{
+						if (action == null) continue;
+						if (action.Type == "Tile" && action.Parameter == "2L" &&
+							!string.IsNullOrWhiteSpace(action.InheritAppIconPath) &&
+							(action.InheritAppIconPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+							 action.InheritAppIconPath.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) ||
+							 action.InheritAppIconPath.Contains("\\") || action.InheritAppIconPath.Contains("/")) &&
+							(action.Name != null && action.Name.Contains("平铺")))
+						{
+							action.Type = "Launch";
+							action.Parameter = action.InheritAppIconPath;
+							try
+							{
+								string baseName = System.IO.Path.GetFileNameWithoutExtension(action.InheritAppIconPath);
+								if (!string.IsNullOrWhiteSpace(baseName))
+								{
+									action.Name = baseName;
+								}
+							}
+							catch { }
+						}
+					}
+				}
+			}
+
+			AppThemeManager.ApplyTheme(this, ConfigManager.CurrentConfig?.AppTheme ?? "System");
+			ApplySidebarLayout();
+			LoadConfigToUi();
+			SlotsItemsControl.ItemsSource = _slotViewModels;
+			bool flag4 = IsRunningAsAdmin();
+			UacWarningCard.Visibility = (flag4 ? Visibility.Collapsed : Visibility.Visible);
+			RefreshSlots();
+			UpdateSidebarThemeVisualState(ConfigManager.CurrentConfig?.AppTheme ?? "System");
+			bool isDark = IsCurrentThemeDark();
+			UpdateLogoTheme(isDark);
+			App.ApplyTrayTheme(isDark);
+
+			HookExclusiveKeyboardRecordingEvents();
+			if (FocusHotkeyRecorder != null)
+			{
+				FocusHotkeyRecorder.HotkeyChanged += FocusHotkeyRecorder_HotkeyChanged;
+				FocusHotkeyRecorder.RecordingStarted += delegate
+				{
+					StartExclusiveRecording();
+				};
+				FocusHotkeyRecorder.RecordingCancelled += delegate
+				{
+					CancelExclusiveRecordingIfActive();
+				};
+			}
+
+			UpdateFocusEditorUi();
+			ApplyConfigMode(ConfigManager.CurrentConfig?.ConfigMode ?? "Simple", false);
+
+			_isUiInitialized = true;
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+			_isUpdatingFocusUi = false;
+			_isUiInitializing = false;
+		}
+	}
+
+	public SettingsWindow()
+	{
+		_isUpdatingUi = true;
+		_isUpdatingFocusUi = true;
+		InitializeComponent();
+		PluginHost.PluginAvailabilityChanged += HandlePluginAvailabilityChanged;
+		try
+		{
+			this.Icon = BitmapFrame.Create(new Uri("pack://application:,,,/app_icon.ico"));
+		}
+		catch
+		{
+		}
+		string text = AppVersionInfo.DisplayVersionWithPrefix;
+		if (SidebarVersionText != null)
+		{
+			SidebarVersionText.Text = text;
+		}
+		if (AboutVersionBadgeText != null)
+		{
+			AboutVersionBadgeText.Text = text;
+		}
+		try
+		{
+			double maxAllowedWidth = SystemParameters.WorkArea.Width * 0.96;
+			double maxAllowedHeight = SystemParameters.WorkArea.Height * 0.96;
+			if (base.Width > maxAllowedWidth && maxAllowedWidth >= base.MinWidth)
+			{
+				base.Width = maxAllowedWidth;
+			}
+			if (base.Height > maxAllowedHeight && maxAllowedHeight >= base.MinHeight)
+			{
+				base.Height = maxAllowedHeight;
+			}
+		}
+		catch
+		{
+		}
+		double initialUiScale = NormalizeSettingsUiScale(ConfigManager.CurrentConfig?.SettingsUiScale ?? 1.0);
+		if (UiScaleSlider != null)
+		{
+			UiScaleSlider.Value = initialUiScale * 100.0;
+		}
+		ApplySettingsUiScale(initialUiScale);
+		_isUpdatingUi = false;
+
+		// 若为桌面正常呼起或单测环境（非静默参数），立即就绪完整 UI；若为开机自启/静默启动，延迟至首次唤起加载
+		if (!IsSilentLaunch())
+		{
+			EnsureUiInitialized();
+		}
+
+		base.Loaded += delegate
+		{
+			EnsureUiInitialized();
+			ApplySidebarLayout();
+			UpdateSidebarThemeVisualState(ConfigManager.CurrentConfig?.AppTheme ?? "System");
+			bool isDark = IsCurrentThemeDark();
+			UpdateLogoTheme(isDark);
+			App.ApplyTrayTheme(isDark);
+			if (AppearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			MemoryOptimizer.TrimMemory();
+			LoadContributorsOffline();
+			if (ConfigManager.CurrentConfig?.AutoCheckUpdate == true)
+			{
+				Task.Run(async () =>
+				{
+					try
+					{
+						await Task.Delay(2500, _lifetimeCts.Token);
+						if (!_lifetimeCts.IsCancellationRequested)
+						{
+							await Dispatcher.InvokeAsync(() => CheckForUpdateInternalAsync(silent: true));
+						}
+					}
+					catch (OperationCanceledException)
+					{
+					}
+				});
+			}
+		};
+		base.Deactivated += delegate { CancelExclusiveRecordingIfActive(); };
+	}
+
+	private void CancelDeferredClose()
+	{
+		_deferredCloseTimer?.Stop();
+		_deferredCloseTimer = null;
+		_isClosingForRelease = false;
+		BeginAnimation(UIElement.OpacityProperty, null);
+		Opacity = 1.0;
+	}
+
+	/// <summary>把任意缩放取值规范到 0.8 ~ 2.0，并对齐 5% 步进（与滑块 TickFrequency 一致）。</summary>
+	private double NormalizeSettingsUiScale(double scale)
+	{
+		if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0.0)
+		{
+			scale = 1.0;
+		}
+		return Math.Round(Math.Clamp(scale, 0.8, 2.0) * 20.0) / 20.0;
+	}
+
+	/// <summary>
+	/// 应用设置控制台全局缩放：仅给根节点挂 LayoutTransform，等比放大字号/边距与控件尺寸
+	/// （等同浏览器缩放语义）。窗口尺寸一律不代为调整——大小由用户自己决定，
+	/// 内容超出可视区域时交由侧边栏与各页签内部的滚动条承接，Ctrl 0 可随时复位。
+	/// </summary>
+	private void ApplySettingsUiScale(double scale)
+	{
+		scale = NormalizeSettingsUiScale(scale);
+		if (RootUiScaleTransform != null)
+		{
+			RootUiScaleTransform.ScaleX = scale;
+			RootUiScaleTransform.ScaleY = scale;
+		}
+		_appliedSettingsUiScale = scale;
+		if (SidebarScaleValueText != null)
+		{
+			SidebarScaleValueText.Text = string.Format("{0:0}%", scale * 100.0);
+		}
+	}
+
+	/// <summary>统一的缩放写入口：同步滑块与配置、重排界面并落盘（供快捷键复用）。</summary>
+	private void SetSettingsUiScale(double scale)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		scale = NormalizeSettingsUiScale(scale);
+		_isUpdatingUi = true;
+		if (UiScaleSlider != null)
+		{
+			UiScaleSlider.Value = scale * 100.0;
+		}
+		_isUpdatingUi = false;
+		ConfigManager.CurrentConfig.SettingsUiScale = scale;
+		ApplySettingsUiScale(scale);
+		ScheduleAutoSave();
+	}
+
+	private void UiScaleSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		if (UiScaleSlider.IsMouseCaptureWithin)
+		{
+			// 滑块本身也在被缩放的画面里：拖动途中一旦重排，拇指会跑到指针前面，
+			// Slider 再按指针位置反算数值就会往回跳，两者互相追赶表现为持续抖动。
+			// 因此拖动途中只实时回显百分比，真正的重排与落盘留到松手时一次性完成。
+			if (SidebarScaleValueText != null)
+			{
+				SidebarScaleValueText.Text = string.Format("{0:0}%", NormalizeSettingsUiScale(e.NewValue / 100.0) * 100.0);
+			}
+			return;
+		}
+		double scale = NormalizeSettingsUiScale(e.NewValue / 100.0);
+		if (Math.Abs(scale - _appliedSettingsUiScale) < 0.0005)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.SettingsUiScale = scale;
+		ApplySettingsUiScale(scale);
+		ScheduleAutoSave();
+	}
+
+	/// <summary>松手后一次性提交缩放，避免拖动途中反复重排造成滑块抖动与指针错位。</summary>
+	private void UiScaleSlider_Commit(object sender, System.Windows.Input.MouseButtonEventArgs e)
+	{
+		if (UiScaleSlider == null)
+		{
+			return;
+		}
+		SetSettingsUiScale(UiScaleSlider.Value / 100.0);
+	}
+
+	private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+	{
+		if (_isRecordingTrigger || _isRecordingProcessTrigger || ConfigManager.CurrentConfig == null || (Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control)
+		{
+			return;
+		}
+		// 热键录入框一拿到键盘焦点就进入录制态，而窗口级 PreviewKeyDown 是先于控件的 tunnel，
+		// 不豁免就会把 Ctrl+0 / Ctrl+加 / Ctrl+减 直接吃掉，导致这三个组合键永远录不进去。
+		if (Keyboard.FocusedElement is HotkeyRecorderBox { IsRecording: true })
+		{
+			return;
+		}
+		switch (e.Key)
+		{
+		case Key.Add:
+		case Key.OemPlus:
+			SetSettingsUiScale(_appliedSettingsUiScale + 0.05);
+			e.Handled = true;
+			break;
+		case Key.Subtract:
+		case Key.OemMinus:
+			SetSettingsUiScale(_appliedSettingsUiScale - 0.05);
+			e.Handled = true;
+			break;
+		case Key.D0:
+		case Key.NumPad0:
+			SetSettingsUiScale(1.0);
+			e.Handled = true;
+			break;
+		}
+	}
+
+	private void SidebarToggleButton_Click(object sender, RoutedEventArgs e)
+	{
+		_isSidebarCollapsed = !_isSidebarCollapsed;
+		ApplySidebarLayout();
+	}
+
+	private void ApplySidebarLayout()
+	{
+		if (SidebarColumn == null || SidebarBorder == null || SidebarBrandGrid == null || SidebarBrandTextPanel == null || SidebarFooterPanel == null || SidebarToggleIcon == null || SidebarToggleButton == null)
+		{
+			return;
+		}
+		bool isCollapsed = _isSidebarCollapsed;
+		SidebarColumn.Width = new GridLength(isCollapsed ? SidebarCollapsedWidth : SidebarExpandedWidth);
+		SidebarBorder.Padding = isCollapsed ? new Thickness(10, 20, 10, 15) : new Thickness(16, 20, 16, 15);
+		SidebarToggleButton.HorizontalAlignment = isCollapsed ? HorizontalAlignment.Center : HorizontalAlignment.Right;
+		SidebarBrandGrid.HorizontalAlignment = isCollapsed ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
+		SidebarBrandTextPanel.Visibility = isCollapsed ? Visibility.Collapsed : Visibility.Visible;
+		SidebarToggleIcon.Data = Geometry.Parse(isCollapsed ? "M10,6 L16,12 L10,18" : "M14,6 L8,12 L14,18");
+		string toggleText = I18n.T(isCollapsed ? "SidebarExpand" : "SidebarCollapse");
+		SidebarToggleButton.ToolTip = toggleText;
+		System.Windows.Automation.AutomationProperties.SetName(SidebarToggleButton, toggleText);
+
+		// 主题切换器折叠/展开自适应
+		if (SidebarThemeExpandedPanel != null)
+		{
+			SidebarThemeExpandedPanel.Visibility = isCollapsed ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (SidebarThemeCollapsedButton != null)
+		{
+			SidebarThemeCollapsedButton.Visibility = isCollapsed ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (SidebarScalePanel != null)
+		{
+			SidebarScalePanel.Visibility = (isCollapsed ? Visibility.Collapsed : Visibility.Visible);
+		}
+
+		// 底部版本与版权信息：折叠时持续展示，自适应居中对齐
+		SidebarFooterPanel.Visibility = Visibility.Visible;
+		if (isCollapsed)
+		{
+			SidebarFooterPanel.HorizontalAlignment = HorizontalAlignment.Center;
+			if (SidebarVersionBadge != null)
+			{
+				SidebarVersionBadge.HorizontalAlignment = HorizontalAlignment.Center;
+				SidebarVersionBadge.Padding = new Thickness(4, 2, 4, 2);
+			}
+			if (SidebarVersionText != null)
+			{
+				SidebarVersionText.FontSize = 10;
+			}
+			if (SidebarCopyrightText != null)
+			{
+				SidebarCopyrightText.Text = "© 2026";
+				SidebarCopyrightText.FontSize = 9;
+				SidebarCopyrightText.HorizontalAlignment = HorizontalAlignment.Center;
+			}
+		}
+		else
+		{
+			SidebarFooterPanel.HorizontalAlignment = HorizontalAlignment.Left;
+			if (SidebarVersionBadge != null)
+			{
+				SidebarVersionBadge.HorizontalAlignment = HorizontalAlignment.Left;
+				SidebarVersionBadge.Padding = new Thickness(6, 3, 6, 3);
+			}
+			if (SidebarVersionText != null)
+			{
+				SidebarVersionText.FontSize = 11;
+			}
+			if (SidebarCopyrightText != null)
+			{
+				SidebarCopyrightText.Text = "© 2026 StarPie";
+				SidebarCopyrightText.FontSize = 10;
+				SidebarCopyrightText.HorizontalAlignment = HorizontalAlignment.Left;
+			}
+		}
+
+		System.Windows.Controls.RadioButton[] navigationButtons = new System.Windows.Controls.RadioButton[6] { NavTab0, NavTab1, NavTab2, NavTab3, NavTab4, NavTab5 };
+		TextBlock[] navigationTexts = new TextBlock[6] { NavTab0Text, NavTab1Text, NavTab2Text, NavTab3Text, NavTab4Text, NavTab5Text };
+		for (int i = 0; i < navigationButtons.Length; i++)
+		{
+			if (navigationButtons[i] == null) continue;
+			navigationButtons[i].Padding = isCollapsed ? new Thickness(10) : new Thickness(14, 10, 14, 10);
+			if (navigationButtons[i].Content is StackPanel sp)
+			{
+				sp.HorizontalAlignment = isCollapsed ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+				if (sp.Children.Count > 0 && sp.Children[0] is FrameworkElement iconElem)
+				{
+					iconElem.Margin = isCollapsed ? new Thickness(0) : new Thickness(0, 0, 14, 0);
+				}
+			}
+			if (navigationTexts[i] != null)
+			{
+				navigationTexts[i].Visibility = isCollapsed ? Visibility.Collapsed : Visibility.Visible;
+			}
+		}
+	}
+
+	private void LoadConfigToUi()
+	{
+		ProfilesListBox.ItemsSource = null;
+		ProfilesListBox.ItemsSource = ConfigManager.CurrentConfig.Profiles;
+		if (MappingsProfileComboBox != null)
+		{
+			MappingsProfileComboBox.ItemsSource = null;
+			MappingsProfileComboBox.ItemsSource = ConfigManager.CurrentConfig.Profiles;
+			MappingsProfileComboBox.SelectedItem = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles.FirstOrDefault();
+		}
+		RefreshConfigProfilesUi();
+		UpdateProfileToolbarButtonStates();
+		UpdateProfileBindingUi();
+		UpdateFocusActionTypeItemsSource();
+		if (FocusTileLayoutComboBox != null && FocusTileLayoutComboBox.ItemsSource == null)
+		{
+			FocusTileLayoutComboBox.ItemsSource = SlotViewModel.StaticTileLayoutOptions;
+		}
+		if (FocusCommandTerminalComboBox != null && FocusCommandTerminalComboBox.ItemsSource == null)
+		{
+			FocusCommandTerminalComboBox.ItemsSource = SlotViewModel.LocalizedTerminals;
+		}
+		if (FocusSystemPresetComboBox != null && FocusSystemPresetComboBox.ItemsSource == null)
+		{
+			FocusSystemPresetComboBox.ItemsSource = SlotViewModel.SystemPresetList;
+		}
+		UpdateTriggerBadgeDisplay();
+		UpdateLinkSubActionsButtonUi();
+		UpdateMappingsShowTextBtnState();
+		if (EnableGlobalInheritanceCheckBox != null)
+		{
+			EnableGlobalInheritanceCheckBox.IsChecked = ConfigManager.CurrentConfig.EnableGlobalInheritance;
+		}
+		HookRawInputForSensorAndRecorder();
+
+		ThresholdSlider.Value = ConfigManager.CurrentConfig.DragThreshold;
+		ThresholdValueLabel.Text = $"{ConfigManager.CurrentConfig.DragThreshold:0} px";
+		if (MouseReleaseDebounceCheckBox != null)
+		{
+			MouseReleaseDebounceCheckBox.IsChecked = ConfigManager.CurrentConfig.EnableMouseReleaseDebounce;
+		}
+		int mouseReleaseDebounceMs = Math.Clamp(ConfigManager.CurrentConfig.MouseReleaseDebounceMs, 1, 100);
+		if (MouseReleaseDebounceSlider != null)
+		{
+			MouseReleaseDebounceSlider.Value = mouseReleaseDebounceMs;
+		}
+		if (MouseReleaseDebounceValueLabel != null)
+		{
+			MouseReleaseDebounceValueLabel.Text = $"{mouseReleaseDebounceMs} ms";
+		}
+		if (MouseReleaseDebouncePanel != null)
+		{
+			MouseReleaseDebouncePanel.Visibility = ConfigManager.CurrentConfig.EnableMouseReleaseDebounce ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (CoreDeadzoneSlider != null)
+		{
+			double deadzone = ConfigManager.CurrentConfig.CoreDeadzoneRadius > 0.0 ? ConfigManager.CurrentConfig.CoreDeadzoneRadius : 35.0;
+			CoreDeadzoneSlider.Value = deadzone;
+			if (CoreDeadzoneValueLabel != null)
+			{
+				CoreDeadzoneValueLabel.Text = $"{deadzone:0} px";
+			}
+		}
+		if (LongPressTriggerCheckBox != null)
+		{
+			LongPressTriggerCheckBox.IsChecked = ConfigManager.CurrentConfig.LongPressTrigger;
+		}
+		if (LongPressDelaySlider != null)
+		{
+			LongPressDelaySlider.Value = ConfigManager.CurrentConfig.LongPressDelayMs > 0.0 ? ConfigManager.CurrentConfig.LongPressDelayMs : 450.0;
+		}
+		if (LongPressDelayLabel != null)
+		{
+			LongPressDelayLabel.Text = $"{LongPressDelaySlider.Value:0} ms";
+		}
+		if (LongPressDelayPanel != null)
+		{
+			LongPressDelayPanel.Visibility = ConfigManager.CurrentConfig.LongPressTrigger ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (GestureEnabledCheckBox != null)
+		{
+			GestureEnabledCheckBox.IsChecked = ConfigManager.CurrentConfig.GestureEnabled;
+		}
+		if (TouchGestureEnabledCheckBox != null)
+		{
+			var touch = ConfigManager.CurrentConfig;
+			TouchGestureEnabledCheckBox.IsChecked = touch.TouchGestureEnabled;
+			TouchPenGuardCheckBox.IsChecked = touch.TouchPenGuardEnabled;
+			TouchHoldTextBox.Text = touch.TouchTwoFingerHoldMs.ToString();
+			TouchMinSeparationTextBox.Text = touch.TouchMinimumFingerSeparation.ToString("0");
+			TouchMaxSeparationTextBox.Text = touch.TouchMaximumFingerSeparation.ToString("0");
+			TouchSensitivityTextBox.Text = touch.TouchGestureSensitivity.ToString("0");
+		}
+		if (GestureSettingsDetailsPanel != null)
+		{
+			GestureSettingsDetailsPanel.Visibility = ConfigManager.CurrentConfig.GestureEnabled ? Visibility.Visible : Visibility.Collapsed;
+		}
+		SetComboBoxSelectedValue(GestureTriggerButtonComboBox, ConfigManager.CurrentConfig.GestureTriggerButton ?? "MiddleButton");
+		SetComboBoxSelectedValue(GestureHintPlacementComboBox, ConfigManager.CurrentConfig.GestureHintPlacement ?? "Auto");
+		if (GestureSensitivitySlider != null)
+		{
+			GestureSensitivitySlider.Value = ConfigManager.CurrentConfig.GestureSegmentSensitivity > 0.0 ? ConfigManager.CurrentConfig.GestureSegmentSensitivity : 16.0;
+		}
+		if (GestureSensitivityLabel != null)
+		{
+			GestureSensitivityLabel.Text = $"{GestureSensitivitySlider.Value:0} px";
+		}
+		RefreshGestureMappings();
+		RefreshCancelActionEditor();
+		if (TileExcludeProcessesTextBox != null)
+		{
+			TileExcludeProcessesTextBox.Text = ConfigManager.CurrentConfig.TileExcludeProcesses ?? "";
+		}
+		if (TileMarginTopTextBox != null)
+		{
+			TileMarginTopTextBox.Text = ConfigManager.CurrentConfig.TileMarginTop.ToString();
+		}
+		if (TileMarginBottomTextBox != null)
+		{
+			TileMarginBottomTextBox.Text = ConfigManager.CurrentConfig.TileMarginBottom.ToString();
+		}
+		if (TileMarginLeftTextBox != null)
+		{
+			TileMarginLeftTextBox.Text = ConfigManager.CurrentConfig.TileMarginLeft.ToString();
+		}
+		if (TileMarginRightTextBox != null)
+		{
+			TileMarginRightTextBox.Text = ConfigManager.CurrentConfig.TileMarginRight.ToString();
+		}
+		if (TileGapTextBox != null)
+		{
+			TileGapTextBox.Text = ConfigManager.CurrentConfig.TileGap.ToString();
+		}
+		RefreshTileCycleList();
+		if (TileIncludeMinimizedCheckBox != null)
+		{
+			TileIncludeMinimizedCheckBox.IsChecked = ConfigManager.CurrentConfig.TileIncludeMinimized;
+		}
+		SetTileSettingsExpanded(ConfigManager.CurrentConfig.TileSettingsExpanded);
+		if (EnableOuterEscapeCheckBox != null)
+		{
+			EnableOuterEscapeCheckBox.IsChecked = ConfigManager.CurrentConfig.EnableOuterEscapeCancel;
+		}
+		if (OuterEscapeDistancePanel != null)
+		{
+			OuterEscapeDistancePanel.Visibility = ((!ConfigManager.CurrentConfig.EnableOuterEscapeCancel) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (OuterEscapeDistanceSlider != null)
+		{
+			OuterEscapeDistanceSlider.Value = ((ConfigManager.CurrentConfig.OuterEscapeDistance > 0.0) ? ConfigManager.CurrentConfig.OuterEscapeDistance : 190.0);
+		}
+		if (OuterEscapeDistanceLabel != null)
+		{
+			OuterEscapeDistanceLabel.Text = $"{OuterEscapeDistanceSlider?.Value ?? 190.0:0} px";
+		}
+
+		// Sound Effects
+		if (EnableSoundEffectsCheckBox != null)
+		{
+			EnableSoundEffectsCheckBox.IsChecked = ConfigManager.CurrentConfig.EnableSoundEffects;
+		}
+		if (SoundEffectsDetailsPanel != null)
+		{
+			SoundEffectsDetailsPanel.Visibility = ConfigManager.CurrentConfig.EnableSoundEffects ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (SoundThemeComboBox != null)
+		{
+			string theme = ConfigManager.CurrentConfig.SoundTheme ?? "Mechanical";
+			foreach (var item in SoundThemeComboBox.Items)
+			{
+				if (item is ComboBoxItem cbi && string.Equals(cbi.Tag?.ToString(), theme, StringComparison.OrdinalIgnoreCase))
+				{
+					SoundThemeComboBox.SelectedItem = cbi;
+					break;
+				}
+			}
+			bool isSimpleMode = string.Equals(ConfigManager.CurrentConfig.ConfigMode, "Simple", StringComparison.OrdinalIgnoreCase);
+			if (CustomSoundStudioBorder != null)
+			{
+				CustomSoundStudioBorder.Visibility = (!isSimpleMode && string.Equals(theme, "Custom", StringComparison.OrdinalIgnoreCase)) ? Visibility.Visible : Visibility.Collapsed;
+			}
+		}
+		// 调音台包含大量动态 WPF 控件，仅在当前确实展示时按需构建。
+		if (CustomSoundStudioBorder?.Visibility == Visibility.Visible)
+		{
+			InitCustomSoundStudio();
+		}
+		if (SoundVolumeSlider != null)
+		{
+			SoundVolumeSlider.Value = Math.Round(ConfigManager.CurrentConfig.SoundVolume * 100.0);
+		}
+		if (SoundVolumeLabel != null)
+		{
+			SoundVolumeLabel.Text = $"{(int)Math.Round(ConfigManager.CurrentConfig.SoundVolume * 100.0)}%";
+		}
+		if (SoundOnPopupCheckBox != null) SoundOnPopupCheckBox.IsChecked = ConfigManager.CurrentConfig.SoundOnPopup;
+		if (SoundOnHoverCheckBox != null) SoundOnHoverCheckBox.IsChecked = ConfigManager.CurrentConfig.SoundOnHover;
+		if (SoundOnExpandCheckBox != null) SoundOnExpandCheckBox.IsChecked = ConfigManager.CurrentConfig.SoundOnExpand;
+		if (SoundOnExecuteCheckBox != null) SoundOnExecuteCheckBox.IsChecked = ConfigManager.CurrentConfig.SoundOnExecute;
+		if (SoundOnCancelCheckBox != null) SoundOnCancelCheckBox.IsChecked = ConfigManager.CurrentConfig.SoundOnCancel;
+		CheckAndDisplaySystemAudioState();
+
+		// Animation Speed
+		string animSpeed = ConfigManager.CurrentConfig.AnimationSpeed ?? "Balanced";
+		double animVal = ((ConfigManager.CurrentConfig.CustomAnimationDurationMs > 0.0) ? ConfigManager.CurrentConfig.CustomAnimationDurationMs : 80.0);
+		if (AnimSpeedSlider != null)
+		{
+			AnimSpeedSlider.Value = animVal;
+		}
+		if (AnimSpeedSliderLabel != null)
+		{
+			AnimSpeedSliderLabel.Text = $"{animVal:0} ms";
+		}
+		switch (animSpeed)
+		{
+		case "Elegant":
+			if (AnimSpeedElegantRadio != null) AnimSpeedElegantRadio.IsChecked = true;
+			break;
+		case "Fast":
+			if (AnimSpeedFastRadio != null) AnimSpeedFastRadio.IsChecked = true;
+			break;
+		case "Custom":
+			if (AnimSpeedCustomRadio != null) AnimSpeedCustomRadio.IsChecked = true;
+			break;
+		default:
+			if (AnimSpeedBalancedRadio != null) AnimSpeedBalancedRadio.IsChecked = true;
+			break;
+		}
+
+		// App Theme & Presets
+		UpdateSidebarThemeVisualState(ConfigManager.CurrentConfig.AppTheme ?? "System");
+		bool isDark = IsCurrentThemeDark();
+		UpdateLogoTheme(isDark);
+		App.ApplyTrayTheme(isDark);
+		ReloadThemePresets();
+		SetComboBoxSelectedValue(ThemeComboBox, ConfigManager.CurrentConfig.Theme);
+		SetComboBoxSelectedValue(UiStyleComboBox, ConfigManager.CurrentConfig.UiStyle);
+
+		// Custom Colors
+		CustomSectorBgTextBox.Text = ConfigManager.CurrentConfig.CustomSectorBg;
+		CustomSectorBorderTextBox.Text = ConfigManager.CurrentConfig.CustomSectorBorder;
+		CustomHighlightBgTextBox.Text = ConfigManager.CurrentConfig.CustomHighlightBg;
+		CustomHighlightBorderTextBox.Text = ConfigManager.CurrentConfig.CustomHighlightBorder;
+		CustomTextTextBox.Text = ConfigManager.CurrentConfig.CustomText;
+		bool isCustomTheme = (ConfigManager.CurrentConfig.Theme ?? "").StartsWith("CustomPreset_");
+		if (CustomColorsPanel != null)
+		{
+			CustomColorsPanel.Visibility = Visibility.Visible;
+		}
+		if (((ConfigManager.CurrentConfig.Theme == "Custom") || isCustomTheme) && CustomColorExpander != null)
+		{
+			CustomColorExpander.IsExpanded = true;
+		}
+		if (RenameCustomColorPresetButton != null)
+		{
+			RenameCustomColorPresetButton.Visibility = ((!isCustomTheme) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (DeleteCustomColorPresetButton != null)
+		{
+			DeleteCustomColorPresetButton.Visibility = ((!isCustomTheme) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (DeletePresetInPanelButton != null)
+		{
+			DeletePresetInPanelButton.Visibility = ((!isCustomTheme) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (SavePresetChangesButton != null)
+		{
+			SavePresetChangesButton.Content = (isCustomTheme ? I18n.T("SavePresetChangesButton") : I18n.T("SaveAsNewPresetButton"));
+		}
+
+		// Primary Glow
+		SetComboBoxSelectedValue(HighlightGlowPresetComboBox, ConfigManager.CurrentConfig.HighlightGlowPreset ?? "Auto");
+		HighlightGlowColorTextBox.Text = ConfigManager.CurrentConfig.HighlightGlowColor ?? "";
+		HighlightGlowRadiusSlider.Value = ((ConfigManager.CurrentConfig.HighlightGlowRadius > 0.0) ? ConfigManager.CurrentConfig.HighlightGlowRadius : 24.0);
+		HighlightGlowRadiusLabel.Text = $"{HighlightGlowRadiusSlider.Value:0} px";
+		HighlightGlowOpacitySlider.Value = ((ConfigManager.CurrentConfig.HighlightGlowOpacity >= 0.0) ? ConfigManager.CurrentConfig.HighlightGlowOpacity : 0.85) * 100.0;
+		HighlightGlowOpacityLabel.Text = $"{HighlightGlowOpacitySlider.Value:0}%";
+		CustomHighlightGlowPanel.Visibility = ((!(ConfigManager.CurrentConfig.HighlightGlowPreset == "Custom") && string.IsNullOrEmpty(ConfigManager.CurrentConfig.HighlightGlowColor)) ? Visibility.Collapsed : Visibility.Visible);
+
+		// Secondary Glow
+		SetComboBoxSelectedValue(SubHighlightGlowPresetComboBox, ConfigManager.CurrentConfig.SubWheelHighlightGlowPreset ?? "FollowPrimary");
+		if (SubHighlightGlowColorTextBox != null)
+		{
+			SubHighlightGlowColorTextBox.Text = ConfigManager.CurrentConfig.SubWheelHighlightGlowColor ?? "";
+		}
+		if (SubHighlightGlowRadiusSlider != null)
+		{
+			SubHighlightGlowRadiusSlider.Value = ((ConfigManager.CurrentConfig.SubWheelHighlightGlowRadius > 0.0) ? ConfigManager.CurrentConfig.SubWheelHighlightGlowRadius : 24.0);
+			if (SubHighlightGlowRadiusLabel != null)
+			{
+				SubHighlightGlowRadiusLabel.Text = $"{SubHighlightGlowRadiusSlider.Value:0} px";
+			}
+		}
+		if (SubHighlightGlowOpacitySlider != null)
+		{
+			SubHighlightGlowOpacitySlider.Value = ((ConfigManager.CurrentConfig.SubWheelHighlightGlowOpacity >= 0.0) ? ConfigManager.CurrentConfig.SubWheelHighlightGlowOpacity : 0.85) * 100.0;
+			if (SubHighlightGlowOpacityLabel != null)
+			{
+				SubHighlightGlowOpacityLabel.Text = $"{SubHighlightGlowOpacitySlider.Value:0}%";
+			}
+		}
+		if (SubCustomHighlightGlowPanel != null)
+		{
+			string subGlow = ConfigManager.CurrentConfig.SubWheelHighlightGlowPreset ?? "FollowPrimary";
+			SubCustomHighlightGlowPanel.Visibility = ((!(subGlow == "Custom") && string.IsNullOrEmpty(ConfigManager.CurrentConfig.SubWheelHighlightGlowColor)) ? Visibility.Collapsed : Visibility.Visible);
+		}
+
+		// Primary Geometry & Dimensions
+		WheelRadiusSlider.Value = ConfigManager.CurrentConfig.WheelRadius;
+		WheelRadiusLabel.Text = ConfigManager.CurrentConfig.WheelRadius.ToString("0");
+		InnerRadiusSlider.Value = ConfigManager.CurrentConfig.InnerRadius;
+		InnerRadiusLabel.Text = ConfigManager.CurrentConfig.InnerRadius.ToString("0");
+		CoreRadiusSlider.Value = ConfigManager.CurrentConfig.CoreRadius;
+		CoreRadiusLabel.Text = ConfigManager.CurrentConfig.CoreRadius.ToString("0");
+		SectorGapSlider.Value = ConfigManager.CurrentConfig.SectorGap;
+		SectorGapLabel.Text = $"{ConfigManager.CurrentConfig.SectorGap:0} px";
+		SectorCornerRadiusSlider.Value = ConfigManager.CurrentConfig.SectorCornerRadius;
+		SectorCornerRadiusLabel.Text = $"{ConfigManager.CurrentConfig.SectorCornerRadius:0} px";
+		SectorIconSizeSlider.Value = ((ConfigManager.CurrentConfig.SectorIconSize > 0.0) ? ConfigManager.CurrentConfig.SectorIconSize : 20.0);
+		SectorIconSizeLabel.Text = $"{SectorIconSizeSlider.Value:0} px";
+		SectorFontSizeSlider.Value = ((ConfigManager.CurrentConfig.SectorFontSize > 0.0) ? ConfigManager.CurrentConfig.SectorFontSize : 10.5);
+		SectorFontSizeLabel.Text = $"{SectorFontSizeSlider.Value:0.0} px";
+
+		// Sub-Wheel Dimensions
+		if (SubWheelOuterRadiusSlider != null)
+		{
+			SubWheelOuterRadiusSlider.Value = ((ConfigManager.CurrentConfig.SubWheelOuterRadius > 0.0) ? ConfigManager.CurrentConfig.SubWheelOuterRadius : 196.0);
+			SubWheelOuterRadiusLabel.Text = $"{SubWheelOuterRadiusSlider.Value:0} px";
+		}
+		if (SubWheelInnerGapSlider != null)
+		{
+			SubWheelInnerGapSlider.Value = ((ConfigManager.CurrentConfig.SubWheelInnerGap >= 0.0) ? ConfigManager.CurrentConfig.SubWheelInnerGap : 7.0);
+			SubWheelInnerGapLabel.Text = $"{SubWheelInnerGapSlider.Value:0} px";
+		}
+		if (SubWheelCornerRadiusSlider != null)
+		{
+			SubWheelCornerRadiusSlider.Value = ((ConfigManager.CurrentConfig.SubWheelCornerRadius >= 0.0) ? ConfigManager.CurrentConfig.SubWheelCornerRadius : 14.0);
+			SubWheelCornerRadiusLabel.Text = $"{SubWheelCornerRadiusSlider.Value:0} px";
+		}
+		if (SubWheelIconSizeSlider != null)
+		{
+			SubWheelIconSizeSlider.Value = ((ConfigManager.CurrentConfig.SubWheelIconSize > 0.0) ? ConfigManager.CurrentConfig.SubWheelIconSize : 16.0);
+			SubWheelIconSizeLabel.Text = $"{SubWheelIconSizeSlider.Value:0} px";
+		}
+		if (SubWheelFontSizeSlider != null)
+		{
+			SubWheelFontSizeSlider.Value = ((ConfigManager.CurrentConfig.SubWheelFontSize > 0.0) ? ConfigManager.CurrentConfig.SubWheelFontSize : 9.5);
+			SubWheelFontSizeLabel.Text = $"{SubWheelFontSizeSlider.Value:0.0} px";
+		}
+		if (SubWheelTriggerDistanceSlider != null)
+		{
+			SubWheelTriggerDistanceSlider.Value = ((ConfigManager.CurrentConfig.SubWheelTriggerDistance > 0.0) ? ConfigManager.CurrentConfig.SubWheelTriggerDistance : 141.0);
+			if (SubWheelTriggerDistanceValueText != null)
+			{
+				SubWheelTriggerDistanceValueText.Text = $"{SubWheelTriggerDistanceSlider.Value:0} px";
+			}
+		}
+
+		if (VolumeCancelRatioSlider != null)
+		{
+			VolumeCancelRatioSlider.Value = ((ConfigManager.CurrentConfig.VolumeCancelHysteresisRatio > 0.0) ? ConfigManager.CurrentConfig.VolumeCancelHysteresisRatio : 0.6);
+			if (VolumeCancelRatioValueText != null)
+			{
+				VolumeCancelRatioValueText.Text = $"{VolumeCancelRatioSlider.Value * 100.0:0}%";
+			}
+		}
+
+		if (VolumeFlickFarSlider != null)
+		{
+			VolumeFlickFarSlider.Value = ((ConfigManager.CurrentConfig.VolumeFlickFarDistance > 0.0) ? ConfigManager.CurrentConfig.VolumeFlickFarDistance : 360.0);
+			if (VolumeFlickFarValueText != null)
+			{
+				VolumeFlickFarValueText.Text = $"{VolumeFlickFarSlider.Value:0} px";
+			}
+		}
+
+		if (VolumeFlickJumpSlider != null)
+		{
+			VolumeFlickJumpSlider.Value = ((ConfigManager.CurrentConfig.VolumeFlickCancelDistance > 0.0) ? ConfigManager.CurrentConfig.VolumeFlickCancelDistance : 120.0);
+			if (VolumeFlickJumpValueText != null)
+			{
+				VolumeFlickJumpValueText.Text = $"{VolumeFlickJumpSlider.Value:0} px";
+			}
+		}
+
+		// Shapes & Layouts
+		SetComboBoxSelectedValue(ShapeComboBox, ConfigManager.CurrentConfig.Shape);
+		RefreshLayoutOptionsUi();
+		SetComboBoxSelectedValue(SubmenuStyleComboBox, ConfigManager.CurrentConfig.SubmenuStyle ?? "Wheel");
+		bool isFan = string.Equals(ConfigManager.CurrentConfig.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+		if (LivePreviewTierSegmentBorder != null)
+		{
+			LivePreviewTierSegmentBorder.Visibility = isFan ? Visibility.Visible : Visibility.Collapsed;
+		}
+		TierDimensionRadio_Checked(Tier1ConfigSegmentRadio, new RoutedEventArgs());
+		if (ShowSelectedActionTextCheckBox != null)
+		{
+			ShowSelectedActionTextCheckBox.IsChecked = ConfigManager.CurrentConfig.ShowSelectedActionText;
+		}
+		if (CoreTextOptionsPanel != null)
+		{
+			CoreTextOptionsPanel.Visibility = ConfigManager.CurrentConfig.ShowSelectedActionText ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (CoreFontFamilyComboBox != null)
+		{
+			PopulateCoreFontFamilies();
+			SetComboBoxSelectedValue(CoreFontFamilyComboBox, ConfigManager.CurrentConfig.CoreFontFamily ?? "Microsoft YaHei UI, Segoe UI");
+		}
+		if (CoreFontSizeSlider != null)
+		{
+			CoreFontSizeSlider.Value = (ConfigManager.CurrentConfig.CoreFontSize > 0.0) ? ConfigManager.CurrentConfig.CoreFontSize : 13.0;
+			if (CoreFontSizeLabel != null)
+			{
+				CoreFontSizeLabel.Text = $"{CoreFontSizeSlider.Value:0.0} px";
+			}
+		}
+		if (CoreTextColorTextBox != null)
+		{
+			CoreTextColorTextBox.Text = ConfigManager.CurrentConfig.CoreTextColor ?? "#FFFFFFFF";
+			UpdateColorPreviewBorder(CoreTextColorPreview, CoreTextColorTextBox.Text);
+		}
+		if (CoreTextColorAutoCheckBox != null)
+		{
+			CoreTextColorAutoCheckBox.IsChecked = ConfigManager.CurrentConfig.CoreTextColorAuto;
+		}
+		if (CoreTextColorRowGrid != null)
+		{
+			CoreTextColorRowGrid.IsEnabled = !ConfigManager.CurrentConfig.CoreTextColorAuto;
+		}
+		if (EnableMultiTierCheckBox != null)
+		{
+			EnableMultiTierCheckBox.IsChecked = ConfigManager.CurrentConfig.EnableMultiTier;
+		}
+		if (AutoExpandSubRingsCheckBox != null)
+		{
+			AutoExpandSubRingsCheckBox.IsChecked = ConfigManager.CurrentConfig.AutoExpandSubRingsOnPopup;
+		}
+		if (AutoExpandSubRingsPanel != null)
+		{
+			bool isFanSub = string.Equals(ConfigManager.CurrentConfig.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+			AutoExpandSubRingsPanel.Visibility = (ConfigManager.CurrentConfig.EnableMultiTier && !isFanSub) ? Visibility.Visible : Visibility.Collapsed;
+		}
+		ApplySettingsUiScale(ConfigManager.CurrentConfig.SettingsUiScale);
+		if (UiScaleSlider != null)
+		{
+			UiScaleSlider.Value = _appliedSettingsUiScale * 100.0;
+		}
+
+		// Sub Wheel Themes & Colors
+		if (SubWheelUiStyleComboBox != null)
+		{
+			SetComboBoxSelectedValue(SubWheelUiStyleComboBox, ConfigManager.CurrentConfig.SubWheelUiStyle ?? "FollowPrimary");
+		}
+		if (SubWheelThemeComboBox != null)
+		{
+			SetComboBoxSelectedValue(SubWheelThemeComboBox, ConfigManager.CurrentConfig.SubWheelTheme ?? "FollowPrimary");
+		}
+		if (SubCustomSectorBgTextBox != null)
+		{
+			SubCustomSectorBgTextBox.Text = ConfigManager.CurrentConfig.SubWheelCustomSectorBg ?? "";
+		}
+		if (SubCustomSectorBorderTextBox != null)
+		{
+			SubCustomSectorBorderTextBox.Text = ConfigManager.CurrentConfig.SubWheelCustomSectorBorder ?? "";
+		}
+		if (SubCustomHighlightBgTextBox != null)
+		{
+			SubCustomHighlightBgTextBox.Text = ConfigManager.CurrentConfig.SubWheelCustomHighlightBg ?? "";
+		}
+		if (SubCustomHighlightBorderTextBox != null)
+		{
+			SubCustomHighlightBorderTextBox.Text = ConfigManager.CurrentConfig.SubWheelCustomHighlightBorder ?? "";
+		}
+		if (SubCustomTextTextBox != null)
+		{
+			SubCustomTextTextBox.Text = ConfigManager.CurrentConfig.SubWheelCustomText ?? "";
+		}
+		bool isSubCustomTheme = (ConfigManager.CurrentConfig.SubWheelTheme ?? "").StartsWith("CustomPreset_");
+		if (((ConfigManager.CurrentConfig.SubWheelTheme == "Custom") || isSubCustomTheme) && SubCustomColorExpander != null)
+		{
+			SubCustomColorExpander.IsExpanded = true;
+		}
+		if (RenameSubCustomColorPresetButton != null)
+		{
+			RenameSubCustomColorPresetButton.Visibility = ((!isSubCustomTheme) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (DeleteSubCustomColorPresetButton != null)
+		{
+			DeleteSubCustomColorPresetButton.Visibility = ((!isSubCustomTheme) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (DeleteSubPresetInPanelButton != null)
+		{
+			DeleteSubPresetInPanelButton.Visibility = ((!isSubCustomTheme) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (SaveSubPresetChangesButton != null)
+		{
+			SaveSubPresetChangesButton.Content = (isSubCustomTheme ? I18n.T("SavePresetChangesButton") : I18n.T("SaveAsNewPresetButton"));
+		}
+		UpdateSubColorPreviews();
+
+		// Center Core Icon
+		ShowCoreIconCheckBox.IsChecked = ConfigManager.CurrentConfig.ShowCoreIcon;
+		if (CoreIconConfigPanel != null)
+		{
+			CoreIconConfigPanel.Visibility = ConfigManager.CurrentConfig.ShowCoreIcon ? Visibility.Visible : Visibility.Collapsed;
+		}
+		SetComboBoxSelectedValue(CoreIconTypeComboBox, ConfigManager.CurrentConfig.CoreIconType ?? "Exit");
+		CoreImagePathTextBox.Text = ConfigManager.CurrentConfig.CoreCustomImagePath ?? "";
+		double coreScale = ((ConfigManager.CurrentConfig.CoreIconScale > 0.0) ? ConfigManager.CurrentConfig.CoreIconScale : 1.0);
+		if (CoreIconScaleSlider != null)
+		{
+			CoreIconScaleSlider.Value = coreScale;
+		}
+		if (CoreIconScaleLabel != null)
+		{
+			CoreIconScaleLabel.Text = $"{Math.Round(coreScale * 100.0)}%";
+		}
+		if (CoreImageOffsetXSlider != null)
+		{
+			CoreImageOffsetXSlider.Value = ConfigManager.CurrentConfig.CoreImageOffsetX;
+		}
+		if (CoreImageOffsetXLabel != null)
+		{
+			CoreImageOffsetXLabel.Text = $"{(int)ConfigManager.CurrentConfig.CoreImageOffsetX} px";
+		}
+		if (CoreImageOffsetYSlider != null)
+		{
+			CoreImageOffsetYSlider.Value = ConfigManager.CurrentConfig.CoreImageOffsetY;
+		}
+		if (CoreImageOffsetYLabel != null)
+		{
+			CoreImageOffsetYLabel.Text = $"{(int)ConfigManager.CurrentConfig.CoreImageOffsetY} px";
+		}
+		UpdateCoreIconPreviewUI();
+		
+		// Layer Indicator Badge Config
+		if (ShowLayerIndicatorCheckBox != null)
+		{
+			ShowLayerIndicatorCheckBox.IsChecked = ConfigManager.CurrentConfig.ShowLayerIndicator;
+		}
+		if (LayerIndicatorConfigPanel != null)
+		{
+			LayerIndicatorConfigPanel.Visibility = ConfigManager.CurrentConfig.ShowLayerIndicator ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (LayerIndicatorStyleComboBox != null)
+		{
+			SetComboBoxSelectedValue(LayerIndicatorStyleComboBox, ConfigManager.CurrentConfig.LayerIndicatorStyle ?? "Dark");
+		}
+		if (LayerIndicatorIconComboBox != null)
+		{
+			SetComboBoxSelectedValue(LayerIndicatorIconComboBox, ConfigManager.CurrentConfig.LayerIndicatorIcon ?? "🌟");
+		}
+		if (LayerIndicatorBgTextBox != null)
+		{
+			LayerIndicatorBgTextBox.Text = ConfigManager.CurrentConfig.LayerIndicatorBg ?? "#E60F172A";
+			UpdateColorPreviewBorder(LayerIndicatorBgPreview, LayerIndicatorBgTextBox.Text);
+		}
+		if (LayerIndicatorBorderTextBox != null)
+		{
+			LayerIndicatorBorderTextBox.Text = ConfigManager.CurrentConfig.LayerIndicatorBorder ?? "#38BDF8";
+			UpdateColorPreviewBorder(LayerIndicatorBorderPreview, LayerIndicatorBorderTextBox.Text);
+		}
+		if (LayerIndicatorTextTextBox != null)
+		{
+			LayerIndicatorTextTextBox.Text = ConfigManager.CurrentConfig.LayerIndicatorTextColor ?? "#FFFFFF";
+			UpdateColorPreviewBorder(LayerIndicatorTextPreview, LayerIndicatorTextTextBox.Text);
+		}
+		if (LayerIndicatorCornerRadiusSlider != null)
+		{
+			LayerIndicatorCornerRadiusSlider.Value = (ConfigManager.CurrentConfig.LayerIndicatorCornerRadius > 0.0) ? ConfigManager.CurrentConfig.LayerIndicatorCornerRadius : 12.0;
+			if (LayerIndicatorCornerRadiusLabel != null)
+			{
+				LayerIndicatorCornerRadiusLabel.Text = $"{LayerIndicatorCornerRadiusSlider.Value:0} px";
+			}
+		}
+		if (LayerIndicatorFontSizeSlider != null)
+		{
+			LayerIndicatorFontSizeSlider.Value = (ConfigManager.CurrentConfig.LayerIndicatorFontSize > 0.0) ? ConfigManager.CurrentConfig.LayerIndicatorFontSize : 11.5;
+			if (LayerIndicatorFontSizeLabel != null)
+			{
+				LayerIndicatorFontSizeLabel.Text = $"{LayerIndicatorFontSizeSlider.Value:0.0} px";
+			}
+		}
+		if (LayerIndicatorOffsetYSlider != null)
+		{
+			LayerIndicatorOffsetYSlider.Value = (ConfigManager.CurrentConfig.LayerIndicatorOffsetY >= 0.0) ? ConfigManager.CurrentConfig.LayerIndicatorOffsetY : 10.0;
+			if (LayerIndicatorOffsetYLabel != null)
+			{
+				LayerIndicatorOffsetYLabel.Text = $"{LayerIndicatorOffsetYSlider.Value:0} px";
+			}
+		}
+		if (LayerIndicatorDurationSlider != null)
+		{
+			LayerIndicatorDurationSlider.Value = (ConfigManager.CurrentConfig.LayerIndicatorDurationMs >= 400.0) ? ConfigManager.CurrentConfig.LayerIndicatorDurationMs : 1200.0;
+			if (LayerIndicatorDurationLabel != null)
+			{
+				LayerIndicatorDurationLabel.Text = $"{LayerIndicatorDurationSlider.Value / 1000.0:0.0} s";
+			}
+		}
+		UpdateLayerIndicatorCustomPanelVisibility();
+		UpdateLayerIndicatorPreview();
+
+		// Scene Isolation
+		DisableOnFullScreenCheckBox.IsChecked = ConfigManager.CurrentConfig.DisableOnFullScreen;
+		CtrlModifierCheckBox.IsChecked = ConfigManager.CurrentConfig.DisableOnCtrl;
+		ShiftModifierCheckBox.IsChecked = ConfigManager.CurrentConfig.DisableOnShift;
+		AltModifierCheckBox.IsChecked = ConfigManager.CurrentConfig.DisableOnAlt;
+		bool isWhitelist = string.Equals(ConfigManager.CurrentConfig.IsolationMode, "Whitelist", StringComparison.OrdinalIgnoreCase);
+		if (IsolationWhitelistRadio != null)
+		{
+			IsolationWhitelistRadio.IsChecked = isWhitelist;
+		}
+		if (IsolationBlacklistRadio != null)
+		{
+			IsolationBlacklistRadio.IsChecked = !isWhitelist;
+		}
+		RefreshProcessListUI();
+
+		// Edge Collision Avoidance
+		bool edgeAvoidance = ConfigManager.CurrentConfig.EnableEdgeCollisionAvoidance;
+		if (EnableEdgeCollisionAvoidanceCheckBox != null)
+		{
+			EnableEdgeCollisionAvoidanceCheckBox.IsChecked = edgeAvoidance;
+		}
+		if (EdgeCollisionDetailsPanel != null)
+		{
+			EdgeCollisionDetailsPanel.Visibility = edgeAvoidance ? Visibility.Visible : Visibility.Collapsed;
+		}
+		SetComboBoxSelectedValue(EdgeOverflowPolicyComboBox, ConfigManager.CurrentConfig.EdgeOverflowPolicy ?? "ClampShift");
+		double marginX = (ConfigManager.CurrentConfig.EdgeSafeMarginX >= 0) ? ConfigManager.CurrentConfig.EdgeSafeMarginX : ((ConfigManager.CurrentConfig.EdgeSafeMargin > 0) ? ConfigManager.CurrentConfig.EdgeSafeMargin : 16.0);
+		double marginY = (ConfigManager.CurrentConfig.EdgeSafeMarginY >= 0) ? ConfigManager.CurrentConfig.EdgeSafeMarginY : ((ConfigManager.CurrentConfig.EdgeSafeMargin > 0) ? ConfigManager.CurrentConfig.EdgeSafeMargin : 16.0);
+		if (EdgeSafeMarginXSlider != null)
+		{
+			EdgeSafeMarginXSlider.Value = marginX;
+		}
+		if (EdgeSafeMarginXValueText != null)
+		{
+			EdgeSafeMarginXValueText.Text = $"{marginX:0} px";
+		}
+		if (EdgeSafeMarginYSlider != null)
+		{
+			EdgeSafeMarginYSlider.Value = marginY;
+		}
+		if (EdgeSafeMarginYValueText != null)
+		{
+			EdgeSafeMarginYValueText.Text = $"{marginY:0} px";
+		}
+
+		// AutoStart
+		_isLoadingAutoStartState = true;
+		try
+		{
+			_loadedAutoStartEnabled = ConfigManager.IsAutoStartEnabled();
+			_loadedAutoStartAsAdmin = ConfigManager.CurrentConfig.AutoStartAsAdmin;
+			AutoStartCheckBox.IsChecked = _loadedAutoStartEnabled;
+			if (AutoStartAsAdminCheckBox != null)
+			{
+				AutoStartAsAdminCheckBox.IsChecked = _loadedAutoStartAsAdmin;
+			}
+		}
+		finally
+		{
+			_isLoadingAutoStartState = false;
+		}
+
+		// Language & Previews
+		SetComboBoxSelectedValue(LanguageComboBox, ConfigManager.CurrentConfig.Language ?? "Auto");
+		ApplyLocalization();
+		UpdateColorPreviews();
+
+		// Profiles
+		_selectedProfile = ConfigManager.CurrentConfig.Profiles.FirstOrDefault();
+		if (_selectedProfile != null)
+		{
+			ProfilesListBox.SelectedItem = _selectedProfile;
+			ApplySectorCountSelectionToUi(_selectedProfile.SectorCount);
+		}
+
+		// System Update Settings
+		if (AutoCheckUpdateCheckBox != null)
+		{
+			AutoCheckUpdateCheckBox.IsChecked = ConfigManager.CurrentConfig.AutoCheckUpdate;
+		}
+		SetComboBoxSelectedValue(UpdateChannelComboBox, ConfigManager.CurrentConfig.UpdateChannel ?? "Stable");
+		string savedProxy = ConfigManager.CurrentConfig.UpdateProxySource ?? "ghfast";
+		if (savedProxy == "ghproxy" || savedProxy == "moeyy") savedProxy = "ghfast";
+		else if (savedProxy == "akams") savedProxy = "gh-proxy";
+		SetComboBoxSelectedValue(UpdateProxyComboBox, savedProxy);
+
+		bool isStandalone = UpdateManager.Instance.IsCurrentInstallationStandalone();
+		if (UpdatePkgStandaloneRadio != null) UpdatePkgStandaloneRadio.IsChecked = isStandalone;
+		if (UpdatePkgLightweightRadio != null) UpdatePkgLightweightRadio.IsChecked = !isStandalone;
+
+		UpdateSoftwareUpdateStatusUi();
+		UpdateOcrBadgeUi();
+		UpdateRollbackBadgeAndCandidates();
+		UpdateLayerSwitchTriggerUi();
+		if (ConfigManager.CurrentConfig != null && ConfigManager.CurrentConfig.MappingsCanvasColumnWidth >= 300.0)
+		{
+			if (Tab2LeftColumn != null && Tab2RightColumn != null)
+			{
+				Tab2LeftColumn.Width = new GridLength(1.0, GridUnitType.Star);
+				Tab2RightColumn.Width = new GridLength(ConfigManager.CurrentConfig.MappingsCanvasColumnWidth, GridUnitType.Pixel);
+			}
+		}
+		else
+		{
+			if (Tab2LeftColumn != null && Tab2RightColumn != null)
+			{
+				Tab2LeftColumn.Width = new GridLength(1.15, GridUnitType.Star);
+				Tab2RightColumn.Width = new GridLength(1.0, GridUnitType.Star);
+			}
+		}
+	}
+
+	private void UpdateSoftwareUpdateStatusUi()
+	{
+		if (UpdateStatusBadgeText == null || UpdateStatusDescText == null) return;
+
+		// 1. 如果已就绪安装（更新包或回退包下载完成）
+		if (UpdateReadyToInstallPanel?.Visibility == Visibility.Visible)
+		{
+			if (UpdateStatusBadge != null)
+			{
+				UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 16, 185, 129));
+			}
+			UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+			if (_selectedRollbackRelease != null && (UpdateNewVersionPanel == null || UpdateNewVersionPanel.Visibility != Visibility.Visible))
+			{
+				UpdateStatusBadgeText.Text = I18n.T("UpdateStatusRollbackComplete");
+			}
+			else
+			{
+				UpdateStatusBadgeText.Text = I18n.T("UpdateStatusDownloadComplete");
+			}
+			return;
+		}
+
+		// 2. 如果正在下载中，保持当前下载状态
+		if (UpdateDownloadProgressPanel?.Visibility == Visibility.Visible)
+		{
+			return;
+		}
+
+		// 3. 如果在检查更新中
+		if (CheckUpdateNowBtn != null && !CheckUpdateNowBtn.IsEnabled && UpdateStatusBadgeText.Text == I18n.T("UpdateStatusChecking"))
+		{
+			return;
+		}
+
+		// 4. 根据最新 release 信息判断
+		if (_latestReleaseInfo != null)
+		{
+			if (_latestReleaseInfo.IsNewerVersion)
+			{
+				UpdateStatusBadgeText.Text = string.Format(I18n.T("UpdateStatusFoundNew"), _latestReleaseInfo.TagName);
+				UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(245, 158, 11));
+				if (UpdateStatusBadge != null)
+				{
+					UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 245, 158, 11));
+				}
+				UpdateStatusDescText.Text = string.Format(I18n.T("UpdateStatusFoundNewDesc"), _latestReleaseInfo.TagName, $"{_latestReleaseInfo.PublishedAt:yyyy-MM-dd HH:mm}");
+
+				if (UpdateNewVersionTagText != null)
+				{
+					UpdateNewVersionTagText.Text = string.Format(I18n.T("UpdateNewVersionTag"), _latestReleaseInfo.TagName);
+				}
+				if (UpdateReleaseChannelTag != null)
+				{
+					UpdateReleaseChannelTag.Text = _latestReleaseInfo.IsPrerelease ? I18n.T("ReleaseChannelBeta") : I18n.T("ReleaseChannelStable");
+				}
+				if (UpdateReleaseDateText != null)
+				{
+					UpdateReleaseDateText.Text = string.Format(I18n.T("UpdateReleaseDateFmt"), $"{_latestReleaseInfo.PublishedAt:yyyy-MM-dd HH:mm}");
+				}
+			}
+			else
+			{
+				UpdateStatusBadgeText.Text = I18n.T("UpdateStatusUpToDate");
+				UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+				if (UpdateStatusBadge != null)
+				{
+					UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 16, 185, 129));
+				}
+				UpdateStatusDescText.Text = string.Format(I18n.T("UpdateStatusUpToDateDesc"), AppVersionInfo.DisplayVersion, _latestReleaseInfo.TagName, ConfigManager.CurrentConfig?.LastCheckUpdateTime ?? "");
+			}
+		}
+		else
+		{
+			// 初始默认状态（未在本次运行检查线上版本，使用上次持久化的检查时间）
+			UpdateStatusBadgeText.Text = I18n.T("UpdateStatusLatest");
+			if (UpdateStatusBadge != null)
+			{
+				UpdateStatusBadge.SetResourceReference(Border.BackgroundProperty, "NavTabActiveBgBrush");
+			}
+			UpdateStatusBadgeText.SetResourceReference(TextBlock.ForegroundProperty, "AccentPrimaryBrush");
+
+			string lastCheck = string.IsNullOrEmpty(ConfigManager.CurrentConfig?.LastCheckUpdateTime)
+				? I18n.T("UpdateLastCheckNever")
+				: ConfigManager.CurrentConfig.LastCheckUpdateTime;
+			UpdateStatusDescText.Text = string.Format(I18n.T("UpdateStatusCurrentVerDescFmt"), AppVersionInfo.DisplayVersion, lastCheck);
+		}
+	}
+
+	private void UpdateOcrBadgeUi()
+	{
+		if (Tab4OcrProviderBadge == null && FocusOcrStatusText == null) return;
+		OcrSettings cfg = ConfigManager.CurrentConfig?.OcrConfig ?? new OcrSettings();
+		string prov = cfg.Provider switch
+		{
+			"Ai" => string.IsNullOrWhiteSpace(cfg.AiModel) ? I18n.T("OcrProviderAi") : $"{I18n.T("OcrProviderAi")} ({cfg.AiModel})",
+			"Custom" => I18n.T("OcrProviderCustom"),
+			"Cloud" => $"☁️ {cfg.CloudProvider} Cloud OCR",
+			_ => $"🖥️ {I18n.T("OcrBadgeLocalEngine")}"
+		};
+		if (Tab4OcrProviderBadge != null)
+		{
+			Tab4OcrProviderBadge.Text = prov;
+		}
+		if (FocusOcrStatusText != null)
+		{
+			FocusOcrStatusText.Text = string.Format(I18n.T("FocusOcrStatusFmt"), prov);
+		}
+	}
+
+	[DllImport("user32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static extern bool SetForegroundWindow(nint hWnd);
+
+	public bool IsCurrentThemeDark()
+	{
+		string theme = ConfigManager.CurrentConfig?.AppTheme ?? "System";
+		if (string.Equals(theme, "System", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(theme))
+		{
+			return AppThemeManager.IsWindowsInDarkTheme();
+		}
+		return !string.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase);
+	}
+
+	public void UpdateLogoTheme(bool isDark)
+	{
+		try
+		{
+			string logoResource = isDark ? "logo_dark.png" : "logo_light.png";
+			Uri uri;
+			try
+			{
+				uri = new Uri($"pack://application:,,,/StarPie;component/{logoResource}", UriKind.Absolute);
+			}
+			catch
+			{
+				uri = new Uri(logoResource, UriKind.Relative);
+			}
+
+			BitmapImage bitmap = new BitmapImage();
+			bitmap.BeginInit();
+			bitmap.UriSource = uri;
+			bitmap.CacheOption = BitmapCacheOption.OnLoad;
+			bitmap.EndInit();
+			((Freezable)bitmap).Freeze();
+
+			if (SidebarLogoImage != null)
+			{
+				SidebarLogoImage.Source = bitmap;
+			}
+			if (AboutLogoImage != null)
+			{
+				AboutLogoImage.Source = bitmap;
+			}
+		}
+		catch (Exception ex)
+		{
+			Debug.WriteLine($"[UpdateLogoTheme] Failed to load logo: {ex.Message}");
+		}
+	}
+
+	private void LanguageComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && LanguageComboBox.SelectedItem is ComboBoxItem { Tag: string tag })
+		{
+			ConfigManager.CurrentConfig.Language = tag;
+			I18n.SetLanguage(tag);
+			ApplyLocalization();
+			ConfigManager.SaveConfig();
+		}
+	}
+
+	public void ApplyConfigMode(string mode, bool save = true)
+	{
+		bool isSimple = !string.Equals(mode, "Pro", StringComparison.OrdinalIgnoreCase) &&
+						!string.Equals(mode, "Advanced", StringComparison.OrdinalIgnoreCase);
+
+		string normalizedMode = isSimple ? "Simple" : "Pro";
+		if (ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.ConfigMode = normalizedMode;
+		}
+
+		// 1. Tab 0 触发与场景隔离: 隐藏修饰键硬件旁路、鼠标手势卡片、外甩自定义动作、屏幕边缘防溢出
+		if (Tab0_ModifierBypassPanel != null)
+		{
+			Tab0_ModifierBypassPanel.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab0_MouseGesturesCardBorder != null)
+		{
+			Tab0_MouseGesturesCardBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab0_CancelActionOuterBorder != null)
+		{
+			Tab0_CancelActionOuterBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab0_ScreenEdgeCardBorder != null)
+		{
+			Tab0_ScreenEdgeCardBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab0_VolumeDragCardBorder != null)
+		{
+			Tab0_VolumeDragCardBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (SoundSubEventsBorder != null)
+		{
+			SoundSubEventsBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (OpenCustomSoundConfigButton != null)
+		{
+			OpenCustomSoundConfigButton.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (isSimple && CustomSoundStudioBorder != null)
+		{
+			CustomSoundStudioBorder.Visibility = Visibility.Collapsed;
+		}
+
+		// 2. Tab 1 外观与形态: 隐藏独立字体选择与文字位置偏移
+		if (Tab1_FontFamilyPanel != null)
+		{
+			Tab1_FontFamilyPanel.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab1_TextOffsetPanel != null)
+		{
+			Tab1_TextOffsetPanel.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab1_CoreFontFamilyPanel != null)
+		{
+			Tab1_CoreFontFamilyPanel.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab1_LayerIndicatorCardBorder != null)
+		{
+			Tab1_LayerIndicatorCardBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+
+		// 3. Tab 2 手势与动作: 隐藏平铺高级正则/间距卡片与紧凑全览列表分段切换
+		if (Tab2_TileSettingsCardBorder != null)
+		{
+			Tab2_TileSettingsCardBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab2_MultiLayerHeaderPanel != null)
+		{
+			Tab2_MultiLayerHeaderPanel.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab2_MappingsViewModeBorder != null)
+		{
+			Tab2_MappingsViewModeBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (isSimple && MappingsViewModeCanvasRadio != null && MappingsViewModeCanvasRadio.IsChecked != true)
+		{
+			MappingsViewModeCanvasRadio.IsChecked = true;
+		}
+
+		// 4. Tab 3 高级系统: 隐藏低频 OCR接口/内存/备份/日志卡片
+		if (Tab3_OcrCardBorder != null)
+		{
+			Tab3_OcrCardBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+		if (Tab3_MemoryCardBorder != null)
+		{
+			Tab3_MemoryCardBorder.Visibility = Visibility.Visible;
+		}
+		if (Tab3_BackupCardBorder != null)
+		{
+			Tab3_BackupCardBorder.Visibility = Visibility.Visible;
+		}
+		if (Tab3_LogsCardBorder != null)
+		{
+			Tab3_LogsCardBorder.Visibility = isSimple ? Visibility.Collapsed : Visibility.Visible;
+		}
+
+		UpdateFocusActionTypeItemsSource();
+
+		ApplySidebarLayout();
+
+		// 5. 单选按钮状态同步
+		bool oldUpdating = _isUpdatingUi;
+		try
+		{
+			_isUpdatingUi = true;
+			if (ConfigModeSimpleRadio != null) ConfigModeSimpleRadio.IsChecked = isSimple;
+			if (ConfigModeProRadio != null) ConfigModeProRadio.IsChecked = !isSimple;
+		}
+		finally
+		{
+			_isUpdatingUi = oldUpdating;
+		}
+
+		if (save && _isUiInitialized && !_isUiInitializing)
+		{
+			ConfigManager.SaveConfig();
+		}
+	}
+
+	private void ConfigModeRadio_Checked(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi) return;
+		if (sender == ConfigModeSimpleRadio)
+		{
+			ApplyConfigMode("Simple", true);
+		}
+		else if (sender == ConfigModeProRadio)
+		{
+			ApplyConfigMode("Pro", true);
+		}
+	}
+
+	public void ApplyLocalization()
+	{
+		base.Title = I18n.T("WindowTitle");
+		if (ConfigModeSimpleRadio != null)
+		{
+			ConfigModeSimpleRadio.Content = I18n.T("ConfigModeSimpleRadio");
+		}
+		if (ConfigModeProRadio != null)
+		{
+			ConfigModeProRadio.Content = I18n.T("ConfigModeProRadio");
+		}
+		ApplyConfigMode(ConfigManager.CurrentConfig?.ConfigMode ?? "Simple", false);
+		if (SidebarSubtitleText != null)
+		{
+			SidebarSubtitleText.Text = I18n.T("AppSubtitle");
+		}
+		if (NavTab0Text != null)
+		{
+			NavTab0Text.Text = I18n.T("TabTrigger");
+		}
+		if (NavTab1Text != null)
+		{
+			NavTab1Text.Text = I18n.T("TabAppearance");
+		}
+		if (NavTab2Text != null)
+		{
+			NavTab2Text.Text = I18n.T("TabGestures");
+		}
+		if (NavTab3Text != null)
+		{
+			NavTab3Text.Text = I18n.T("TabAdvanced");
+		}
+		if (NavTab4Text != null)
+		{
+			NavTab4Text.Text = I18n.T("TabAbout");
+		}
+		if (NavTab5Text != null)
+		{
+			NavTab5Text.Text = I18n.T("TabPlugins");
+		}
+		ApplyPluginsPageLocalization();
+		if (SidebarToggleButton != null)
+		{
+			string toggleText = I18n.T(_isSidebarCollapsed ? "SidebarExpand" : "SidebarCollapse");
+			SidebarToggleButton.ToolTip = toggleText;
+			System.Windows.Automation.AutomationProperties.SetName(SidebarToggleButton, toggleText);
+		}
+		if (BottomNoteText != null)
+		{
+			BottomNoteText.Text = I18n.T("BottomStatusNote");
+		}
+		if (SaveButton != null)
+		{
+			SaveButton.Content = I18n.T("BtnSave");
+		}
+		if (CloseButton != null)
+		{
+			CloseButton.Content = I18n.T("BtnClose");
+		}
+		if (TriggerPageHeader != null)
+		{
+			TriggerPageHeader.Text = I18n.T("TriggerHeader");
+		}
+		if (SoundEffectsTitleText != null) SoundEffectsTitleText.Text = I18n.T("SoundEffectsTitle");
+		if (SoundEffectsDescText != null) SoundEffectsDescText.Text = I18n.T("SoundEffectsDesc");
+		if (EnableSoundEffectsTitleText != null) EnableSoundEffectsTitleText.Text = I18n.T("EnableSoundEffectsTitle");
+		if (EnableSoundEffectsSubText != null) EnableSoundEffectsSubText.Text = I18n.T("EnableSoundEffectsSub");
+		if (SoundThemeLabelText != null) SoundThemeLabelText.Text = I18n.T("SoundThemeLabel");
+		if (SoundThemeDescText != null) SoundThemeDescText.Text = I18n.T("SoundThemeDesc");
+		if (SoundVolumeTitleText != null) SoundVolumeTitleText.Text = I18n.T("SoundVolumeTitle");
+		if (SoundVolumeDescText != null) SoundVolumeDescText.Text = I18n.T("SoundVolumeDesc");
+		if (SoundPreviewButton != null) SoundPreviewButton.Content = I18n.T("BtnSoundPreview");
+		if (SoundSubEventsTitleText != null) SoundSubEventsTitleText.Text = I18n.T("SoundSubEventsTitle");
+		if (SoundOnPopupCheckBox != null) SoundOnPopupCheckBox.Content = I18n.T("SoundOnPopup");
+		if (SoundOnHoverCheckBox != null) SoundOnHoverCheckBox.Content = I18n.T("SoundOnHover");
+		if (SoundOnExpandCheckBox != null) SoundOnExpandCheckBox.Content = I18n.T("SoundOnExpand");
+		if (SoundOnExecuteCheckBox != null) SoundOnExecuteCheckBox.Content = I18n.T("SoundOnExecute");
+		if (SoundOnCancelCheckBox != null) SoundOnCancelCheckBox.Content = I18n.T("SoundOnCancel");
+		if (OpenCustomSoundConfigButton != null) OpenCustomSoundConfigButton.Content = I18n.T("CustomSoundConfigBtn");
+		if (LongPressTriggerTitleText != null)
+		{
+			LongPressTriggerTitleText.Text = I18n.T("LongPressTriggerTitle");
+		}
+		if (LongPressTriggerDescText != null)
+		{
+			LongPressTriggerDescText.Text = I18n.T("LongPressTriggerDesc");
+		}
+		if (GestureTitleText != null)
+		{
+			GestureTitleText.Text = I18n.T("GestureTitle");
+		}
+		if (TouchGestureTitleText != null)
+		{
+			TouchGestureTitleText.Text = I18n.T("TouchGestureTitle");
+			TouchGestureDescText.Text = I18n.T("TouchGestureDesc");
+			TouchGestureEnableText.Text = I18n.T("TouchGestureEnable");
+			TouchPenGuardText.Text = I18n.T("TouchPenGuard");
+			TouchHoldLabelText.Text = I18n.T("TouchHoldLabel");
+			TouchMinSeparationLabelText.Text = I18n.T("TouchMinSeparationLabel");
+			TouchMaxSeparationLabelText.Text = I18n.T("TouchMaxSeparationLabel");
+			TouchSensitivityLabelText.Text = I18n.T("TouchSensitivityLabel");
+			TouchApplyButton.Content = I18n.T("TouchApply");
+		}
+		if (GestureDescText != null)
+		{
+			GestureDescText.Text = I18n.T("GestureDesc");
+		}
+		if (GestureEnableText != null)
+		{
+			GestureEnableText.Text = I18n.T("GestureEnableText");
+		}
+		if (GestureEnableDescText != null)
+		{
+			GestureEnableDescText.Text = I18n.T("GestureEnableDescText");
+		}
+		if (GestureTriggerLabelText != null)
+		{
+			GestureTriggerLabelText.Text = I18n.T("GestureTriggerLabelText");
+		}
+		if (GestureHintPlaceText != null)
+		{
+			GestureHintPlaceText.Text = I18n.T("GestureHintPlaceText");
+		}
+		if (GestureSensitivityTitleText != null)
+		{
+			GestureSensitivityTitleText.Text = I18n.T("GestureSensitivityTitle");
+		}
+		if (MouseReleaseDebounceTitleText != null)
+		{
+			MouseReleaseDebounceTitleText.Text = I18n.T("MouseReleaseDebounceTitle");
+		}
+		if (MouseReleaseDebounceDescText != null)
+		{
+			MouseReleaseDebounceDescText.Text = I18n.T("MouseReleaseDebounceDesc");
+		}
+		if (MouseReleaseDebounceValueDescText != null)
+		{
+			MouseReleaseDebounceValueDescText.Text = I18n.T("MouseReleaseDebounceValueDesc");
+		}
+		if (GestureMappingTitleText != null)
+		{
+			GestureMappingTitleText.Text = I18n.T("GestureMappingTitleText");
+		}
+		if (TileGlobalTitleText != null)
+		{
+			TileGlobalTitleText.Text = I18n.T("TileGlobalTitleText");
+		}
+		if (TileGlobalDescText != null)
+		{
+			TileGlobalDescText.Text = I18n.T("TileGlobalDescText");
+		}
+		if (TileMinimizeText != null)
+		{
+			TileMinimizeText.Text = I18n.T("TileMinimizeText");
+		}
+		if (TileExcludeText != null)
+		{
+			TileExcludeText.Text = I18n.T("TileExcludeText");
+		}
+		if (TileMarginText != null)
+		{
+			TileMarginText.Text = I18n.T("TileMarginText");
+		}
+		if (TileGapText != null)
+		{
+			TileGapText.Text = I18n.T("TileGapText");
+		}
+		if (TileCycleRangeText != null)
+		{
+			TileCycleRangeText.Text = I18n.T("TileCycleRangeText");
+		}
+		if (CancelActionTitleText != null)
+		{
+			CancelActionTitleText.Text = I18n.T("CancelActionTitleText");
+		}
+		if (CancelActionDescText != null)
+		{
+			CancelActionDescText.Text = I18n.T("CancelActionDescText");
+		}
+		if (CancelActionEnableText != null)
+		{
+			CancelActionEnableText.Text = I18n.T("CancelActionEnableText");
+		}
+		if (TriggerPageSubheader != null)
+		{
+			TriggerPageSubheader.Text = I18n.T("TriggerSubheader");
+		}
+		if (TriggerRecorderTitleText != null)
+		{
+			TriggerRecorderTitleText.Text = I18n.T("TriggerRecorderTitle");
+		}
+		if (TriggerRecorderDescText != null)
+		{
+			TriggerRecorderDescText.Text = I18n.T("TriggerRecorderDesc");
+		}
+		if (CurrentBindingLabelText != null)
+		{
+			CurrentBindingLabelText.Text = I18n.T("CurrentBindingLabel");
+		}
+		if (RecordTriggerButton != null && !_isRecordingTrigger)
+		{
+			RecordTriggerButton.Content = I18n.T("BtnRecordTrigger");
+		}
+		if (ResetDefaultTriggerButton != null)
+		{
+			ResetDefaultTriggerButton.Content = I18n.T("BtnResetDefaultTrigger");
+		}
+		UpdateTriggerBadgeDisplay();
+		if (SensitivityTitleText != null)
+		{
+			SensitivityTitleText.Text = I18n.T("SensitivityTitle");
+		}
+		if (SensitivityDescText != null)
+		{
+			SensitivityDescText.Text = I18n.T("SensitivityDesc");
+		}
+		if (AnimSpeedTitleText != null)
+		{
+			AnimSpeedTitleText.Text = I18n.T("AnimSpeedTitle");
+		}
+		if (AnimSpeedDescText != null)
+		{
+			AnimSpeedDescText.Text = I18n.T("AnimSpeedDesc");
+		}
+		if (AnimSpeedElegantRadio != null)
+		{
+			AnimSpeedElegantRadio.Content = I18n.T("AnimSpeedElegant");
+		}
+		if (AnimSpeedBalancedRadio != null)
+		{
+			AnimSpeedBalancedRadio.Content = I18n.T("AnimSpeedBalanced");
+		}
+		if (AnimSpeedFastRadio != null)
+		{
+			AnimSpeedFastRadio.Content = I18n.T("AnimSpeedFast");
+		}
+		if (SceneIsolationTitleText != null)
+		{
+			SceneIsolationTitleText.Text = I18n.T("SceneIsolationTitle");
+		}
+		if (SceneIsolationDescText != null)
+		{
+			SceneIsolationDescText.Text = I18n.T("SceneIsolationDesc");
+		}
+		if (FullScreenOptionTitleText != null)
+		{
+			FullScreenOptionTitleText.Text = I18n.T("FullScreenOption");
+		}
+		if (FullScreenOptionDescText != null)
+		{
+			FullScreenOptionDescText.Text = I18n.T("FullScreenOptionDesc");
+		}
+		if (ModifierPassTitleText != null)
+		{
+			ModifierPassTitleText.Text = I18n.T("ModifierPassTitle");
+		}
+		if (CtrlModifierCheckBox != null)
+		{
+			CtrlModifierCheckBox.Content = I18n.T("ModifierCtrl");
+		}
+		if (ShiftModifierCheckBox != null)
+		{
+			ShiftModifierCheckBox.Content = I18n.T("ModifierShift");
+		}
+		if (AltModifierCheckBox != null)
+		{
+			AltModifierCheckBox.Content = I18n.T("ModifierAlt");
+		}
+		if (IsolationModeTitleText != null)
+		{
+			IsolationModeTitleText.Text = I18n.T("IsolationModeTitle");
+		}
+		if (IsolationBlacklistRadio != null)
+		{
+			IsolationBlacklistRadio.Content = I18n.T("IsolationBlacklistRadio");
+		}
+		if (IsolationWhitelistRadio != null)
+		{
+			IsolationWhitelistRadio.Content = I18n.T("IsolationWhitelistRadio");
+		}
+		if (ProcessListDescText != null)
+		{
+			bool flag = string.Equals(ConfigManager.CurrentConfig?.IsolationMode, "Whitelist", StringComparison.OrdinalIgnoreCase);
+			ProcessListDescText.Text = (flag ? I18n.T("WhitelistDesc") : I18n.T("BlacklistDesc"));
+		}
+		if (BrowseBlacklistButton != null)
+		{
+			BrowseBlacklistButton.Content = I18n.T("BtnPickProcess");
+		}
+		if (AddBlacklistButton != null)
+		{
+			AddBlacklistButton.Content = I18n.T("BtnAddProcess");
+		}
+		if (DeleteBlacklistButton != null)
+		{
+			DeleteBlacklistButton.Content = I18n.T("BtnDeleteProcess");
+		}
+		if (NewBlacklistProcessTextBox != null)
+		{
+			NewBlacklistProcessTextBox.ToolTip = I18n.T("BlacklistPlaceholder");
+		}
+		if (OuterEscapeTitleText != null)
+		{
+			OuterEscapeTitleText.Text = I18n.T("OuterEscapeTitle");
+		}
+		if (OuterEscapeDescText != null)
+		{
+			OuterEscapeDescText.Text = I18n.T("OuterEscapeDesc");
+		}
+		if (OuterEscapeCheckboxTitleText != null)
+		{
+			OuterEscapeCheckboxTitleText.Text = I18n.T("OuterEscapeCheckbox");
+		}
+		if (OuterEscapeDistanceTitleText != null)
+		{
+			OuterEscapeDistanceTitleText.Text = I18n.T("OuterEscapeDistanceTitle");
+		}
+		if (OuterEscapeDistanceDescText != null)
+		{
+			OuterEscapeDistanceDescText.Text = I18n.T("OuterEscapeDistanceDesc");
+		}
+		if (VolumeDragTitleText != null)
+		{
+			VolumeDragTitleText.Text = I18n.T("VolumeDragTitle");
+		}
+		if (VolumeDragDescText != null)
+		{
+			VolumeDragDescText.Text = I18n.T("VolumeDragDesc");
+		}
+		if (VolumeCancelRatioLabel != null)
+		{
+			VolumeCancelRatioLabel.Text = I18n.T("VolumeCancelRatioTitle");
+		}
+		if (VolumeCancelRatioDesc != null)
+		{
+			VolumeCancelRatioDesc.Text = I18n.T("VolumeCancelRatioDesc");
+		}
+		if (VolumeFlickFarLabel != null)
+		{
+			VolumeFlickFarLabel.Text = I18n.T("VolumeFlickFarTitle");
+		}
+		if (VolumeFlickFarDesc != null)
+		{
+			VolumeFlickFarDesc.Text = I18n.T("VolumeFlickFarDesc");
+		}
+		if (VolumeFlickJumpLabel != null)
+		{
+			VolumeFlickJumpLabel.Text = I18n.T("VolumeFlickJumpTitle");
+		}
+		if (VolumeFlickJumpDesc != null)
+		{
+			VolumeFlickJumpDesc.Text = I18n.T("VolumeFlickJumpDesc");
+		}
+		if (ThemeCustomItem != null)
+		{
+			ThemeCustomItem.Content = I18n.T("ThemeCustom");
+		}
+		if (SubThemeCustomItem != null)
+		{
+			SubThemeCustomItem.Content = I18n.T("ThemeCustom");
+		}
+		if (NewCustomColorPresetButton != null)
+		{
+			NewCustomColorPresetButton.Content = I18n.T("NewCustomPresetButton");
+		}
+		if (RenameCustomColorPresetButton != null)
+		{
+			RenameCustomColorPresetButton.Content = I18n.T("RenameCustomPresetButton");
+		}
+		if (DeleteCustomColorPresetButton != null)
+		{
+			DeleteCustomColorPresetButton.Content = I18n.T("DeletePresetButton");
+		}
+		if (SaveAsNewPresetButton != null)
+		{
+			SaveAsNewPresetButton.Content = I18n.T("SaveAsNewPresetButton");
+		}
+		if (DeletePresetInPanelButton != null)
+		{
+			DeletePresetInPanelButton.Content = I18n.T("DeletePresetButton");
+		}
+		if (CustomColorsExpanderTitleText != null)
+		{
+			CustomColorsExpanderTitleText.Text = I18n.T("CustomColorsExpanderTitle");
+		}
+		if (CustomColorsExpanderDescText != null)
+		{
+			CustomColorsExpanderDescText.Text = I18n.T("CustomColorsExpanderDesc");
+		}
+		if (WheelFontFamilyTitleText != null)
+		{
+			WheelFontFamilyTitleText.Text = I18n.T("WheelFontFamily");
+		}
+		if (LayoutTargetGlobalRadio != null)
+		{
+			LayoutTargetGlobalRadio.Content = I18n.T("LayoutTargetGlobal");
+		}
+		if (LayoutTargetSlotRadio != null)
+		{
+			LayoutTargetSlotRadio.Content = I18n.T("LayoutTargetSlot");
+		}
+		if (ResetSlotLayoutButton != null)
+		{
+			ResetSlotLayoutButton.Content = I18n.T("ResetToGlobalLayout");
+		}
+		if (SectorTextColorTitleText != null)
+		{
+			SectorTextColorTitleText.Text = I18n.T("SectorTextColor");
+		}
+		if (CoreTextOptionsSectionTitle != null)
+		{
+			CoreTextOptionsSectionTitle.Text = I18n.T("CoreTextOptions");
+		}
+		if (CoreFontFamilyTitleText != null)
+		{
+			CoreFontFamilyTitleText.Text = I18n.T("CoreFontFamily");
+		}
+		if (CoreFontSizeTitleText != null)
+		{
+			CoreFontSizeTitleText.Text = I18n.T("CoreFontSize");
+		}
+		if (CoreTextColorTitleText != null)
+		{
+			CoreTextColorTitleText.Text = I18n.T("CoreTextColor");
+		}
+		if (CoreTextColorAutoCheckBox != null)
+		{
+			CoreTextColorAutoCheckBox.Content = I18n.T("CoreTextColorAuto");
+		}
+		if (ShowSelectedActionTextCheckBox != null)
+		{
+			ShowSelectedActionTextCheckBox.Content = I18n.T("ShowSelectedActionText");
+		}
+		if (FindName("OlderMilestonesExpander") is Expander expander)
+		{
+			expander.Header = I18n.T("MilestonesOlderExpander");
+		}
+		if (AppearancePageHeader != null)
+		{
+			AppearancePageHeader.Text = I18n.T("AppearanceHeader");
+		}
+		if (AppearancePageSubheader != null)
+		{
+			AppearancePageSubheader.Text = I18n.T("AppearanceSubheader");
+		}
+		if (ResetDimensionsButton != null)
+		{
+			ResetDimensionsButton.Content = I18n.T("BtnResetGeometry");
+		}
+		if (CoreTransformSectionTitle != null)
+		{
+			CoreTransformSectionTitle.Text = I18n.T("CoreTransformSectionTitle");
+		}
+		if (CoreIconScaleTitleText != null)
+		{
+			CoreIconScaleTitleText.Text = I18n.T("CoreIconScaleTitle");
+		}
+		if (CoreImageOffsetXTitleText != null)
+		{
+			CoreImageOffsetXTitleText.Text = I18n.T("CoreImageOffsetXTitle");
+		}
+		if (CoreImageOffsetYTitleText != null)
+		{
+			CoreImageOffsetYTitleText.Text = I18n.T("CoreImageOffsetYTitle");
+		}
+		if (ResetCoreTransformButton != null)
+		{
+			ResetCoreTransformButton.Content = I18n.T("BtnResetCoreTransform");
+		}
+		if (CoreImagePerformanceTipText != null)
+		{
+			CoreImagePerformanceTipText.Text = I18n.T("CoreImagePerformanceTip");
+		}
+		if (EnableMultiTierCheckBox != null)
+		{
+			EnableMultiTierCheckBox.Content = I18n.T("EnableMultiTier");
+		}
+		if (SidebarScaleTitleText != null)
+		{
+			SidebarScaleTitleText.Text = I18n.T("SettingsUiScale");
+		}
+		if (UiScaleSlider != null)
+		{
+			UiScaleSlider.ToolTip = I18n.T("SettingsUiScaleTip");
+		}
+		
+		if (SubmenuStyleWheelItem != null) SubmenuStyleWheelItem.Content = I18n.T("SubmenuStyleWheel");
+		if (SubmenuStyleFanItem != null) SubmenuStyleFanItem.Content = I18n.T("SubmenuStyleFan");
+		if (SubmenuStyleDescTextBlock != null) SubmenuStyleDescTextBlock.Text = I18n.T("SubmenuStyleDesc");
+		if (AutoExpandSubRingsCheckBox != null) AutoExpandSubRingsCheckBox.Content = I18n.T("AutoExpandSubRingsTitle");
+		if (AutoExpandSubRingsDescText != null) AutoExpandSubRingsDescText.Text = I18n.T("AutoExpandSubRingsDesc");
+
+		// Layer Indicator
+		if (LayerIndicatorSectionTitle != null) LayerIndicatorSectionTitle.Text = I18n.T("LayerIndicatorSectionTitle");
+		if (LayerIndicatorSectionDesc != null) LayerIndicatorSectionDesc.Text = I18n.T("LayerIndicatorSectionDesc");
+		if (ShowLayerIndicatorCheckBox != null) ShowLayerIndicatorCheckBox.Content = I18n.T("ShowLayerIndicator");
+		if (LayerIndicatorStyleTitleText != null) LayerIndicatorStyleTitleText.Text = I18n.T("LayerIndicatorStyleTitle");
+		if (LayerIndicatorIconTitleText != null) LayerIndicatorIconTitleText.Text = I18n.T("LayerIndicatorIconTitle");
+		if (LayerIndicatorCornerRadiusTitleText != null) LayerIndicatorCornerRadiusTitleText.Text = I18n.T("LayerIndicatorCornerRadiusTitle");
+		if (LayerIndicatorFontSizeTitleText != null) LayerIndicatorFontSizeTitleText.Text = I18n.T("LayerIndicatorFontSizeTitle");
+		if (LayerIndicatorOffsetYTitleText != null) LayerIndicatorOffsetYTitleText.Text = I18n.T("LayerIndicatorOffsetYTitle");
+		if (LayerIndicatorDurationTitleText != null) LayerIndicatorDurationTitleText.Text = I18n.T("LayerIndicatorDurationTitle");
+		if (ResetLayerIndicatorButton != null) ResetLayerIndicatorButton.Content = I18n.T("BtnResetLayerIndicator");
+
+		if (GesturesPageHeader != null)
+		{
+			GesturesPageHeader.Text = I18n.T("GesturesHeader");
+		}
+		if (AddProfileButton != null)
+		{
+			AddProfileButton.Content = I18n.T("BtnAddAppProfile");
+		}
+		if (AddCustomProfileButton != null)
+		{
+			AddCustomProfileButton.Content = I18n.T("BtnAddCustomProfile");
+		}
+		if (RenameProfileButton != null)
+		{
+			// 列表模式的整宽按钮用长标签；画布模式的紧凑工具条按钮
+			// （RenameProfileBtn / RenameProfileBtn2）另用短标签键。见 I18n.cs 的拆键说明。
+			RenameProfileButton.Content = I18n.T("BtnRenameCurrentProfile");
+		}
+		if (DeleteProfileButton != null)
+		{
+			DeleteProfileButton.Content = I18n.T("BtnDeleteCurrentProfile");
+		}
+		if (DuplicateProfileBtn != null)
+		{
+			DuplicateProfileBtn.Content = I18n.T("BtnDuplicateProfile");
+		}
+		if (SectorCount4Radio != null)
+		{
+			SectorCount4Radio.Content = I18n.T("SectorCount4");
+		}
+		if (SectorCount8Radio != null)
+		{
+			SectorCount8Radio.Content = I18n.T("SectorCount8");
+		}
+		if (SectorCount12Radio != null)
+		{
+			SectorCount12Radio.Content = I18n.T("SectorCount12");
+		}
+		if (AdvancedPageHeader != null)
+		{
+			AdvancedPageHeader.Text = I18n.T("AdvancedHeader");
+		}
+		if (LanguageTitleText != null)
+		{
+			LanguageTitleText.Text = I18n.T("LanguageTitle");
+		}
+		if (LanguageDescText != null)
+		{
+			LanguageDescText.Text = I18n.T("LanguageDesc");
+		}
+		if (StartupTitleText != null)
+		{
+			StartupTitleText.Text = I18n.T("StartupTitle");
+		}
+		if (StartupDescText != null)
+		{
+			StartupDescText.Text = I18n.T("StartupDesc");
+		}
+		if (ElevateTitleText != null)
+		{
+			ElevateTitleText.Text = I18n.T("ElevateTitle");
+		}
+		if (ElevateDescText != null)
+		{
+			ElevateDescText.Text = I18n.T("ElevateDesc");
+		}
+		if (ElevateButton != null)
+		{
+			ElevateButton.Content = I18n.T("BtnElevate");
+		}
+		if (MemoryOptTitleText != null)
+		{
+			MemoryOptTitleText.Text = I18n.T("MemoryTitle");
+		}
+		if (MemoryOptDescText != null)
+		{
+			MemoryOptDescText.Text = I18n.T("MemoryDesc");
+		}
+		if (TrimMemoryButton != null)
+		{
+			TrimMemoryButton.Content = I18n.T("BtnTrimMemory");
+		}
+		if (UpdateAdvancedSettingsExpanderTitle != null)
+		{
+			UpdateAdvancedSettingsExpanderTitle.Text = I18n.T("UpdateAdvancedToggleTitle");
+		}
+		if (BackupTitleText != null)
+		{
+			BackupTitleText.Text = I18n.T("BackupTitle");
+		}
+		if (BackupDescText != null)
+		{
+			BackupDescText.Text = I18n.T("BackupDesc");
+		}
+		if (ActiveProfileLabelText != null)
+		{
+			ActiveProfileLabelText.Text = I18n.T("ActiveProfileLabel");
+		}
+		if (SaveNewProfileBtn != null)
+		{
+			SaveNewProfileBtn.Content = I18n.T("BtnSaveNewProfile");
+		}
+		if (RenameProfileBtn != null)
+		{
+			RenameProfileBtn.Content = I18n.T("BtnRenameProfile");
+		}
+		if (DeleteProfileBtn != null)
+		{
+			DeleteProfileBtn.Content = I18n.T("BtnDeleteProfile");
+		}
+		if (ExportConfigButton != null)
+		{
+			ExportConfigButton.Content = I18n.T("BtnExportConfig");
+		}
+		if (ImportConfigButton != null)
+		{
+			ImportConfigButton.Content = I18n.T("BtnImportConfig");
+		}
+		if (ResetDefaultConfigBtn != null)
+		{
+			ResetDefaultConfigBtn.Content = I18n.T("BtnResetConfig");
+		}
+		if (LogsTitleText != null)
+		{
+			LogsTitleText.Text = I18n.T("LogsTitle");
+		}
+		if (LogsDescText != null)
+		{
+			LogsDescText.Text = I18n.T("LogsDesc");
+		}
+		if (OpenLogFolderButton != null)
+		{
+			OpenLogFolderButton.Content = I18n.T("BtnOpenLogFolder");
+		}
+		if (ViewTodayLogButton != null)
+		{
+			ViewTodayLogButton.Content = I18n.T("BtnViewTodayLog");
+		}
+		if (UpdateSectionTitleText != null)
+		{
+			UpdateSectionTitleText.Text = I18n.T("UpdateSectionTitle");
+		}
+		if (CheckUpdateNowBtn != null)
+		{
+			CheckUpdateNowBtn.Content = I18n.T("BtnCheckUpdate");
+		}
+		UpdateSoftwareUpdateStatusUi();
+		if (UpdateSilentCheckTitleText != null)
+		{
+			UpdateSilentCheckTitleText.Text = I18n.T("UpdateSilentCheckTitle");
+		}
+		if (UpdateSilentCheckDescText != null)
+		{
+			UpdateSilentCheckDescText.Text = I18n.T("UpdateSilentCheckDesc");
+		}
+		if (UpdateChannelTitleText != null)
+		{
+			UpdateChannelTitleText.Text = I18n.T("UpdateChannelTitle");
+		}
+		if (UpdateChannelDescText != null)
+		{
+			UpdateChannelDescText.Text = I18n.T("UpdateChannelDesc");
+		}
+		if (UpdateChannelComboBox != null && UpdateChannelComboBox.Items.Count >= 2)
+		{
+			if (UpdateChannelComboBox.Items[0] is ComboBoxItem itemStable) itemStable.Content = I18n.T("UpdateChannelStable");
+			if (UpdateChannelComboBox.Items[1] is ComboBoxItem itemBeta) itemBeta.Content = I18n.T("UpdateChannelBeta");
+		}
+		if (UpdateProxyTitleText != null)
+		{
+			UpdateProxyTitleText.Text = I18n.T("UpdateProxyTitle");
+		}
+		if (UpdateProxyDescText != null)
+		{
+			UpdateProxyDescText.Text = I18n.T("UpdateProxyDesc");
+		}
+		if (UpdateProxyComboBox != null && UpdateProxyComboBox.Items.Count >= 4)
+		{
+			if (UpdateProxyComboBox.Items[0] is ComboBoxItem itemGh) itemGh.Content = I18n.T("UpdateProxyGhproxy");
+			if (UpdateProxyComboBox.Items[1] is ComboBoxItem itemMo) itemMo.Content = I18n.T("UpdateProxyMoeyy");
+			if (UpdateProxyComboBox.Items[2] is ComboBoxItem itemAk) itemAk.Content = I18n.T("UpdateProxyAkams");
+			if (UpdateProxyComboBox.Items[3] is ComboBoxItem itemDir) itemDir.Content = I18n.T("UpdateProxyDirect");
+		}
+		if (RollbackSectionTitleText != null)
+		{
+			RollbackSectionTitleText.Text = I18n.T("RollbackSectionTitle");
+		}
+		if (RollbackSectionDescText != null)
+		{
+			RollbackSectionDescText.Text = I18n.T("RollbackSectionDesc");
+		}
+		if (StartRollbackBtn != null)
+		{
+			StartRollbackBtn.Content = I18n.T("BtnRollback");
+		}
+		UpdateRollbackBadgeAndCandidates();
+		if (ContributorsHeaderTitle != null)
+		{
+			ContributorsHeaderTitle.Text = I18n.T("ContributorsHeader");
+		}
+		if (ContributorsIntroText != null)
+		{
+			ContributorsIntroText.Text = I18n.T("ContributorsIntro");
+		}
+		if (ContributorsSyncStatusText != null)
+		{
+			ContributorsSyncStatusText.Text = I18n.T("ContributorsSyncLocal");
+		}
+		if (ContributorsRefreshText != null)
+		{
+			ContributorsRefreshText.Text = I18n.T("ContributorsRefresh");
+		}
+		if (ContributorsRepoText != null)
+		{
+			ContributorsRepoText.Text = I18n.T("ContributorsRepo");
+		}
+		if (OcrCardTitleText != null)
+		{
+			OcrCardTitleText.Text = I18n.T("OcrCardTitle");
+		}
+		if (OcrCardDescText != null)
+		{
+			OcrCardDescText.Text = I18n.T("OcrCardDesc");
+		}
+		UpdateOcrBadgeUi();
+		if (Tab4TestOcrBtn != null)
+		{
+			Tab4TestOcrBtn.Content = I18n.T("BtnTestOcr");
+		}
+		if (Tab4ConfigOcrBtn != null)
+		{
+			Tab4ConfigOcrBtn.Content = I18n.T("BtnConfigOcr");
+		}
+		if (AutoStartAsAdminTitleText != null)
+		{
+			AutoStartAsAdminTitleText.Text = I18n.T("AutoStartAsAdminTitle");
+		}
+		if (AutoStartAsAdminDescText != null)
+		{
+			AutoStartAsAdminDescText.Text = I18n.T("AutoStartAsAdminDesc");
+		}
+		if (DimensionsCardTitleText != null)
+		{
+			DimensionsCardTitleText.Text = I18n.T("DimensionsCardTitle");
+		}
+		if (VisualThemeCardTitleText != null)
+		{
+			VisualThemeCardTitleText.Text = I18n.T("VisualThemeCardTitle");
+		}
+		if (ClickSectorHintText != null)
+		{
+			ClickSectorHintText.Text = I18n.T("ClickSectorHint");
+		}
+		if (PreviewPanHintText != null)
+		{
+			PreviewPanHintText.Text = I18n.T("PreviewPanHint");
+		}
+		// ===== 补接漏接的 UI 文案（合并后新增/遗留控件）=====
+		// 说明：XAML 里的中文只是设计期占位，运行时必须由本方法按当前语言重设，
+		// 否则切换语言后这些控件会一直保持中文。以下 94 处原先从未被赋值过。
+		if (SubWheelTriggerDistLabel != null)
+		{
+			SubWheelTriggerDistLabel.Text = I18n.T("SubWheelTriggerDistLabel");
+		}
+		if (SubWheelTriggerDistDesc != null)
+		{
+			SubWheelTriggerDistDesc.Text = I18n.T("SubWheelTriggerDistDesc");
+		}
+		if (AddGestureMappingButton != null)
+		{
+			AddGestureMappingButton.Content = I18n.T("AddGestureMapping");
+		}
+		if (AnimSpeedCustomRadio != null)
+		{
+			AnimSpeedCustomRadio.Content = I18n.T("AnimSpeedCustom");
+		}
+		if (CustomSoundNewProfileBtn != null)
+		{
+			CustomSoundNewProfileBtn.Content = I18n.T("CustomSoundNewProfile");
+		}
+		if (CustomSoundDeleteProfileBtn != null)
+		{
+			CustomSoundDeleteProfileBtn.Content = I18n.T("BtnDeleteProfile");
+		}
+		if (CustomSoundImportProfileBtn != null)
+		{
+			CustomSoundImportProfileBtn.Content = I18n.T("CustomSoundImportProfile");
+		}
+		if (CustomSoundExportProfileBtn != null)
+		{
+			CustomSoundExportProfileBtn.Content = I18n.T("CustomSoundExportProfile");
+		}
+		if (CustomSoundResetProfileBtn != null)
+		{
+			CustomSoundResetProfileBtn.Content = I18n.T("CustomSoundResetProfile");
+		}
+		if (CustomSoundOpenEditorWindowBtn != null)
+		{
+			CustomSoundOpenEditorWindowBtn.Content = I18n.T("CustomSoundOpenEditorWindow");
+		}
+		if (CustomSoundPlayFlowButton != null)
+		{
+			CustomSoundPlayFlowButton.Content = I18n.T("CustomSoundPlayFlow");
+		}
+		if (SystemAudioWarningText != null)
+		{
+			SystemAudioWarningText.Text = I18n.T("SystemAudioWarning");
+		}
+		if (RestoreSystemAudioButton != null)
+		{
+			RestoreSystemAudioButton.Content = I18n.T("RestoreSystemAudio");
+		}
+		if (OuterEscapeCheckboxDescText != null)
+		{
+			OuterEscapeCheckboxDescText.Text = I18n.T("OuterEscapeCheckboxDesc");
+		}
+		if (TestCancelActionButton != null)
+		{
+			TestCancelActionButton.Content = I18n.T("TestCancelAction");
+		}
+		if (CancelActionStatusHint != null)
+		{
+			CancelActionStatusHint.Text = I18n.T("CancelActionStatusHint");
+		}
+		if (EdgeOverflowTitleText != null)
+		{
+			EdgeOverflowTitleText.Text = I18n.T("EdgeOverflowTitle");
+		}
+		if (EdgeOverflowDescText != null)
+		{
+			EdgeOverflowDescText.Text = I18n.T("EdgeOverflowDesc");
+		}
+		if (ResetProcessTriggerButton != null)
+		{
+			ResetProcessTriggerButton.Content = I18n.T("ResetProcessTrigger");
+		}
+		if (Tier2ThemeExpander != null)
+		{
+			Tier2ThemeExpander.Header = I18n.T("Tier2ThemeExpander");
+		}
+		if (NewSubCustomColorPresetButton != null)
+		{
+			NewSubCustomColorPresetButton.Content = I18n.T("NewCustomPresetButton");
+		}
+		if (RenameSubCustomColorPresetButton != null)
+		{
+			RenameSubCustomColorPresetButton.Content = I18n.T("RenameCustomPresetButton");
+		}
+		if (DeleteSubCustomColorPresetButton != null)
+		{
+			DeleteSubCustomColorPresetButton.Content = I18n.T("BtnDeletePreset");
+		}
+		if (SubCustomColorsExpanderTitleText != null)
+		{
+			SubCustomColorsExpanderTitleText.Text = I18n.T("SubCustomColorsExpanderTitle");
+		}
+		if (SubCustomColorsExpanderDescText != null)
+		{
+			SubCustomColorsExpanderDescText.Text = I18n.T("SubCustomColorsExpanderDesc");
+		}
+		if (SaveAsNewSubPresetButton != null)
+		{
+			SaveAsNewSubPresetButton.Content = I18n.T("SaveAsNewPresetButton");
+		}
+		if (DeleteSubPresetInPanelButton != null)
+		{
+			DeleteSubPresetInPanelButton.Content = I18n.T("BtnDeletePreset");
+		}
+		if (ResetSubThemeButton != null)
+		{
+			ResetSubThemeButton.Content = I18n.T("ResetSubTheme");
+		}
+		if (Tier2DimensionsExpander != null)
+		{
+			Tier2DimensionsExpander.Header = I18n.T("Tier2DimensionsExpander");
+		}
+		if (ResetSubDimensionsButton != null)
+		{
+			ResetSubDimensionsButton.Content = I18n.T("ResetSubDimensions");
+		}
+		if (LayoutOptionsSectionTitle != null)
+		{
+			LayoutOptionsSectionTitle.Text = I18n.T("LayoutOptionsSectionTitle");
+		}
+		if (IconLayoutModeTitleText != null)
+		{
+			IconLayoutModeTitleText.Text = I18n.T("IconLayoutModeTitle");
+		}
+		if (SectorIconSizeTitleText != null)
+		{
+			SectorIconSizeTitleText.Text = I18n.T("SectorIconSizeTitle");
+		}
+		if (SectorFontSizeTitleText != null)
+		{
+			SectorFontSizeTitleText.Text = I18n.T("SectorFontSizeTitle");
+		}
+		if (SectorTextPlacementTitleText != null)
+		{
+			SectorTextPlacementTitleText.Text = I18n.T("SectorTextPlacementTitle");
+		}
+		if (ResetTextOffsetBtn != null)
+		{
+			ResetTextOffsetBtn.Content = I18n.T("ResetTextOffset");
+		}
+		if (CoreSectionTitle != null)
+		{
+			CoreSectionTitle.Text = I18n.T("CoreSectionTitle");
+		}
+		if (ShowCoreIconCheckBox != null)
+		{
+			ShowCoreIconCheckBox.Content = I18n.T("ShowCoreIcon");
+		}
+		if (PickCoreIconButton != null)
+		{
+			PickCoreIconButton.Content = I18n.T("PickCoreIcon");
+		}
+		if (BrowseCoreImageButton != null)
+		{
+			BrowseCoreImageButton.Content = I18n.T("BrowseCoreImage");
+		}
+		if (ClearCoreImageButton != null)
+		{
+			ClearCoreImageButton.Content = I18n.T("ClearCoreImage");
+		}
+		if (Tier1ConfigSegmentRadio != null)
+		{
+			Tier1ConfigSegmentRadio.Content = I18n.T("Tier1ConfigSegment");
+		}
+		if (Tier2ConfigSegmentRadio != null)
+		{
+			Tier2ConfigSegmentRadio.Content = I18n.T("Tier2ConfigSegment");
+		}
+		if (AddLayerBtn != null)
+		{
+			AddLayerBtn.Content = I18n.T("AddLayer");
+		}
+		if (CopyLayerBtn != null)
+		{
+			CopyLayerBtn.Content = I18n.T("CopyLayer");
+		}
+		if (LayerSwitchTriggerLabel != null)
+		{
+			LayerSwitchTriggerLabel.Text = I18n.T("LayerSwitchTriggerLabel");
+		}
+		if (GesturesPageSubheader != null)
+		{
+			GesturesPageSubheader.Text = I18n.T("GesturesPageSubheader");
+		}
+		if (MappingsViewModeCanvasRadio != null)
+		{
+			MappingsViewModeCanvasRadio.Content = I18n.T("MappingsViewModeCanvas");
+		}
+		if (MappingsViewModeListRadio != null)
+		{
+			MappingsViewModeListRadio.Content = I18n.T("MappingsViewModeList");
+		}
+		if (AddProfileBtn2 != null)
+		{
+			AddProfileBtn2.Content = I18n.T("AddProfileShort");
+		}
+		if (RenameProfileBtn2 != null)
+		{
+			RenameProfileBtn2.Content = I18n.T("BtnRenameProfile");
+		}
+		if (ProfileCaptureWindowBtn != null)
+		{
+			ProfileCaptureWindowBtn.Content = I18n.T("ProfileCaptureWindow");
+		}
+		if (ProfilePickProgramBtn != null)
+		{
+			ProfilePickProgramBtn.Content = I18n.T("ProfilePickProgram");
+		}
+		if (ProfileBrowseExeBtn != null)
+		{
+			ProfileBrowseExeBtn.Content = I18n.T("ProfileBrowseExe");
+		}
+		if (MappingsSectorCount4Radio != null)
+		{
+			MappingsSectorCount4Radio.Content = I18n.T("MappingsSectorCount4");
+		}
+		if (MappingsSectorCount8Radio != null)
+		{
+			MappingsSectorCount8Radio.Content = I18n.T("MappingsSectorCount8");
+		}
+		if (MappingsSectorCount12Radio != null)
+		{
+			MappingsSectorCount12Radio.Content = I18n.T("MappingsSectorCount12");
+		}
+		if (EnableGlobalInheritanceCheckBox != null)
+		{
+			EnableGlobalInheritanceCheckBox.Content = I18n.T("EnableGlobalInheritance");
+		}
+		if (FocusBackToParentBtn != null)
+		{
+			FocusBackToParentBtn.Content = I18n.T("FocusBackToParent");
+		}
+		if (FocusPrevSlotBtn != null)
+		{
+			FocusPrevSlotBtn.Content = I18n.T("FocusPrevSlot");
+		}
+		if (FocusNextSlotBtn != null)
+		{
+			FocusNextSlotBtn.Content = I18n.T("FocusNextSlot");
+		}
+		if (FocusCenterCoreBtn != null)
+		{
+			FocusCenterCoreBtn.Content = I18n.T("FocusCenterCore");
+		}
+		if (EnableCenterActionCheckBox != null)
+		{
+			EnableCenterActionCheckBox.Content = I18n.T("EnableCenterAction");
+		}
+		if (CenterPresetsToggleBtn != null)
+		{
+			CenterPresetsToggleBtn.Content = I18n.T("CenterPresetsToggle");
+		}
+		if (CenterInfoToggleBtn != null)
+		{
+			CenterInfoToggleBtn.Content = I18n.T("CenterInfoToggle");
+		}
+		if (FocusActionNameLabel != null)
+		{
+			FocusActionNameLabel.Text = I18n.T("FocusActionNameLabel");
+		}
+		if (FocusRestoreInheritBtn != null)
+		{
+			FocusRestoreInheritBtn.Content = I18n.T("FocusRestoreInherit");
+		}
+		if (FocusTestActionBtn != null)
+		{
+			FocusTestActionBtn.Content = I18n.T("FocusTestAction");
+		}
+		if (FocusPluginReloadBtn != null)
+		{
+			FocusPluginReloadBtn.Content = I18n.T("FocusPluginReload");
+		}
+		if (FocusPluginActionBrokenHint != null)
+		{
+			// 这一段原先没有 Name，Text 是写死的中文 ⇒ 无论切到哪种语言都一直是中文。
+			// 它不在 DataTemplate 里，所以给个名字在这里重设即可（不用 {Binding}）。
+			FocusPluginActionBrokenHint.Text = I18n.T("PluginsActionBrokenHint");
+		}
+		if (FocusPopulateTileSubActionsBtn != null)
+		{
+			FocusPopulateTileSubActionsBtn.Content = I18n.T("FocusPopulateTileSubActions");
+		}
+		if (FocusPickShellToolBtn != null)
+		{
+			FocusPickShellToolBtn.Content = I18n.T("FocusPickShellTool");
+		}
+		if (FocusClearInheritedIconBtn != null)
+		{
+			FocusClearInheritedIconBtn.Content = I18n.T("FocusClearInheritedIcon");
+		}
+		if (FocusAddSubActionBtn != null)
+		{
+			FocusAddSubActionBtn.Content = I18n.T("FocusAddSubAction");
+		}
+		if (FocusClearSubActionsBtn != null)
+		{
+			FocusClearSubActionsBtn.Content = I18n.T("FocusClearSubActions");
+		}
+		if (FocusUndoSubActionsBtn != null)
+		{
+			FocusUndoSubActionsBtn.Content = I18n.T("FocusUndoSubActions");
+		}
+		if (FocusBatchExitBtn != null)
+		{
+			FocusBatchExitBtn.Content = I18n.T("FocusBatchExit");
+		}
+		if (BatchLayoutBothBtn != null)
+		{
+			BatchLayoutBothBtn.Content = I18n.T("BatchLayoutBoth");
+		}
+		if (BatchLayoutIconOnlyBtn != null)
+		{
+			BatchLayoutIconOnlyBtn.Content = I18n.T("BatchLayoutIconOnly");
+		}
+		if (BatchLayoutTextOnlyBtn != null)
+		{
+			BatchLayoutTextOnlyBtn.Content = I18n.T("BatchLayoutTextOnly");
+		}
+		if (BatchLayoutInheritBtn != null)
+		{
+			BatchLayoutInheritBtn.Content = I18n.T("BatchLayoutInherit");
+		}
+		if (BatchResetCustomBtn != null)
+		{
+			BatchResetCustomBtn.Content = I18n.T("BatchResetCustom");
+		}
+		if (MappingsTier1SegmentRadio != null)
+		{
+			MappingsTier1SegmentRadio.Content = I18n.T("MappingsTier1Segment");
+		}
+		if (MappingsTier2SegmentRadio != null)
+		{
+			MappingsTier2SegmentRadio.Content = I18n.T("MappingsTier2Segment");
+		}
+		if (ViewReleasesWebBtn != null)
+		{
+			ViewReleasesWebBtn.Content = I18n.T("ViewReleasesWeb");
+		}
+		if (StartDownloadUpdateBtn != null)
+		{
+			StartDownloadUpdateBtn.Content = I18n.T("StartDownloadUpdate");
+		}
+		if (OpenWebReleaseBtn != null)
+		{
+			OpenWebReleaseBtn.Content = I18n.T("OpenWebRelease");
+		}
+		if (UpdatePkgStandaloneRadio != null)
+		{
+			UpdatePkgStandaloneRadio.Content = I18n.T("UpdatePkgStandalone");
+		}
+		if (UpdatePkgLightweightRadio != null)
+		{
+			UpdatePkgLightweightRadio.Content = I18n.T("UpdatePkgLightweight");
+		}
+		if (CancelDownloadBtn != null)
+		{
+			CancelDownloadBtn.Content = I18n.T("CancelDownload");
+		}
+		if (ApplyRestartUpdateBtn != null)
+		{
+			ApplyRestartUpdateBtn.Content = I18n.T("ApplyRestartUpdate");
+		}
+		if (OpenUpdateFolderBtn != null)
+		{
+			OpenUpdateFolderBtn.Content = I18n.T("OpenUpdateFolder");
+		}
+		if (AboutCheckUpdateBtn != null)
+		{
+			AboutCheckUpdateBtn.Content = I18n.T("AboutCheckUpdate");
+		}
+		if (OpenChangelogButton != null)
+		{
+			OpenChangelogButton.Content = I18n.T("BtnOpenChangelog");
+		}
+		if (OlderMilestonesExpander != null)
+		{
+			OlderMilestonesExpander.Header = I18n.T("MilestonesOlderExpander");
+		}
+
+		// --- Phase 1: Sidebar Theme & Buttons ---
+		if (SidebarThemeSystemText != null) SidebarThemeSystemText.Text = I18n.T("SidebarThemeSystem");
+		if (SidebarThemeLightText != null) SidebarThemeLightText.Text = I18n.T("SidebarThemeLight");
+		if (SidebarThemeDarkText != null) SidebarThemeDarkText.Text = I18n.T("SidebarThemeDark");
+		if (SidebarThemeGrayText != null) SidebarThemeGrayText.Text = I18n.T("SidebarThemeGray");
+		if (SidebarThemeCollapsedButton != null) SidebarThemeCollapsedButton.ToolTip = I18n.T("SidebarThemeToggleTip");
+		if (ThemeBtnSystem != null) ThemeBtnSystem.ToolTip = I18n.T("ThemeSystem");
+		if (ThemeBtnLight != null) ThemeBtnLight.ToolTip = I18n.T("ThemeLight");
+		if (ThemeBtnDark != null) ThemeBtnDark.ToolTip = I18n.T("ThemeDark");
+		if (ThemeBtnGray != null) ThemeBtnGray.ToolTip = I18n.T("ThemeGray");
+
+		// --- Phase 1: Trigger Sensitivity & Deadzone ---
+		if (LiveSensorStatusText != null && !_isRecordingTrigger) LiveSensorStatusText.Text = I18n.T("LiveSensorReadyTip");
+		if (Tab0_TriggerThresholdTitleText != null) Tab0_TriggerThresholdTitleText.Text = I18n.T("TriggerThresholdTitle");
+		if (Tab0_TriggerThresholdDescText != null) Tab0_TriggerThresholdDescText.Text = I18n.T("TriggerThresholdDesc");
+		if (Tab0_CoreDeadzoneTitleText != null) Tab0_CoreDeadzoneTitleText.Text = I18n.T("CoreDeadzoneTitle");
+		if (Tab0_CoreDeadzoneDescText != null) Tab0_CoreDeadzoneDescText.Text = I18n.T("CoreDeadzoneDesc");
+
+		// --- Phase 1: Multi-Tier Sub-Wheels ---
+		if (Tab0_MultiTierSectionTitleText != null) Tab0_MultiTierSectionTitleText.Text = I18n.T("MultiTierSectionTitle");
+		if (Tab0_MultiTierDescText != null) Tab0_MultiTierDescText.Text = I18n.T("EnableMultiTierDesc");
+		if (Tab0_SubmenuStyleTitleText != null) Tab0_SubmenuStyleTitleText.Text = I18n.T("SubmenuStyleTitle");
+		if (SubWheelTriggerDistLabel != null) SubWheelTriggerDistLabel.Text = I18n.T("SubWheelTriggerDistLabel");
+		if (SubWheelTriggerDistDesc != null) SubWheelTriggerDistDesc.Text = I18n.T("SubWheelTriggerDistDesc");
+
+		// --- Phase 1: Gesture Direction Items ---
+		if (GestureDirAutoItem != null) GestureDirAutoItem.Content = I18n.T("DirAuto");
+		if (GestureDirUpItem != null) GestureDirUpItem.Content = I18n.T("DirUp");
+		if (GestureDirDownItem != null) GestureDirDownItem.Content = I18n.T("DirDown");
+		if (GestureDirLeftItem != null) GestureDirLeftItem.Content = I18n.T("DirLeft");
+		if (GestureDirRightItem != null) GestureDirRightItem.Content = I18n.T("DirRight");
+		if (GestureDirUpLeftItem != null) GestureDirUpLeftItem.Content = I18n.T("DirUpLeft");
+		if (GestureDirUpRightItem != null) GestureDirUpRightItem.Content = I18n.T("DirUpRight");
+		if (GestureDirDownLeftItem != null) GestureDirDownLeftItem.Content = I18n.T("DirDownLeft");
+		if (GestureDirDownRightItem != null) GestureDirDownRightItem.Content = I18n.T("DirDownRight");
+		if (GestureSensitivitySlider != null) GestureSensitivitySlider.ToolTip = I18n.T("GestureMinSegmentTip");
+		if (AddGestureMappingButton != null) AddGestureMappingButton.Content = I18n.T("BtnAddGestureMapping");
+
+		// --- Phase 1: Animation & Sound Mixer ---
+		if (AnimSpeedCustomRadio != null) AnimSpeedCustomRadio.Content = I18n.T("AnimSpeedCustom");
+		if (SoundPresetMechanicalItem != null) SoundPresetMechanicalItem.Content = I18n.T("SoundPresetMechanical");
+		if (SoundPresetCrispItem != null) SoundPresetCrispItem.Content = I18n.T("SoundPresetCrisp");
+		if (SoundPresetBubbleItem != null) SoundPresetBubbleItem.Content = I18n.T("SoundPresetBubble");
+		if (SoundPresetShortItem != null) SoundPresetShortItem.Content = I18n.T("SoundPresetShort");
+		if (SoundPresetCustomItem != null) SoundPresetCustomItem.Content = I18n.T("SoundPresetCustom");
+		if (Tab0_SoundMixerTitleText != null) Tab0_SoundMixerTitleText.Text = I18n.T("SoundMixerTitle");
+		if (Tab0_SoundMixerBadgeText != null) Tab0_SoundMixerBadgeText.Text = I18n.T("SoundMixerBadge");
+		if (Tab0_SoundMixerDescText != null) Tab0_SoundMixerDescText.Text = I18n.T("SoundMixerDesc");
+		if (CustomSoundNewProfileBtn != null) { CustomSoundNewProfileBtn.Content = I18n.T("BtnNewSoundProfile"); CustomSoundNewProfileBtn.ToolTip = I18n.T("TipNewSoundProfile"); }
+		if (CustomSoundDeleteProfileBtn != null) { CustomSoundDeleteProfileBtn.Content = I18n.T("BtnDeleteSoundProfile"); CustomSoundDeleteProfileBtn.ToolTip = I18n.T("TipDeleteSoundProfile"); }
+		if (CustomSoundImportProfileBtn != null) { CustomSoundImportProfileBtn.Content = I18n.T("BtnImportSoundProfile"); CustomSoundImportProfileBtn.ToolTip = I18n.T("TipImportSoundProfile"); }
+		if (CustomSoundExportProfileBtn != null) { CustomSoundExportProfileBtn.Content = I18n.T("BtnExportSoundProfile"); CustomSoundExportProfileBtn.ToolTip = I18n.T("TipExportSoundProfile"); }
+		if (CustomSoundResetProfileBtn != null) { CustomSoundResetProfileBtn.Content = I18n.T("BtnResetSoundProfile"); CustomSoundResetProfileBtn.ToolTip = I18n.T("TipResetSoundProfile"); }
+		if (CustomSoundOpenEditorWindowBtn != null) { CustomSoundOpenEditorWindowBtn.Content = I18n.T("BtnOpenSoundEditorWindow"); CustomSoundOpenEditorWindowBtn.ToolTip = I18n.T("TipOpenSoundEditorWindow"); }
+		if (Tab0_SoundSelectProfileLabel != null) Tab0_SoundSelectProfileLabel.Text = I18n.T("SoundSelectProfileLabel");
+		if (CustomSoundPlayFlowButton != null) { CustomSoundPlayFlowButton.Content = I18n.T("SoundPlayFlowBtn"); CustomSoundPlayFlowButton.ToolTip = I18n.T("SoundPlayFlowTip"); }
+		if (CustomSoundFlowStatusText != null) CustomSoundFlowStatusText.Text = I18n.T("SoundFlowReadyStatus");
+		if (Tab0_SoundSynthNoticeText != null) Tab0_SoundSynthNoticeText.Text = I18n.T("SoundSynthNotice");
+		if (SystemAudioWarningText != null) SystemAudioWarningText.Text = I18n.T("SystemAudioWarning");
+		if (RestoreSystemAudioButton != null) RestoreSystemAudioButton.Content = I18n.T("BtnRestoreSystemAudio");
+
+		// --- Phase 1: Outer Escape Cancel Presets & Custom Action ---
+		if (OuterEscapeCheckboxDescText != null) OuterEscapeCheckboxDescText.Text = I18n.T("OuterEscapeCheckboxDesc");
+		if (Tab0_OuterEscapeSilentNoteText != null) Tab0_OuterEscapeSilentNoteText.Text = I18n.T("OuterEscapeSilentNote");
+		if (Tab0_OuterEscapePresetsLabel != null) Tab0_OuterEscapePresetsLabel.Text = I18n.T("OuterEscapePresetsLabel");
+		if (CancelPresetShowDesktopBtn != null) { CancelPresetShowDesktopBtn.Content = I18n.T("PresetShowDesktop"); CancelPresetShowDesktopBtn.ToolTip = I18n.T("PresetShowDesktopTip"); }
+		if (CancelPresetTaskViewBtn != null) { CancelPresetTaskViewBtn.Content = I18n.T("PresetTaskView"); CancelPresetTaskViewBtn.ToolTip = I18n.T("PresetTaskViewTip"); }
+		if (CancelPresetCancelEscBtn != null) { CancelPresetCancelEscBtn.Content = I18n.T("PresetCancelEsc"); CancelPresetCancelEscBtn.ToolTip = I18n.T("PresetCancelEscTip"); }
+		if (CancelPresetScreenSnippingBtn != null) { CancelPresetScreenSnippingBtn.Content = I18n.T("PresetScreenSnipping"); CancelPresetScreenSnippingBtn.ToolTip = I18n.T("PresetScreenSnippingTip"); }
+		if (CancelPresetTileHalfSplitBtn != null) { CancelPresetTileHalfSplitBtn.Content = I18n.T("PresetTileHalfSplit"); CancelPresetTileHalfSplitBtn.ToolTip = I18n.T("PresetTileHalfSplitTip"); }
+		if (CancelPresetStarPieSettingsBtn != null) { CancelPresetStarPieSettingsBtn.Content = I18n.T("PresetStarPieSettings"); CancelPresetStarPieSettingsBtn.ToolTip = I18n.T("PresetStarPieSettingsTip"); }
+		if (Tab0_CancelActionTypeLabel != null) Tab0_CancelActionTypeLabel.Text = I18n.T("ActionFormTypeLabel");
+		if (Tab0_CancelActionNameLabel != null) Tab0_CancelActionNameLabel.Text = I18n.T("ActionFormNameLabel");
+		if (Tab0_CancelActionHotkeysLabel != null) Tab0_CancelActionHotkeysLabel.Text = I18n.T("ActionFormHotkeysLabel");
+		if (Tab0_CancelActionBuildHotkeysBtn != null) { Tab0_CancelActionBuildHotkeysBtn.Content = I18n.T("BtnActionBuildHotkeys"); Tab0_CancelActionBuildHotkeysBtn.ToolTip = I18n.T("TipActionBuildHotkeys"); }
+		if (Tab0_CancelActionAppPathLabel != null) Tab0_CancelActionAppPathLabel.Text = I18n.T("ActionFormAppPathLabel");
+		if (Tab0_CancelActionPickProgramBtn != null) { Tab0_CancelActionPickProgramBtn.Content = I18n.T("BtnActionPickProgram"); Tab0_CancelActionPickProgramBtn.ToolTip = I18n.T("TipActionPickProgram"); }
+		if (Tab0_CancelActionCaptureWindowBtn != null) { Tab0_CancelActionCaptureWindowBtn.Content = I18n.T("BtnActionCaptureWindow"); Tab0_CancelActionCaptureWindowBtn.ToolTip = I18n.T("TipActionCaptureWindow"); }
+		if (Tab0_CancelActionBrowseFileBtn != null) { Tab0_CancelActionBrowseFileBtn.Content = I18n.T("BtnActionBrowseFile"); Tab0_CancelActionBrowseFileBtn.ToolTip = I18n.T("TipActionBrowseFile"); }
+		if (Tab0_CancelActionWebUrlLabel != null) Tab0_CancelActionWebUrlLabel.Text = I18n.T("ActionFormWebUrlLabel");
+		if (Tab0_CancelActionCommonUrlsLabel != null) Tab0_CancelActionCommonUrlsLabel.Text = I18n.T("ActionFormCommonUrlsLabel");
+		if (Tab0_CancelActionFolderPathLabel != null) Tab0_CancelActionFolderPathLabel.Text = I18n.T("ActionFormFolderPathLabel");
+		if (Tab0_CancelActionBrowseFolderBtn != null) { Tab0_CancelActionBrowseFolderBtn.Content = I18n.T("BtnActionBrowseFolder"); Tab0_CancelActionBrowseFolderBtn.ToolTip = I18n.T("TipActionBrowseFolder"); }
+		if (Tab0_CancelActionCmdLabel != null) Tab0_CancelActionCmdLabel.Text = I18n.T("ActionFormCmdLabel");
+		if (Tab0_CancelActionWindowCtrlLabel != null) Tab0_CancelActionWindowCtrlLabel.Text = I18n.T("ActionFormWindowCtrlLabel");
+		if (Tab0_CancelActionSysCmdsLabel != null) Tab0_CancelActionSysCmdsLabel.Text = I18n.T("ActionFormSysCmdsLabel");
+		if (TestCancelActionButton != null) TestCancelActionButton.Content = I18n.T("BtnTestCancelAction");
+		if (CancelActionStatusHint != null) CancelActionStatusHint.Text = I18n.T("CancelActionStatusHint");
+
+		// --- Phase 1: Edge Overflow Protection ---
+		if (Tab0_EdgeOverflowStrategyLabel != null) Tab0_EdgeOverflowStrategyLabel.Text = I18n.T("EdgeOverflowStrategyLabel");
+		if (Tab0_EdgeOverflowStrategyDesc != null) Tab0_EdgeOverflowStrategyDesc.Text = I18n.T("EdgeOverflowStrategyDesc");
+		if (EdgeOverflowAutoItem != null) EdgeOverflowAutoItem.Content = I18n.T("EdgeOverflowStrategyAuto");
+		if (EdgeOverflowCenterItem != null) EdgeOverflowCenterItem.Content = I18n.T("EdgeOverflowStrategyCenter");
+		if (EdgeOverflowNoneItem != null) EdgeOverflowNoneItem.Content = I18n.T("EdgeOverflowStrategyNone");
+		if (Tab0_EdgeOverflowMarginXLabel != null) Tab0_EdgeOverflowMarginXLabel.Text = I18n.T("EdgeOverflowMarginXLabel");
+		if (Tab0_EdgeOverflowMarginXDesc != null) Tab0_EdgeOverflowMarginXDesc.Text = I18n.T("EdgeOverflowMarginXDesc");
+		if (Tab0_EdgeOverflowMarginYLabel != null) Tab0_EdgeOverflowMarginYLabel.Text = I18n.T("EdgeOverflowMarginYLabel");
+		if (Tab0_EdgeOverflowMarginYDesc != null) Tab0_EdgeOverflowMarginYDesc.Text = I18n.T("EdgeOverflowMarginYDesc");
+
+		// --- Phase 1: Process Isolation & Custom Trigger ---
+		if (Tab0_BlacklistModeLabel != null) Tab0_BlacklistModeLabel.Text = I18n.T("BlacklistModeLabel");
+		if (Tab0_BlacklistModeSub != null) Tab0_BlacklistModeSub.Text = I18n.T("BlacklistModeSub");
+		if (Tab0_WhitelistModeLabel != null) Tab0_WhitelistModeLabel.Text = I18n.T("WhitelistModeLabel");
+		if (Tab0_WhitelistModeSub != null) Tab0_WhitelistModeSub.Text = I18n.T("WhitelistModeSub");
+		if (Tab0_ProcessCustomTriggerCardTitle != null) Tab0_ProcessCustomTriggerCardTitle.Text = I18n.T("ProcessCustomTriggerCardTitle");
+		if (CloseProcessTriggerCardBtn != null) CloseProcessTriggerCardBtn.ToolTip = I18n.T("BtnCloseCardTip");
+		if (Tab0_ProcessCustomTriggerCardDesc != null) Tab0_ProcessCustomTriggerCardDesc.Text = I18n.T("ProcessCustomTriggerCardDesc");
+		if (Tab0_ProcessCurrentTriggerLabel != null) Tab0_ProcessCurrentTriggerLabel.Text = I18n.T("ProcessCurrentTriggerLabel");
+		if (RecordProcessTriggerButton != null) RecordProcessTriggerButton.Content = I18n.T("BtnRecordProcessTrigger");
+		if (ResetProcessTriggerButton != null) ResetProcessTriggerButton.Content = I18n.T("BtnResetProcessTrigger");
+		if (ProcessLiveSensorStatusText != null && !_isRecordingProcessTrigger) ProcessLiveSensorStatusText.Text = I18n.T("ProcessSensorReadyTip");
+
+		if (GestureTriggerBtnRightItem != null) GestureTriggerBtnRightItem.Content = I18n.T("TriggerBtnRight");
+		if (GestureTriggerBtnMiddleItem != null) GestureTriggerBtnMiddleItem.Content = I18n.T("TriggerBtnMiddle");
+		if (GestureTriggerBtnX1Item != null) GestureTriggerBtnX1Item.Content = I18n.T("TriggerBtnX1");
+		if (GestureTriggerBtnX2Item != null) GestureTriggerBtnX2Item.Content = I18n.T("TriggerBtnX2");
+		if (Tab0_CancelActionNameTextBox != null) Tab0_CancelActionNameTextBox.ToolTip = I18n.T("ActionFormNameTip");
+		if (Tab0_CancelActionBingPresetBtn != null) Tab0_CancelActionBingPresetBtn.Content = I18n.T("ActionBingSearch");
+		if (Tab0_CancelActionTilePresetCombo != null) Tab0_CancelActionTilePresetCombo.ToolTip = I18n.T("TipGestureTilePreset");
+		if (Tab0_CancelActionTaskbarSlotTextBox != null) Tab0_CancelActionTaskbarSlotTextBox.ToolTip = I18n.T("TipGestureTaskbarSlot");
+		if (Tab0_CancelActionOpacityTextBox != null) Tab0_CancelActionOpacityTextBox.ToolTip = I18n.T("TipGestureOpacity");
+		if (EdgeOverflowTitleText != null) EdgeOverflowTitleText.Text = I18n.T("EdgeOverflowTitle");
+		if (EdgeOverflowDescText != null) EdgeOverflowDescText.Text = I18n.T("EdgeOverflowDesc");
+		if (ProcessCurrentTriggerBadgeText != null && string.IsNullOrEmpty(_recordingProcessName)) ProcessCurrentTriggerBadgeText.Text = I18n.T("ProcessTriggerUnconfigured");
+
+		RefreshGestureMappings();
+		RefreshProcessListUI();
+
+		UpdateFocusActionTypeItemsSource();
+		// --- Phase 2: Tab 1 (Appearance / 外观样式) ---
+		if (AppearancePageHeader != null) AppearancePageHeader.Text = I18n.T("TabAppearance");
+		if (AppearancePageSubheader != null) AppearancePageSubheader.Text = I18n.T("AppearanceSubheader");
+		if (VisualThemeCardTitleText != null) VisualThemeCardTitleText.Text = I18n.T("VisualThemeCardTitle");
+		if (Tab1_UiStyleLabel != null) Tab1_UiStyleLabel.Text = I18n.T("Tab1_UiStyleLabel");
+		if (UiStyleClassicRingItem != null) UiStyleClassicRingItem.Content = I18n.T("UiStyleClassicRing");
+		if (UiStyleCleanSectorsItem != null) UiStyleCleanSectorsItem.Content = I18n.T("UiStyleCleanSectors");
+		if (UiStyleGlassmorphismItem != null) UiStyleGlassmorphismItem.Content = I18n.T("UiStyleGlassmorphism");
+		if (Tab1_ThemePresetLabel != null) Tab1_ThemePresetLabel.Text = I18n.T("Tab1_ThemePresetLabel");
+		if (ThemeItemSystem != null) ThemeItemSystem.Content = I18n.T("ThemeItemSystem");
+		if (ThemeItemDark != null) ThemeItemDark.Content = I18n.T("ThemeItemDark");
+		if (ThemeItemLight != null) ThemeItemLight.Content = I18n.T("ThemeItemLight");
+		if (ThemeItemMatchaForest != null) ThemeItemMatchaForest.Content = I18n.T("ThemeItemMatchaForest");
+		if (ThemeItemGlacialIce != null) ThemeItemGlacialIce.Content = I18n.T("ThemeItemGlacialIce");
+		if (ThemeItemMorandiMuted != null) ThemeItemMorandiMuted.Content = I18n.T("ThemeItemMorandiMuted");
+		if (ThemeCustomItem != null) ThemeCustomItem.Content = I18n.T("ThemeItemCustom");
+		if (NewCustomColorPresetButton != null) { NewCustomColorPresetButton.Content = I18n.T("BtnNewCustomPreset"); NewCustomColorPresetButton.ToolTip = I18n.T("TipNewCustomPreset"); }
+		if (RenameCustomColorPresetButton != null) { RenameCustomColorPresetButton.Content = I18n.T("BtnRenameCustomPreset"); RenameCustomColorPresetButton.ToolTip = I18n.T("TipRenameCustomPreset"); }
+		if (DeleteCustomColorPresetButton != null) { DeleteCustomColorPresetButton.Content = I18n.T("BtnDeleteCustomPreset"); DeleteCustomColorPresetButton.ToolTip = I18n.T("TipDeleteCustomPreset"); }
+		if (CustomColorsExpanderTitleText != null) CustomColorsExpanderTitleText.Text = I18n.T("CustomColorsExpanderTitle");
+		if (CustomColorsExpanderDescText != null) CustomColorsExpanderDescText.Text = I18n.T("CustomColorsExpanderDesc");
+		if (Tab1_CustomColorsSectionLabel != null) Tab1_CustomColorsSectionLabel.Text = I18n.T("Tab1_CustomColorsSectionLabel");
+		if (Tab1_SectorBgLabel != null) Tab1_SectorBgLabel.Text = I18n.T("Tab1_SectorBgLabel");
+		if (PickSectorBgColorBtn != null) PickSectorBgColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropSectorBgColorBtn != null) EyedropSectorBgColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_SectorBorderLabel != null) Tab1_SectorBorderLabel.Text = I18n.T("Tab1_SectorBorderLabel");
+		if (PickSectorBorderColorBtn != null) PickSectorBorderColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropSectorBorderColorBtn != null) EyedropSectorBorderColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_HighlightBgLabel != null) Tab1_HighlightBgLabel.Text = I18n.T("Tab1_HighlightBgLabel");
+		if (PickHighlightBgColorBtn != null) PickHighlightBgColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropHighlightBgColorBtn != null) EyedropHighlightBgColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_HighlightBorderLabel != null) Tab1_HighlightBorderLabel.Text = I18n.T("Tab1_HighlightBorderLabel");
+		if (PickHighlightBorderColorBtn != null) PickHighlightBorderColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropHighlightBorderColorBtn != null) EyedropHighlightBorderColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_TextColorLabel != null) Tab1_TextColorLabel.Text = I18n.T("Tab1_TextColorLabel");
+		if (PickTextColorBtn != null) PickTextColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropTextColorBtn != null) EyedropTextColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (SavePresetChangesButton != null) { SavePresetChangesButton.Content = I18n.T("BtnSavePresetChanges"); SavePresetChangesButton.ToolTip = I18n.T("TipSavePresetChanges"); }
+		if (SaveAsNewPresetButton != null) { SaveAsNewPresetButton.Content = I18n.T("BtnSaveAsNewPreset"); SaveAsNewPresetButton.ToolTip = I18n.T("TipSaveAsNewPreset"); }
+		if (DeletePresetInPanelButton != null) { DeletePresetInPanelButton.Content = I18n.T("BtnDeletePreset"); DeletePresetInPanelButton.ToolTip = I18n.T("TipDeleteCustomPreset"); }
+		if (Tab1_HighlightGlowModeLabel != null) Tab1_HighlightGlowModeLabel.Text = I18n.T("Tab1_HighlightGlowModeLabel");
+		if (GlowItemFollowHighlight != null) GlowItemFollowHighlight.Content = I18n.T("GlowItemFollowHighlight");
+		if (GlowItemLilacPurple != null) GlowItemLilacPurple.Content = I18n.T("GlowItemLilacPurple");
+		if (GlowItemGlacialBlue != null) GlowItemGlacialBlue.Content = I18n.T("GlowItemGlacialBlue");
+		if (GlowItemEmeraldGreen != null) GlowItemEmeraldGreen.Content = I18n.T("GlowItemEmeraldGreen");
+		if (GlowItemSakuraPink != null) GlowItemSakuraPink.Content = I18n.T("GlowItemSakuraPink");
+		if (GlowItemAmberGold != null) GlowItemAmberGold.Content = I18n.T("GlowItemAmberGold");
+		if (GlowItemCoralRed != null) GlowItemCoralRed.Content = I18n.T("GlowItemCoralRed");
+		if (GlowItemIceWhite != null) GlowItemIceWhite.Content = I18n.T("GlowItemIceWhite");
+		if (GlowItemCustom != null) GlowItemCustom.Content = I18n.T("GlowItemCustom");
+		if (Tab1_GlowColorLabel != null) Tab1_GlowColorLabel.Text = I18n.T("Tab1_GlowColorLabel");
+		if (PickGlowColorBtn != null) PickGlowColorBtn.ToolTip = I18n.T("TipPickGlowColor");
+		if (EyedropGlowColorBtn != null) EyedropGlowColorBtn.ToolTip = I18n.T("TipEyedropGlowColor");
+		if (Tab1_GlowRadiusLabel != null) Tab1_GlowRadiusLabel.Text = I18n.T("Tab1_GlowRadiusLabel");
+		if (Tab1_GlowOpacityLabel != null) Tab1_GlowOpacityLabel.Text = I18n.T("Tab1_GlowOpacityLabel");
+		if (Tier2ThemeExpander != null) Tier2ThemeExpander.Header = I18n.T("Tier2ThemeExpanderHeader");
+		if (Tab1_SubThemeNoticeText != null) Tab1_SubThemeNoticeText.Text = I18n.T("Tab1_SubThemeNotice");
+		if (Tab1_SubUiStyleLabel != null) Tab1_SubUiStyleLabel.Text = I18n.T("Tab1_SubUiStyleLabel");
+		if (SubUiStyleFollowPrimaryItem != null) SubUiStyleFollowPrimaryItem.Content = I18n.T("SubUiStyleItemFollowPrimary");
+		if (SubUiStyleClassicRingItem != null) SubUiStyleClassicRingItem.Content = I18n.T("UiStyleClassicRing");
+		if (SubUiStyleCleanSectorsItem != null) SubUiStyleCleanSectorsItem.Content = I18n.T("UiStyleCleanSectors");
+		if (SubUiStyleGlassmorphismItem != null) SubUiStyleGlassmorphismItem.Content = I18n.T("UiStyleGlassmorphism");
+		if (Tab1_SubThemePresetLabel != null) Tab1_SubThemePresetLabel.Text = I18n.T("Tab1_SubThemePresetLabel");
+		if (SubThemeFollowPrimaryItem != null) SubThemeFollowPrimaryItem.Content = I18n.T("SubThemeItemFollowPrimary");
+		if (SubThemeSystemItem != null) SubThemeSystemItem.Content = I18n.T("ThemeItemSystem");
+		if (SubThemeDarkItem != null) SubThemeDarkItem.Content = I18n.T("ThemeItemDark");
+		if (SubThemeLightItem != null) SubThemeLightItem.Content = I18n.T("ThemeItemLight");
+		if (SubThemeMatchaForestItem != null) SubThemeMatchaForestItem.Content = I18n.T("ThemeItemMatchaForest");
+		if (SubThemeGlacialIceItem != null) SubThemeGlacialIceItem.Content = I18n.T("ThemeItemGlacialIce");
+		if (SubThemeMorandiMutedItem != null) SubThemeMorandiMutedItem.Content = I18n.T("ThemeItemMorandiMuted");
+		if (SubThemeCustomItem != null) SubThemeCustomItem.Content = I18n.T("ThemeItemCustom");
+		if (NewSubCustomColorPresetButton != null) { NewSubCustomColorPresetButton.Content = I18n.T("BtnNewCustomPreset"); NewSubCustomColorPresetButton.ToolTip = I18n.T("TipNewCustomPreset"); }
+		if (RenameSubCustomColorPresetButton != null) { RenameSubCustomColorPresetButton.Content = I18n.T("BtnRenameCustomPreset"); RenameSubCustomColorPresetButton.ToolTip = I18n.T("TipRenameCustomPreset"); }
+		if (DeleteSubCustomColorPresetButton != null) { DeleteSubCustomColorPresetButton.Content = I18n.T("BtnDeleteCustomPreset"); DeleteSubCustomColorPresetButton.ToolTip = I18n.T("TipDeleteCustomPreset"); }
+		if (SubCustomColorsExpanderTitleText != null) SubCustomColorsExpanderTitleText.Text = I18n.T("SubCustomColorsExpanderTitle");
+		if (SubCustomColorsExpanderDescText != null) SubCustomColorsExpanderDescText.Text = I18n.T("SubCustomColorsExpanderDesc");
+		if (Tab1_SubCustomColorsSectionLabel != null) Tab1_SubCustomColorsSectionLabel.Text = I18n.T("Tab1_SubCustomColorsSectionLabel");
+		if (Tab1_SubSectorBgLabel != null) Tab1_SubSectorBgLabel.Text = I18n.T("Tab1_SectorBgLabel");
+		if (PickSubSectorBgColorBtn != null) PickSubSectorBgColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropSubSectorBgColorBtn != null) EyedropSubSectorBgColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_SubSectorBorderLabel != null) Tab1_SubSectorBorderLabel.Text = I18n.T("Tab1_SectorBorderLabel");
+		if (PickSubSectorBorderColorBtn != null) PickSubSectorBorderColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropSubSectorBorderColorBtn != null) EyedropSubSectorBorderColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_SubHighlightBgLabel != null) Tab1_SubHighlightBgLabel.Text = I18n.T("Tab1_HighlightBgLabel");
+		if (PickSubHighlightBgColorBtn != null) PickSubHighlightBgColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropSubHighlightBgColorBtn != null) EyedropSubHighlightBgColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_SubHighlightBorderLabel != null) Tab1_SubHighlightBorderLabel.Text = I18n.T("Tab1_HighlightBorderLabel");
+		if (PickSubHighlightBorderColorBtn != null) PickSubHighlightBorderColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropSubHighlightBorderColorBtn != null) EyedropSubHighlightBorderColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_SubTextColorLabel != null) Tab1_SubTextColorLabel.Text = I18n.T("Tab1_TextColorLabel");
+		if (PickSubTextColorBtn != null) PickSubTextColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropSubTextColorBtn != null) EyedropSubTextColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (SaveSubPresetChangesButton != null) { SaveSubPresetChangesButton.Content = I18n.T("BtnSavePresetChanges"); SaveSubPresetChangesButton.ToolTip = I18n.T("TipSaveSubPresetChanges"); }
+		if (SaveAsNewSubPresetButton != null) { SaveAsNewSubPresetButton.Content = I18n.T("BtnSaveAsNewPreset"); SaveAsNewSubPresetButton.ToolTip = I18n.T("TipSaveAsNewPreset"); }
+		if (DeleteSubPresetInPanelButton != null) { DeleteSubPresetInPanelButton.Content = I18n.T("BtnDeletePreset"); DeleteSubPresetInPanelButton.ToolTip = I18n.T("TipDeleteCustomPreset"); }
+		if (Tab1_SubHighlightGlowLabel != null) Tab1_SubHighlightGlowLabel.Text = I18n.T("Tab1_SubHighlightGlowLabel");
+		if (SubGlowFollowPrimaryItem != null) SubGlowFollowPrimaryItem.Content = I18n.T("SubGlowItemFollowPrimary");
+		if (SubGlowFollowHighlightItem != null) SubGlowFollowHighlightItem.Content = I18n.T("SubGlowItemFollowHighlight");
+		if (SubGlowLilacPurpleItem != null) SubGlowLilacPurpleItem.Content = I18n.T("GlowItemLilacPurple");
+		if (SubGlowGlacialBlueItem != null) SubGlowGlacialBlueItem.Content = I18n.T("GlowItemGlacialBlue");
+		if (SubGlowEmeraldGreenItem != null) SubGlowEmeraldGreenItem.Content = I18n.T("GlowItemEmeraldGreen");
+		if (SubGlowSakuraPinkItem != null) SubGlowSakuraPinkItem.Content = I18n.T("GlowItemSakuraPink");
+		if (SubGlowAmberGoldItem != null) SubGlowAmberGoldItem.Content = I18n.T("GlowItemAmberGold");
+		if (SubGlowCoralRedItem != null) SubGlowCoralRedItem.Content = I18n.T("GlowItemCoralRed");
+		if (SubGlowIceWhiteItem != null) SubGlowIceWhiteItem.Content = I18n.T("GlowItemIceWhite");
+		if (SubGlowNoneItem != null) SubGlowNoneItem.Content = I18n.T("SubGlowItemNone");
+		if (SubGlowCustomItem != null) SubGlowCustomItem.Content = I18n.T("GlowItemCustom");
+		if (Tab1_SubGlowColorLabel != null) Tab1_SubGlowColorLabel.Text = I18n.T("Tab1_GlowColorLabel");
+		if (PickSubGlowColorBtn != null) PickSubGlowColorBtn.ToolTip = I18n.T("TipPickGlowColor");
+		if (EyedropSubGlowColorBtn != null) EyedropSubGlowColorBtn.ToolTip = I18n.T("TipEyedropGlowColor");
+		if (Tab1_SubGlowRadiusLabel != null) Tab1_SubGlowRadiusLabel.Text = I18n.T("Tab1_GlowRadiusLabel");
+		if (Tab1_SubGlowOpacityLabel != null) Tab1_SubGlowOpacityLabel.Text = I18n.T("Tab1_GlowOpacityLabel");
+		if (ResetSubThemeButton != null) ResetSubThemeButton.Content = I18n.T("BtnResetSubTheme");
+		if (DimensionsCardTitleText != null) DimensionsCardTitleText.Text = I18n.T("DimensionsCardTitle");
+		if (Tab1_SectorCutStyleLabel != null) Tab1_SectorCutStyleLabel.Text = I18n.T("Tab1_SectorCutStyleLabel");
+		if (CutStyleClassicItem != null) CutStyleClassicItem.Content = I18n.T("CutStyleItemClassic");
+		if (CutStyleCirclesItem != null) CutStyleCirclesItem.Content = I18n.T("CutStyleItemCircles");
+		if (CutStyleCapsulesItem != null) CutStyleCapsulesItem.Content = I18n.T("CutStyleItemCapsules");
+		if (CutStyleHexagonsItem != null) CutStyleHexagonsItem.Content = I18n.T("CutStyleItemHexagons");
+		if (Tab1_SectorGapLabel != null) Tab1_SectorGapLabel.Text = I18n.T("Tab1_SectorGapLabel");
+		if (Tab1_SectorCornerRadiusLabel != null) Tab1_SectorCornerRadiusLabel.Text = I18n.T("Tab1_SectorCornerRadiusLabel");
+		if (Tab1_WheelRadiusLabel != null) Tab1_WheelRadiusLabel.Text = I18n.T("Tab1_WheelRadiusLabel");
+		if (Tab1_InnerRadiusLabel != null) Tab1_InnerRadiusLabel.Text = I18n.T("Tab1_InnerRadiusLabel");
+		if (Tab1_CoreRadiusLabel != null) Tab1_CoreRadiusLabel.Text = I18n.T("Tab1_CoreRadiusLabel");
+		if (Tier2DimensionsExpander != null) Tier2DimensionsExpander.Header = I18n.T("Tier2DimensionsExpanderHeader");
+		if (Tab1_SubDimensionsNoticeText != null) Tab1_SubDimensionsNoticeText.Text = I18n.T("Tab1_SubDimensionsNotice");
+		if (Tab1_SubOuterRadiusLabel != null) Tab1_SubOuterRadiusLabel.Text = I18n.T("Tab1_SubOuterRadiusLabel");
+		if (Tab1_SubGapLabel != null) Tab1_SubGapLabel.Text = I18n.T("Tab1_SubGapLabel");
+		if (Tab1_SubCornerRadiusLabel != null) Tab1_SubCornerRadiusLabel.Text = I18n.T("Tab1_SubCornerRadiusLabel");
+		if (Tab1_SubIconSizeLabel != null) Tab1_SubIconSizeLabel.Text = I18n.T("Tab1_SubIconSizeLabel");
+		if (Tab1_SubFontSizeLabel != null) Tab1_SubFontSizeLabel.Text = I18n.T("Tab1_SubFontSizeLabel");
+		if (ResetSubDimensionsButton != null) ResetSubDimensionsButton.Content = I18n.T("BtnResetSubDimensions");
+		if (LayoutOptionsSectionTitle != null) LayoutOptionsSectionTitle.Text = I18n.T("LayoutOptionsSectionTitle");
+		if (LayoutTargetGlobalRadio != null) LayoutTargetGlobalRadio.Content = I18n.T("LayoutTargetGlobal");
+		if (LayoutTargetSlotRadio != null) LayoutTargetSlotRadio.Content = I18n.T("LayoutTargetSlot");
+		if (ClickSectorHintText != null) ClickSectorHintText.Text = I18n.T("ClickSectorHint");
+		if (ResetSlotLayoutButton != null) ResetSlotLayoutButton.Content = I18n.T("ResetSlotLayout");
+		if (IconLayoutModeTitleText != null) IconLayoutModeTitleText.Text = I18n.T("IconLayoutModeTitleText");
+		if (LayoutModeBothItem != null) LayoutModeBothItem.Content = I18n.T("LayoutModeItemBoth");
+		if (LayoutModeIconOnlyItem != null) LayoutModeIconOnlyItem.Content = I18n.T("LayoutModeItemIconOnly");
+		if (LayoutModeTextOnlyItem != null) LayoutModeTextOnlyItem.Content = I18n.T("LayoutModeItemTextOnly");
+		if (WheelFontFamilyTitleText != null) WheelFontFamilyTitleText.Text = I18n.T("WheelFontFamily");
+		if (WheelFontSystemItem != null) WheelFontSystemItem.Content = I18n.T("WheelFontItemSystem");
+		if (WheelFontYaHeiItem != null) WheelFontYaHeiItem.Content = I18n.T("WheelFontItemYaHei");
+		if (WheelFontHarmonyItem != null) WheelFontHarmonyItem.Content = I18n.T("WheelFontItemHarmony");
+		if (WheelFontPingFangItem != null) WheelFontPingFangItem.Content = I18n.T("WheelFontItemPingFang");
+		if (WheelFontMiSansItem != null) WheelFontMiSansItem.Content = I18n.T("WheelFontItemMiSans");
+		if (WheelFontSimHeiItem != null) WheelFontSimHeiItem.Content = I18n.T("WheelFontItemSimHei");
+		if (WheelFontKaiTiItem != null) WheelFontKaiTiItem.Content = I18n.T("WheelFontItemKaiTi");
+		if (WheelFontConsolasItem != null) WheelFontConsolasItem.Content = I18n.T("WheelFontItemConsolas");
+		if (SectorTextColorTitleText != null) SectorTextColorTitleText.Text = I18n.T("SectorTextColor");
+		if (PickSectorTextColorBtn != null) PickSectorTextColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropSectorTextColorBtn != null) EyedropSectorTextColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (SectorIconSizeTitleText != null) SectorIconSizeTitleText.Text = I18n.T("SectorIconSizeTitle");
+		if (SectorFontSizeTitleText != null) SectorFontSizeTitleText.Text = I18n.T("SectorFontSizeTitle");
+		if (SectorTextPlacementTitleText != null) SectorTextPlacementTitleText.Text = I18n.T("SectorTextPlacementTitle");
+		if (ResetTextOffsetBtn != null) { ResetTextOffsetBtn.Content = I18n.T("BtnResetTextOffset"); ResetTextOffsetBtn.ToolTip = I18n.T("TipResetTextOffset"); }
+		if (PlacementBottomItem != null) PlacementBottomItem.Content = I18n.T("PlacementItemBottom");
+		if (PlacementTopItem != null) PlacementTopItem.Content = I18n.T("PlacementItemTop");
+		if (Tab1_TextOffsetXLabel != null) Tab1_TextOffsetXLabel.Text = I18n.T("Tab1_TextOffsetXLabel");
+		if (Tab1_TextOffsetYLabel != null) Tab1_TextOffsetYLabel.Text = I18n.T("Tab1_TextOffsetYLabel");
+		if (CoreSectionTitle != null) CoreSectionTitle.Text = I18n.T("CoreSectionTitle");
+		if (ShowCoreIconCheckBox != null) ShowCoreIconCheckBox.Content = I18n.T("ShowCoreIconTitle");
+		if (Tab1_CorePatternTypeLabel != null) Tab1_CorePatternTypeLabel.Text = I18n.T("Tab1_CorePatternTypeLabel");
+		if (CoreIconExitItem != null) CoreIconExitItem.Content = I18n.T("CorePatternExit");
+		if (CoreIconCrosshairItem != null) CoreIconCrosshairItem.Content = I18n.T("CoreIconTypeItemCrosshair");
+		if (CoreIconWindowsItem != null) CoreIconWindowsItem.Content = I18n.T("CoreIconTypeItemWindows");
+		if (CoreIconBreatheDotItem != null) CoreIconBreatheDotItem.Content = I18n.T("CoreIconTypeItemBreatheDot");
+		if (CoreIconHomeReturnItem != null) CoreIconHomeReturnItem.Content = I18n.T("CoreIconTypeItemHomeReturn");
+		if (CoreIconPowerItem != null) CoreIconPowerItem.Content = I18n.T("CorePatternPower");
+		if (CoreIconCompassStarItem != null) CoreIconCompassStarItem.Content = I18n.T("CoreIconTypeItemCompassStar");
+		if (CoreIconCatPawItem != null) CoreIconCatPawItem.Content = I18n.T("CoreIconTypeItemCatPaw");
+		if (CoreIconVectorItem != null) CoreIconVectorItem.Content = I18n.T("CoreIconTypeItemVector");
+		if (CoreIconCustomImageItem != null) CoreIconCustomImageItem.Content = I18n.T("CoreIconTypeItemCustomImage");
+		if (CustomCoreIconNameLabel != null && CustomCoreIconNameLabel.Text == "未选择图标") CustomCoreIconNameLabel.Text = I18n.T("CustomCoreIconNone");
+		if (PickCoreIconButton != null) PickCoreIconButton.Content = I18n.T("BtnPickCoreIcon");
+		if (CoreImagePathTextBox != null) CoreImagePathTextBox.ToolTip = I18n.T("TipCoreImagePath");
+		if (BrowseCoreImageButton != null) BrowseCoreImageButton.Content = I18n.T("BtnBrowseCoreImage");
+		if (ClearCoreImageButton != null) ClearCoreImageButton.Content = I18n.T("BtnClearCoreImage");
+		if (CoreTransformSectionTitle != null) CoreTransformSectionTitle.Text = I18n.T("CoreTransformSectionTitle");
+		if (CoreIconScaleTitleText != null) CoreIconScaleTitleText.Text = I18n.T("CoreIconScaleTitle");
+		if (CoreImageOffsetXTitleText != null) CoreImageOffsetXTitleText.Text = I18n.T("CoreImageOffsetXTitle");
+		if (CoreImageOffsetYTitleText != null) CoreImageOffsetYTitleText.Text = I18n.T("CoreImageOffsetYTitle");
+		if (ResetCoreTransformButton != null) ResetCoreTransformButton.Content = I18n.T("BtnResetCoreTransform");
+		if (CoreTextOptionsSectionTitle != null) CoreTextOptionsSectionTitle.Text = I18n.T("CoreTextOptionsSectionTitle");
+		if (ShowSelectedActionTextCheckBox != null) ShowSelectedActionTextCheckBox.Content = I18n.T("ShowSelectedActionText");
+		if (CoreFontFamilyTitleText != null) CoreFontFamilyTitleText.Text = I18n.T("CoreFontFamily");
+		if (CoreFontSystemItem != null) CoreFontSystemItem.Content = I18n.T("WheelFontItemSystem");
+		if (CoreFontYaHeiItem != null) CoreFontYaHeiItem.Content = I18n.T("WheelFontItemYaHei");
+		if (CoreFontHarmonyItem != null) CoreFontHarmonyItem.Content = I18n.T("WheelFontItemHarmony");
+		if (CoreFontPingFangItem != null) CoreFontPingFangItem.Content = I18n.T("WheelFontItemPingFang");
+		if (CoreFontMiSansItem != null) CoreFontMiSansItem.Content = I18n.T("WheelFontItemMiSans");
+		if (CoreFontSimHeiItem != null) CoreFontSimHeiItem.Content = I18n.T("WheelFontItemSimHei");
+		if (CoreFontKaiTiItem != null) CoreFontKaiTiItem.Content = I18n.T("WheelFontItemKaiTi");
+		if (CoreFontConsolasItem != null) CoreFontConsolasItem.Content = I18n.T("WheelFontItemConsolas");
+		if (CoreFontSizeTitleText != null) CoreFontSizeTitleText.Text = I18n.T("CoreFontSizeTitle");
+		if (CoreTextColorAutoCheckBox != null) CoreTextColorAutoCheckBox.Content = I18n.T("CoreTextColorAuto");
+		if (CoreTextColorTitleText != null) CoreTextColorTitleText.Text = I18n.T("CoreTextColorTitle");
+		if (PickCoreTextColorBtn != null) PickCoreTextColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropCoreTextColorBtn != null) EyedropCoreTextColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (CoreImagePerformanceTipText != null) CoreImagePerformanceTipText.Text = I18n.T("CoreImagePerformanceTip");
+		if (LayerStyleDarkItem != null) LayerStyleDarkItem.Content = I18n.T("LayerStyleItemDark");
+		if (LayerStyleAuroraBlueItem != null) LayerStyleAuroraBlueItem.Content = I18n.T("LayerStyleItemAuroraBlue");
+		if (LayerStyleObsidianPurpleItem != null) LayerStyleObsidianPurpleItem.Content = I18n.T("LayerStyleItemObsidianPurple");
+		if (LayerStyleLightItem != null) LayerStyleLightItem.Content = I18n.T("LayerStyleItemLight");
+		if (LayerStyleFollowThemeItem != null) LayerStyleFollowThemeItem.Content = I18n.T("LayerStyleItemFollowTheme");
+		if (LayerStyleCustomItem != null) LayerStyleCustomItem.Content = I18n.T("LayerStyleItemCustom");
+		if (LayerIconStarItem != null) LayerIconStarItem.Content = I18n.T("LayerIconItemStar");
+		if (LayerIconSnowflakeItem != null) LayerIconSnowflakeItem.Content = I18n.T("LayerIconItemSnowflake");
+		if (LayerIconGalaxyItem != null) LayerIconGalaxyItem.Content = I18n.T("LayerIconItemGalaxy");
+		if (LayerIconBoltItem != null) LayerIconBoltItem.Content = I18n.T("LayerIconItemBolt");
+		if (LayerIconCrosshairItem != null) LayerIconCrosshairItem.Content = I18n.T("LayerIconItemCrosshair");
+		if (LayerIconGemItem != null) LayerIconGemItem.Content = I18n.T("LayerIconItemGem");
+		if (LayerIconNoneItem != null) LayerIconNoneItem.Content = I18n.T("LayerIconItemNone");
+		if (Tab1_LayerCustomColorsSectionLabel != null) Tab1_LayerCustomColorsSectionLabel.Text = I18n.T("Tab1_LayerCustomColorsSectionLabel");
+		if (Tab1_LayerBgLabel != null) Tab1_LayerBgLabel.Text = I18n.T("Tab1_LayerBgLabel");
+		if (PickLayerBgColorBtn != null) PickLayerBgColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropLayerBgColorBtn != null) EyedropLayerBgColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_LayerBorderLabel != null) Tab1_LayerBorderLabel.Text = I18n.T("Tab1_LayerBorderLabel");
+		if (PickLayerBorderColorBtn != null) PickLayerBorderColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropLayerBorderColorBtn != null) EyedropLayerBorderColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_LayerTextLabel != null) Tab1_LayerTextLabel.Text = I18n.T("Tab1_LayerTextLabel");
+		if (PickLayerTextColorBtn != null) PickLayerTextColorBtn.ToolTip = I18n.T("TipPickColor");
+		if (EyedropLayerTextColorBtn != null) EyedropLayerTextColorBtn.ToolTip = I18n.T("TipEyedropColor");
+		if (Tab1_LivePreviewTitle != null) Tab1_LivePreviewTitle.Text = I18n.T("Tab1_LivePreviewTitle");
+		if (Tab1_LivePreviewBadge != null) Tab1_LivePreviewBadge.Text = I18n.T("Tab1_LivePreviewBadge");
+		if (Tab1_LivePreviewHint != null) Tab1_LivePreviewHint.Text = I18n.T("Tab1_LivePreviewHint");
+		if (Tier1ConfigSegmentRadio != null) Tier1ConfigSegmentRadio.Content = I18n.T("Tier1ConfigSegment");
+		if (Tier2ConfigSegmentRadio != null) Tier2ConfigSegmentRadio.Content = I18n.T("Tier2ConfigSegment");
+		if (PreviewZoomOutBtn != null) PreviewZoomOutBtn.ToolTip = I18n.T("TipPreviewZoomOut");
+		if (PreviewZoomLabel != null) PreviewZoomLabel.ToolTip = I18n.T("TipPreviewZoomReset");
+		if (PreviewZoomInBtn != null) PreviewZoomInBtn.ToolTip = I18n.T("TipPreviewZoomIn");
+		if (PreviewResetViewBtn != null) PreviewResetViewBtn.ToolTip = I18n.T("TipPreviewResetView");
+		if (ResetDimensionsButton != null) ResetDimensionsButton.Content = I18n.T("BtnResetAllGeometry");
+
+
+		// --- Phase 3: Tab 2 (Gestures & Actions / 手势动作) ---
+		// Group 1: Layer Toolbar
+		if (Tab2LayerLabel != null) Tab2LayerLabel.Text = I18n.T("LayerLabel");
+		if (AddLayerBtn != null) { AddLayerBtn.Content = I18n.T("AddLayerBtnText"); AddLayerBtn.ToolTip = I18n.T("AddLayerBtnToolTip"); }
+		if (CopyLayerBtn != null) { CopyLayerBtn.Content = I18n.T("CopyLayerBtnText"); CopyLayerBtn.ToolTip = I18n.T("CopyLayerBtnToolTip"); }
+		if (RenameLayerBtn != null) RenameLayerBtn.ToolTip = I18n.T("RenameLayerBtnToolTip");
+		if (DeleteLayerBtn != null) DeleteLayerBtn.ToolTip = I18n.T("DeleteLayerBtnToolTip");
+		if (LayerSwitchTriggerLabel != null) LayerSwitchTriggerLabel.Text = I18n.T("LayerSwitchTriggerLabel");
+		if (LayerSwitchTriggerComboBox != null) LayerSwitchTriggerComboBox.ToolTip = I18n.T("LayerSwitchTriggerComboBoxToolTip");
+		if (LayerSwitchModeScrollItem != null) LayerSwitchModeScrollItem.Content = I18n.T("LayerSwitchModeScroll");
+		if (LayerSwitchModeTabItem != null) LayerSwitchModeTabItem.Content = I18n.T("LayerSwitchModeTab");
+		if (GesturesPageSubheader != null) GesturesPageSubheader.Text = I18n.T("GesturesPageSubheader");
+		if (MappingsViewModeCanvasRadio != null) MappingsViewModeCanvasRadio.Content = I18n.T("MappingsViewModeCanvasText");
+		if (MappingsViewModeListRadio != null) MappingsViewModeListRadio.Content = I18n.T("MappingsViewModeListText");
+
+		// Group 2: Profile Card
+		if (CurrentProfileLabel != null) CurrentProfileLabel.Text = I18n.T("CurrentProfileLabel");
+		if (AddProfileBtn2 != null) { AddProfileBtn2.Content = I18n.T("AddProfileBtnText"); AddProfileBtn2.ToolTip = I18n.T("AddProfileBtnToolTip"); }
+		if (AddProfileFromProgramMenuItem != null) AddProfileFromProgramMenuItem.Header = I18n.T("AddProfileFromProgram");
+		if (AddProfileCaptureWindowMenuItem != null) AddProfileCaptureWindowMenuItem.Header = I18n.T("AddProfileCaptureWindow");
+		if (AddProfileBrowseExeMenuItem != null) AddProfileBrowseExeMenuItem.Header = I18n.T("AddProfileBrowseExe");
+		if (AddProfileCustomMenuItem != null) AddProfileCustomMenuItem.Header = I18n.T("AddProfileCustom");
+		if (RenameProfileBtn2 != null) { RenameProfileBtn2.Content = I18n.T("RenameProfileBtnText"); RenameProfileBtn2.ToolTip = I18n.T("RenameProfileBtnToolTip"); }
+		if (DeleteProfileBtn2 != null) DeleteProfileBtn2.ToolTip = I18n.T("DeleteProfileBtnToolTip");
+		if (GlobalProfileHintText != null) GlobalProfileHintText.Text = I18n.T("GlobalProfileHint");
+		if (ProfileBoundProcessesLabel != null) ProfileBoundProcessesLabel.Text = I18n.T("ProfileBoundProcessesLabel");
+		if (ProfileBoundProcessesTextBox != null) ProfileBoundProcessesTextBox.ToolTip = I18n.T("ProfileBoundProcessesToolTip");
+		if (ProfileCaptureWindowBtn != null) { ProfileCaptureWindowBtn.Content = I18n.T("ProfileCaptureWindowBtnText"); ProfileCaptureWindowBtn.ToolTip = I18n.T("ProfileCaptureWindowBtnToolTip"); }
+		if (ProfilePickProgramBtn != null) { ProfilePickProgramBtn.Content = I18n.T("ProfilePickProgramBtnText"); ProfilePickProgramBtn.ToolTip = I18n.T("ProfilePickProgramBtnToolTip"); }
+		if (ProfileBrowseExeBtn != null) { ProfileBrowseExeBtn.Content = I18n.T("ProfileBrowseExeBtnText"); ProfileBrowseExeBtn.ToolTip = I18n.T("ProfileBrowseExeBtnToolTip"); }
+		if (ProfileBoundProcessesHintText != null) ProfileBoundProcessesHintText.Text = I18n.T("ProfileBoundProcessesHint");
+		if (SectorCountLabel != null) SectorCountLabel.Text = I18n.T("SectorCountLabel");
+		if (MappingsSectorCount4Radio != null) MappingsSectorCount4Radio.Content = I18n.T("SectorCount4Text");
+		if (MappingsSectorCount8Radio != null) MappingsSectorCount8Radio.Content = I18n.T("SectorCount8Text");
+		if (MappingsSectorCount12Radio != null) MappingsSectorCount12Radio.Content = I18n.T("SectorCount12Text");
+		if (EnableGlobalInheritanceCheckBox != null) { EnableGlobalInheritanceCheckBox.Content = I18n.T("EnableGlobalInheritanceText"); EnableGlobalInheritanceCheckBox.ToolTip = I18n.T("EnableGlobalInheritanceToolTip"); }
+
+		// Group 3: Focus Editor Navigation & Center Core
+		if (FocusSlotInheritedBadge != null) FocusSlotInheritedBadge.ToolTip = I18n.T("FocusSlotInheritedBadgeToolTip");
+		if (FocusSlotInheritedBadgeText != null) FocusSlotInheritedBadgeText.Text = I18n.T("FocusSlotInheritedBadgeText");
+		if (FocusBackToParentBtn != null) FocusBackToParentBtn.Content = I18n.T("FocusBackToParentBtnText");
+		if (FocusPrevSlotBtn != null) FocusPrevSlotBtn.Content = I18n.T("FocusPrevSlotBtnText");
+		if (FocusNextSlotBtn != null) FocusNextSlotBtn.Content = I18n.T("FocusNextSlotBtnText");
+		if (FocusCenterCoreBtn != null) FocusCenterCoreBtn.Content = I18n.T("FocusCenterCoreBtnText");
+		if (EnableCenterActionCheckBox != null) EnableCenterActionCheckBox.Content = I18n.T("EnableCenterActionText");
+		if (CenterDeadzoneReleaseHintText != null) CenterDeadzoneReleaseHintText.Text = I18n.T("CenterDeadzoneReleaseHint");
+		if (CenterPresetsToggleBtn != null) CenterPresetsToggleBtn.Content = I18n.T("CenterPresetsToggleBtnText");
+		if (CenterInfoToggleBtn != null) CenterInfoToggleBtn.Content = I18n.T("CenterInfoToggleBtnText");
+		if (CenterPatternPriorityNoticeText != null) CenterPatternPriorityNoticeText.Text = I18n.T("CenterPatternPriorityNotice");
+		if (CenterPresetFillLabel != null) CenterPresetFillLabel.Text = I18n.T("CenterPresetFillLabel");
+		if (CenterPresetOpenSettingsBtn != null) CenterPresetOpenSettingsBtn.Content = I18n.T("CenterPresetSettings");
+		if (CenterPresetDesktopBtn != null) CenterPresetDesktopBtn.Content = I18n.T("CenterPresetDesktop");
+		if (CenterPresetLockBtn != null) CenterPresetLockBtn.Content = I18n.T("CenterPresetLock");
+		if (CenterPresetWebUrlBtn != null) CenterPresetWebUrlBtn.Content = I18n.T("CenterPresetWebUrl");
+		if (CenterPresetExplorerBtn != null) CenterPresetExplorerBtn.Content = I18n.T("CenterPresetExplorer");
+		if (CenterFlingExplanationText != null) CenterFlingExplanationText.Text = I18n.T("CenterFlingExplanation");
+		if (FocusTier2EmptyTitleText != null) FocusTier2EmptyTitleText.Text = I18n.T("FocusTier2EmptyTitle");
+		if (FocusTier2EmptySubtitleText != null) FocusTier2EmptySubtitleText.Text = I18n.T("FocusTier2EmptySubtitle");
+		if (FocusAddFirstSubActionBtn != null) FocusAddFirstSubActionBtn.Content = I18n.T("FocusAddFirstSubActionText");
+
+		// Group 4: Focus Editor Icon & Name
+		if (FocusPickIconButton != null) FocusPickIconButton.ToolTip = I18n.T("FocusPickIconButtonToolTip");
+		if (FocusIconLabel != null) FocusIconLabel.Text = I18n.T("FocusIconLabel");
+		if (FocusActionNameLabel != null) FocusActionNameLabel.Text = I18n.T("FocusActionNameLabel");
+
+		// Group 5: Focus Editor Action Types & Dynamic Panels
+		if (FocusActionTypeLabel != null) FocusActionTypeLabel.Text = I18n.T("FocusActionTypeLabel");
+		if (FocusRestoreInheritBtn != null) { FocusRestoreInheritBtn.Content = I18n.T("FocusRestoreInheritBtnText"); FocusRestoreInheritBtn.ToolTip = I18n.T("FocusRestoreInheritBtnToolTip"); }
+		if (FocusTestActionBtn != null) FocusTestActionBtn.Content = I18n.T("FocusTestActionBtnText");
+		if (TogglePauseHotkeysBtn != null) { TogglePauseHotkeysBtn.Content = I18n.T("TogglePauseHotkeysBtnText"); TogglePauseHotkeysBtn.ToolTip = I18n.T("TogglePauseHotkeysBtnToolTip"); }
+		if (FocusHotkeyBuilderBtn != null) FocusHotkeyBuilderBtn.Content = I18n.T("FocusHotkeyBuilderBtnText");
+		if (FocusLaunchPathTextBox != null) FocusLaunchPathTextBox.ToolTip = I18n.T("FocusLaunchPathToolTip");
+		if (FocusLaunchPickProgramBtn != null) { FocusLaunchPickProgramBtn.Content = I18n.T("FocusLaunchPickProgramBtnText"); FocusLaunchPickProgramBtn.ToolTip = I18n.T("FocusLaunchPickProgramBtnToolTip"); }
+		if (FocusLaunchCaptureWindowBtn != null) { FocusLaunchCaptureWindowBtn.Content = I18n.T("FocusLaunchCaptureWindowBtnText"); FocusLaunchCaptureWindowBtn.ToolTip = I18n.T("FocusLaunchCaptureWindowBtnToolTip"); }
+		if (FocusLaunchBrowseExeBtn != null) { FocusLaunchBrowseExeBtn.Content = I18n.T("FocusLaunchBrowseExeBtnText"); FocusLaunchBrowseExeBtn.ToolTip = I18n.T("FocusLaunchBrowseExeBtnToolTip"); }
+		if (FocusLaunchArgsLabel != null) FocusLaunchArgsLabel.Text = I18n.T("FocusLaunchArgsLabel");
+		if (FocusLaunchArgsTextBox != null) FocusLaunchArgsTextBox.ToolTip = I18n.T("FocusLaunchArgsToolTip");
+		if (FocusLaunchAsUserTitleText != null) FocusLaunchAsUserTitleText.Text = I18n.T("FocusLaunchAsUserTitle");
+		if (FocusLaunchAsUserSubtitleText != null) FocusLaunchAsUserSubtitleText.Text = I18n.T("FocusLaunchAsUserSubtitle");
+		if (FocusWebUrlTextBox != null) FocusWebUrlTextBox.ToolTip = I18n.T("FocusWebUrlToolTip");
+		if (FocusWebBrowserDefaultItem != null) FocusWebBrowserDefaultItem.Content = I18n.T("BrowserChoiceDefault");
+		if (FocusWebBrowserCustomItem != null) FocusWebBrowserCustomItem.Content = I18n.T("BrowserChoiceCustom");
+		if (FocusCustomBrowserPathTextBox != null) FocusCustomBrowserPathTextBox.ToolTip = I18n.T("FocusCustomBrowserPathToolTip");
+		if (FocusCustomBrowserBrowseBtn != null) FocusCustomBrowserBrowseBtn.Content = I18n.T("FocusCustomBrowserBrowseBtnText");
+		if (FocusWebPresetsLabel != null) FocusWebPresetsLabel.Text = I18n.T("FocusWebPresetsLabel");
+		if (FocusWebPresetBingBtn != null) FocusWebPresetBingBtn.Content = I18n.T("FocusWebPresetBingText");
+		if (FocusFolderPathTextBox != null) FocusFolderPathTextBox.ToolTip = I18n.T("FocusFolderPathToolTip");
+		if (FocusFolderBrowseBtn != null) FocusFolderBrowseBtn.Content = I18n.T("FocusFolderBrowseBtnText");
+		if (FocusFolderPresetsLabel != null) FocusFolderPresetsLabel.Text = I18n.T("FocusFolderPresetsLabel");
+		if (FocusFolderPresetThisPcBtn != null) { FocusFolderPresetThisPcBtn.Content = I18n.T("FocusFolderPresetThisPcText"); FocusFolderPresetThisPcBtn.ToolTip = I18n.T("FocusFolderPresetThisPcToolTip"); }
+		if (FocusFolderPresetRecycleBinBtn != null) { FocusFolderPresetRecycleBinBtn.Content = I18n.T("FocusFolderPresetRecycleBinText"); FocusFolderPresetRecycleBinBtn.ToolTip = I18n.T("FocusFolderPresetRecycleBinToolTip"); }
+		if (FocusFolderPresetDesktopBtn != null) FocusFolderPresetDesktopBtn.Content = I18n.T("FocusFolderPresetDesktopText");
+		if (FocusFolderPresetDownloadsBtn != null) FocusFolderPresetDownloadsBtn.Content = I18n.T("FocusFolderPresetDownloadsText");
+		if (FocusFolderPresetDocumentsBtn != null) FocusFolderPresetDocumentsBtn.Content = I18n.T("FocusFolderPresetDocumentsText");
+		if (FocusCommandTextBox != null) FocusCommandTextBox.ToolTip = I18n.T("FocusCommandToolTip");
+		if (FocusWindowSubModeLabel != null) FocusWindowSubModeLabel.Text = I18n.T("FocusWindowSubModeLabel");
+		if (FocusWindowModeTileItem != null) FocusWindowModeTileItem.Content = I18n.T("WindowModeTile");
+		if (FocusWindowModeCycleItem != null) FocusWindowModeCycleItem.Content = I18n.T("WindowModeCycle");
+		if (FocusWindowModeCycleReverseItem != null) FocusWindowModeCycleReverseItem.Content = I18n.T("WindowModeCycleReverse");
+		if (FocusWindowModeRestoreItem != null) FocusWindowModeRestoreItem.Content = I18n.T("WindowModeRestore");
+		if (FocusWindowModeTopmostItem != null) FocusWindowModeTopmostItem.Content = I18n.T("WindowModeTopmost");
+		if (FocusWindowModeMoveMonitorItem != null) FocusWindowModeMoveMonitorItem.Content = I18n.T("WindowModeMoveMonitor");
+		if (FocusWindowModeOpacityItem != null) FocusWindowModeOpacityItem.Content = I18n.T("WindowModeOpacity");
+		if (FocusWindowModeSwitchItem != null) FocusWindowModeSwitchItem.Content = I18n.T("WindowModeSwitch");
+		if (FocusPopulateTileSubActionsBtn != null) { FocusPopulateTileSubActionsBtn.Content = I18n.T("FocusPopulateTileSubActionsBtnText"); FocusPopulateTileSubActionsBtn.ToolTip = I18n.T("FocusPopulateTileSubActionsBtnToolTip"); }
+		if (FocusTileCommonLayoutsLabel != null) FocusTileCommonLayoutsLabel.Text = I18n.T("FocusTileCommonLayoutsLabel");
+		if (FocusTilePreset2LBtn != null) FocusTilePreset2LBtn.Content = I18n.T("FocusTilePreset2LText");
+		if (FocusTilePreset2TBtn != null) FocusTilePreset2TBtn.Content = I18n.T("FocusTilePreset2TText");
+		if (FocusTilePreset3L12Btn != null) FocusTilePreset3L12Btn.Content = I18n.T("FocusTilePreset3L12Text");
+		if (FocusTilePreset4GBtn != null) FocusTilePreset4GBtn.Content = I18n.T("FocusTilePreset4GText");
+		if (FocusTilePreset3RBtn != null) FocusTilePreset3RBtn.Content = I18n.T("FocusTilePreset3RText");
+		if (FocusTileCycleHintText != null) FocusTileCycleHintText.Text = I18n.T("FocusTileCycleHint");
+		if (FocusTileRestoreHintText != null) FocusTileRestoreHintText.Text = I18n.T("FocusTileRestoreHint");
+		if (FocusTileTopmostHintText != null) FocusTileTopmostHintText.Text = I18n.T("FocusTileTopmostHint");
+		if (FocusTileMoveMonitorHintText != null) FocusTileMoveMonitorHintText.Text = I18n.T("FocusTileMoveMonitorHint");
+		if (FocusTileOpacityLabel != null) FocusTileOpacityLabel.Text = I18n.T("FocusTileOpacityLabel");
+		if (FocusTileOpacityPresetsLabel != null) FocusTileOpacityPresetsLabel.Text = I18n.T("FocusTileOpacityPresetsLabel");
+		if (FocusOpacity70Btn != null) FocusOpacity70Btn.Content = I18n.T("FocusOpacity70Text");
+		if (FocusOpacity80Btn != null) FocusOpacity80Btn.Content = I18n.T("FocusOpacity80Text");
+		if (FocusOpacity90Btn != null) FocusOpacity90Btn.Content = I18n.T("FocusOpacity90Text");
+		if (FocusOpacity100Btn != null) FocusOpacity100Btn.Content = I18n.T("FocusOpacity100Text");
+		if (FocusSwitchWindowIndexLabel != null) FocusSwitchWindowIndexLabel.Text = I18n.T("FocusSwitchWindowIndexLabel");
+		if (FocusSwitchWindowIndexHintText != null) FocusSwitchWindowIndexHintText.Text = I18n.T("FocusSwitchWindowIndexHint");
+		if (FocusSwitchWindowQuickSelectLabel != null) FocusSwitchWindowQuickSelectLabel.Text = I18n.T("FocusSwitchWindowQuickSelectLabel");
+		if (FocusSwitchSlot1Btn != null) FocusSwitchSlot1Btn.Content = I18n.T("FocusSwitchSlot1Text");
+		if (FocusSwitchSlot2Btn != null) FocusSwitchSlot2Btn.Content = I18n.T("FocusSwitchSlot2Text");
+		if (FocusSwitchSlot3Btn != null) FocusSwitchSlot3Btn.Content = I18n.T("FocusSwitchSlot3Text");
+		if (FocusSwitchSlot4Btn != null) FocusSwitchSlot4Btn.Content = I18n.T("FocusSwitchSlot4Text");
+		if (FocusOcrTestScreenshotBtn != null) { FocusOcrTestScreenshotBtn.Content = I18n.T("FocusOcrTestScreenshotBtnText"); FocusOcrTestScreenshotBtn.ToolTip = I18n.T("FocusOcrTestScreenshotBtnToolTip"); }
+		if (FocusOcrConfigBtn != null) { FocusOcrConfigBtn.Content = I18n.T("FocusOcrConfigBtnText"); FocusOcrConfigBtn.ToolTip = I18n.T("FocusOcrConfigBtnToolTip"); }
+		if (FocusPickShellToolBtn != null) { FocusPickShellToolBtn.Content = I18n.T("FocusPickShellToolBtnText"); FocusPickShellToolBtn.ToolTip = I18n.T("FocusPickShellToolBtnToolTip"); }
+		if (FocusInheritIconLabel != null) FocusInheritIconLabel.Text = I18n.T("FocusInheritIconLabel");
+		if (FocusClearInheritedIconBtn != null) { FocusClearInheritedIconBtn.Content = I18n.T("FocusClearInheritedIconBtnText"); FocusClearInheritedIconBtn.ToolTip = I18n.T("FocusClearInheritedIconBtnToolTip"); }
+		if (FocusInheritIconPathTextBox != null) FocusInheritIconPathTextBox.ToolTip = I18n.T("FocusInheritIconPathToolTip");
+		if (FocusInheritIconPickProgramBtn != null) { FocusInheritIconPickProgramBtn.Content = I18n.T("FocusInheritIconPickProgramBtnText"); FocusInheritIconPickProgramBtn.ToolTip = I18n.T("FocusInheritIconPickProgramBtnToolTip"); }
+		if (FocusInheritIconCaptureWindowBtn != null) { FocusInheritIconCaptureWindowBtn.Content = I18n.T("FocusInheritIconCaptureWindowBtnText"); FocusInheritIconCaptureWindowBtn.ToolTip = I18n.T("FocusInheritIconCaptureWindowBtnToolTip"); }
+		if (FocusInheritIconBrowseBtn != null) { FocusInheritIconBrowseBtn.Content = I18n.T("FocusInheritIconBrowseBtnText"); FocusInheritIconBrowseBtn.ToolTip = I18n.T("FocusInheritIconBrowseBtnToolTip"); }
+		if (FocusSubActionsSectionLabel != null) FocusSubActionsSectionLabel.Text = I18n.T("FocusSubActionsSectionLabel");
+		if (FocusAddSubActionBtn != null) FocusAddSubActionBtn.Content = I18n.T("FocusAddSubActionBtnText");
+		if (FocusClearSubActionsBtn != null) FocusClearSubActionsBtn.Content = I18n.T("FocusClearSubActionsBtnText");
+		if (FocusUndoSubActionsBtn != null) { FocusUndoSubActionsBtn.Content = I18n.T("FocusUndoSubActionsBtnText"); FocusUndoSubActionsBtn.ToolTip = I18n.T("FocusUndoSubActionsBtnToolTip"); }
+
+		// Group 6: Batch Mode
+		if (FocusBatchBadgeText != null) FocusBatchBadgeText.Text = I18n.T("FocusBatchBadgeText");
+		if (FocusBatchTitleText != null) FocusBatchTitleText.Text = I18n.T("FocusBatchTitleText");
+		if (FocusBatchSubtitleText != null) FocusBatchSubtitleText.Text = I18n.T("FocusBatchSubtitleText");
+		if (FocusBatchExitBtn != null) FocusBatchExitBtn.Content = I18n.T("FocusBatchExitBtnText");
+		if (BatchLayoutModeHeaderLabel != null) BatchLayoutModeHeaderLabel.Text = I18n.T("BatchLayoutModeLabel");
+		if (BatchLayoutBothBtn != null) { BatchLayoutBothBtn.Content = I18n.T("BatchLayoutBothBtnText"); BatchLayoutBothBtn.ToolTip = I18n.T("BatchLayoutBothBtnToolTip"); }
+		if (BatchLayoutIconOnlyBtn != null) { BatchLayoutIconOnlyBtn.Content = I18n.T("BatchLayoutIconOnlyBtnText"); BatchLayoutIconOnlyBtn.ToolTip = I18n.T("BatchLayoutIconOnlyBtnToolTip"); }
+		if (BatchLayoutTextOnlyBtn != null) { BatchLayoutTextOnlyBtn.Content = I18n.T("BatchLayoutTextOnlyBtnText"); BatchLayoutTextOnlyBtn.ToolTip = I18n.T("BatchLayoutTextOnlyBtnToolTip"); }
+		if (BatchLayoutInheritBtn != null) { BatchLayoutInheritBtn.Content = I18n.T("BatchLayoutInheritBtnText"); BatchLayoutInheritBtn.ToolTip = I18n.T("BatchLayoutInheritBtnToolTip"); }
+		if (BatchFontSizeHeaderLabel != null) BatchFontSizeHeaderLabel.Text = I18n.T("BatchFontSizeLabel");
+		if (BatchIconSizeHeaderLabel != null) BatchIconSizeHeaderLabel.Text = I18n.T("BatchIconSizeLabel");
+		if (BatchTextColorHeaderLabel != null) BatchTextColorHeaderLabel.Text = I18n.T("BatchTextColorLabel");
+		if (BatchTextColorPaletteBtn != null) BatchTextColorPaletteBtn.ToolTip = I18n.T("BatchTextColorPaletteToolTip");
+		if (BatchTextColorEyedropperBtn != null) BatchTextColorEyedropperBtn.ToolTip = I18n.T("BatchTextColorEyedropperToolTip");
+		if (BatchOffsetXHeaderLabel != null) BatchOffsetXHeaderLabel.Text = I18n.T("BatchOffsetXLabel");
+		if (BatchOffsetYHeaderLabel != null) BatchOffsetYHeaderLabel.Text = I18n.T("BatchOffsetYLabel");
+		if (BatchResetCustomHintText != null) BatchResetCustomHintText.Text = I18n.T("BatchResetCustomHint");
+		if (BatchResetCustomBtn != null) BatchResetCustomBtn.Content = I18n.T("BatchResetCustomBtnText");
+
+		// Group 7: Splitter & Canvas
+		if (Tab2GridSplitter != null) Tab2GridSplitter.ToolTip = I18n.T("Tab2GridSplitterToolTip");
+		if (LiveCanvasHeaderTitleText != null) LiveCanvasHeaderTitleText.Text = I18n.T("LiveCanvasHeaderTitle");
+		if (MappingsLinkSubActionsBtn != null) MappingsLinkSubActionsBtn.ToolTip = I18n.T("MappingsLinkSubActionsToolTip");
+		if (MappingsFpsBadgeText != null) MappingsFpsBadgeText.Text = I18n.T("MappingsFpsBadgeText");
+		if (MappingsCanvasInstructionsText != null) MappingsCanvasInstructionsText.Text = I18n.T("MappingsCanvasInstructions");
+		if (MappingsTier1SegmentRadio != null) MappingsTier1SegmentRadio.Content = I18n.T("MappingsTier1SegmentText");
+		if (MappingsTier2SegmentRadio != null) MappingsTier2SegmentRadio.Content = I18n.T("MappingsTier2SegmentText");
+		if (MappingsShowTextToggleBtn != null) { MappingsShowTextToggleBtn.Content = I18n.T("MappingsShowTextToggleBtnText"); MappingsShowTextToggleBtn.ToolTip = I18n.T("MappingsShowTextToggleBtnToolTip"); }
+		if (MappingsZoomOutBtn != null) MappingsZoomOutBtn.ToolTip = I18n.T("MappingsZoomOutBtnToolTip");
+		if (MappingsZoomLabel != null) MappingsZoomLabel.ToolTip = I18n.T("MappingsZoomLabelToolTip");
+		if (MappingsZoomInBtn != null) MappingsZoomInBtn.ToolTip = I18n.T("MappingsZoomInBtnToolTip");
+		if (MappingsResetViewBtn != null) MappingsResetViewBtn.ToolTip = I18n.T("MappingsResetViewBtnToolTip");
+		if (MappingsSaveNoticeText != null) MappingsSaveNoticeText.Text = I18n.T("MappingsSaveNotice");
+
+		// Group 8: Compact List Headers
+		if (ListModeProfileHeaderTitle != null) ListModeProfileHeaderTitle.Text = I18n.T("ListModeProfileHeaderTitle");
+		if (ListModeProfileHeaderDesc != null) ListModeProfileHeaderDesc.Text = I18n.T("ListModeProfileHeaderDesc");
+		if (ListModeSectorHeaderTitle != null) ListModeSectorHeaderTitle.Text = I18n.T("ListModeSectorHeaderTitle");
+		if (ListModeSectorHeaderDesc != null) ListModeSectorHeaderDesc.Text = I18n.T("ListModeSectorHeaderDesc");
+		if (ListModeActionListHeaderTitle != null) ListModeActionListHeaderTitle.Text = I18n.T("ListModeActionListHeaderTitle");
+		if (ListModeActionListHeaderDesc1 != null) ListModeActionListHeaderDesc1.Text = I18n.T("ListModeActionListHeaderDesc1");
+		if (ListModeActionListHeaderDesc2 != null) ListModeActionListHeaderDesc2.Text = I18n.T("ListModeActionListHeaderDesc2");
+
+		// Group 10: Tile Settings Expander
+		if (TileExcludeMinimizedHintText != null) TileExcludeMinimizedHintText.Text = I18n.T("TileExcludeMinimizedHint");
+		if (TileCaptureExcludeProcessBtn != null) { TileCaptureExcludeProcessBtn.Content = I18n.T("TileCaptureExcludeProcessBtnText"); TileCaptureExcludeProcessBtn.ToolTip = I18n.T("TileCaptureExcludeProcessBtnToolTip"); }
+		if (TileMarginTopTextBox != null) TileMarginTopTextBox.ToolTip = I18n.T("TileMarginTopToolTip");
+		if (TileMarginBottomTextBox != null) TileMarginBottomTextBox.ToolTip = I18n.T("TileMarginBottomToolTip");
+		if (TileMarginLeftTextBox != null) TileMarginLeftTextBox.ToolTip = I18n.T("TileMarginLeftToolTip");
+		if (TileMarginRightTextBox != null) TileMarginRightTextBox.ToolTip = I18n.T("TileMarginRightToolTip");
+		if (TileGapTextBox != null) TileGapTextBox.ToolTip = I18n.T("TileGapToolTip");
+		if (TilePresetClassic4Btn != null) { TilePresetClassic4Btn.Content = I18n.T("TilePresetClassic4BtnText"); TilePresetClassic4Btn.ToolTip = I18n.T("TilePresetClassic4BtnToolTip"); }
+		if (TileMoveLayoutUpBtn != null) TileMoveLayoutUpBtn.ToolTip = I18n.T("TileMoveLayoutUpToolTip");
+		if (TileMoveLayoutDownBtn != null) TileMoveLayoutDownBtn.ToolTip = I18n.T("TileMoveLayoutDownToolTip");
+		if (TileSelectAllLayoutsBtn != null) { TileSelectAllLayoutsBtn.Content = I18n.T("TileSelectAllLayoutsBtnText"); TileSelectAllLayoutsBtn.ToolTip = I18n.T("TileSelectAllLayoutsBtnToolTip"); }
+		if (TileClearAllLayoutsBtn != null) { TileClearAllLayoutsBtn.Content = I18n.T("TileClearAllLayoutsBtnText"); TileClearAllLayoutsBtn.ToolTip = I18n.T("TileClearAllLayoutsBtnToolTip"); }
+
+		// --- Phase 4: Tab 3 (System & Advanced / 高级系统) ---
+		if (UpdateChannelStableItem != null) UpdateChannelStableItem.Content = I18n.T("UpdateChannelStable");
+		if (UpdateChannelBetaItem != null) UpdateChannelBetaItem.Content = I18n.T("UpdateChannelBeta");
+		if (UpdateProxyGhfastItem != null) UpdateProxyGhfastItem.Content = I18n.T("UpdateProxyGhproxy");
+		if (UpdateProxyGhproxyItem != null) UpdateProxyGhproxyItem.Content = I18n.T("UpdateProxyMoeyy");
+		if (UpdateProxyMirrorItem != null) UpdateProxyMirrorItem.Content = I18n.T("UpdateProxyAkams");
+		if (UpdateProxyDirectItem != null) UpdateProxyDirectItem.Content = I18n.T("UpdateProxyDirect");
+
+		if (ContributorsRefreshText != null) ContributorsRefreshText.ToolTip = I18n.T("ContributorsRefreshTip");
+		if (ViewReleasesWebBtn != null) { ViewReleasesWebBtn.Content = I18n.T("ViewReleasesWebBtnText"); ViewReleasesWebBtn.ToolTip = I18n.T("ViewReleasesWebBtnToolTip"); }
+		if (StartDownloadUpdateBtn != null) StartDownloadUpdateBtn.Content = I18n.T("StartDownloadUpdateBtnText");
+		if (OpenWebReleaseBtn != null) OpenWebReleaseBtn.Content = I18n.T("OpenWebReleaseBtnText");
+		if (UpdateDownloadPkgLabel != null) UpdateDownloadPkgLabel.Text = I18n.T("UpdateDownloadPkgLabel");
+		if (UpdatePkgStandaloneRadio != null) UpdatePkgStandaloneRadio.Content = I18n.T("UpdatePkgStandaloneRadioText");
+		if (UpdatePkgLightweightRadio != null) UpdatePkgLightweightRadio.Content = I18n.T("UpdatePkgLightweightRadioText");
+		if (UpdateChangelogLabel != null) UpdateChangelogLabel.Text = I18n.T("UpdateChangelogLabel");
+		if (CancelDownloadBtn != null) CancelDownloadBtn.Content = I18n.T("CancelDownloadBtnText");
+		if (UpdateReadyTitleText != null) UpdateReadyTitleText.Text = I18n.T("UpdateReadyTitleText");
+		if (UpdateReadyDescText != null) UpdateReadyDescText.Text = I18n.T("UpdateReadyDescText");
+		if (ApplyRestartUpdateBtn != null) ApplyRestartUpdateBtn.Content = I18n.T("ApplyRestartUpdateBtnText");
+		if (OpenUpdateFolderBtn != null) OpenUpdateFolderBtn.Content = I18n.T("OpenUpdateFolderBtnText");
+		if (UpdateAdvancedOptionsBadge != null) UpdateAdvancedOptionsBadge.Text = I18n.T("UpdateAdvancedOptionsBadge");
+		if (ChinaFastDownloadBadge != null) ChinaFastDownloadBadge.Text = I18n.T("ChinaFastDownloadBadge");
+		if (RollbackPackageArchLabel != null) RollbackPackageArchLabel.Text = I18n.T("RollbackPackageArchLabel");
+		if (RollbackChangelogHeaderLabel != null) RollbackChangelogHeaderLabel.Text = I18n.T("RollbackChangelogHeaderLabel");
+		if (LanguageAutoItem != null) LanguageAutoItem.Content = I18n.T("LanguageFollowSystem");
+		if (UpdateDownloadSpeedText != null && (UpdateDownloadSpeedText.Text.Contains("计算中") || UpdateDownloadSpeedText.Text.Contains("Calculating") || UpdateDownloadSpeedText.Text.Contains("計算中")))
+		{
+			UpdateDownloadSpeedText.Text = I18n.T("UpdateDownloadSpeedCalculating");
+		}
+		if (UpdateDownloadSpeedText != null && (UpdateDownloadSpeedText.Text.Contains("连接下载源") || UpdateDownloadSpeedText.Text.Contains("Connecting") || UpdateDownloadSpeedText.Text.Contains("連線下載") || UpdateDownloadSpeedText.Text.Contains("接続中")))
+		{
+			UpdateDownloadSpeedText.Text = I18n.T("UpdateDownloadSpeedConnecting");
+		}
+		if (FocusShellToolTitleText != null && (FocusShellToolTitleText.Text == "未挑选功能 (点击右侧挑选)" || FocusShellToolTitleText.Text == I18n.T("FocusShellToolDefaultTitle") || string.IsNullOrEmpty(FocusShellToolTitleText.Text)))
+		{
+			FocusShellToolTitleText.Text = I18n.T("FocusShellToolDefaultTitle");
+		}
+		if (FocusShellToolDescText != null && (FocusShellToolDescText.Text == "从系统原生增强与右键扩展中选择常用高频功能" || FocusShellToolDescText.Text == I18n.T("FocusShellToolDefaultDesc") || string.IsNullOrEmpty(FocusShellToolDescText.Text)))
+		{
+			FocusShellToolDescText.Text = I18n.T("FocusShellToolDefaultDesc");
+		}
+
+		// Tab 3 ToolTips
+		if (Tab4TestOcrBtn != null) Tab4TestOcrBtn.ToolTip = I18n.T("TipTestOcr");
+		if (Tab4ConfigOcrBtn != null) Tab4ConfigOcrBtn.ToolTip = I18n.T("TipConfigOcr");
+		if (TrimMemoryButton != null) TrimMemoryButton.ToolTip = I18n.T("TipTrimMemory");
+		if (SaveNewProfileBtn != null) SaveNewProfileBtn.ToolTip = I18n.T("TipSaveNewProfile");
+		if (RenameProfileBtn != null) RenameProfileBtn.ToolTip = I18n.T("TipRenameProfile");
+		if (DeleteProfileBtn != null) DeleteProfileBtn.ToolTip = I18n.T("TipDeleteProfile");
+		if (ImportConfigButton != null) ImportConfigButton.ToolTip = I18n.T("TipImportConfig");
+		if (ExportConfigButton != null) ExportConfigButton.ToolTip = I18n.T("TipExportConfig");
+		if (ResetDefaultConfigBtn != null) ResetDefaultConfigBtn.ToolTip = I18n.T("TipResetConfig");
+		if (OpenLogFolderButton != null) OpenLogFolderButton.ToolTip = I18n.T("TipOpenLogFolder");
+		if (ViewTodayLogButton != null) ViewTodayLogButton.ToolTip = I18n.T("TipViewTodayLog");
+
+		// --- Phase 5: Tab 4 (About & Milestones / 关于与版本演进) ---
+		if (AboutCheckUpdateBtn != null) AboutCheckUpdateBtn.Content = I18n.T("BtnCheckUpdate");
+		if (OpenChangelogButton != null) OpenChangelogButton.Content = I18n.T("BtnViewChangelog");
+		if (OlderMilestonesExpander != null) OlderMilestonesExpander.Header = I18n.T("MilestonesOlderExpander");
+		if (Tab4_AboutTitleText != null) Tab4_AboutTitleText.Text = I18n.T("Tab4_AboutTitleText");
+		if (Tab4_AboutDescText != null) Tab4_AboutDescText.Text = I18n.T("Tab4_AboutDescText");
+		if (Tab4_AppSloganText != null) Tab4_AppSloganText.Text = I18n.T("Tab4_AppSloganText");
+		if (Tab4_MilestonesHeaderTitle != null) Tab4_MilestonesHeaderTitle.Text = I18n.T("Tab4_MilestonesHeaderTitle");
+		if (Tab4_Ms_180b1_Title != null) Tab4_Ms_180b1_Title.Text = I18n.T("Tab4_Ms_180b1_Title");
+		if (Tab4_Ms_180b1_P1 != null) Tab4_Ms_180b1_P1.Text = I18n.T("Tab4_Ms_180b1_P1");
+		if (Tab4_Ms_180b1_P2 != null) Tab4_Ms_180b1_P2.Text = I18n.T("Tab4_Ms_180b1_P2");
+		if (Tab4_Ms_180b1_P3 != null) Tab4_Ms_180b1_P3.Text = I18n.T("Tab4_Ms_180b1_P3");
+		if (Tab4_Ms_180b1_P4 != null) Tab4_Ms_180b1_P4.Text = I18n.T("Tab4_Ms_180b1_P4");
+		if (Tab4_Ms_174_Title != null) Tab4_Ms_174_Title.Text = I18n.T("Tab4_Ms_174_Title");
+		if (Tab4_Ms_174_P1 != null) Tab4_Ms_174_P1.Text = I18n.T("Tab4_Ms_174_P1");
+		if (Tab4_Ms_174_P2 != null) Tab4_Ms_174_P2.Text = I18n.T("Tab4_Ms_174_P2");
+		if (Tab4_Ms_174_P3 != null) Tab4_Ms_174_P3.Text = I18n.T("Tab4_Ms_174_P3");
+		if (Tab4_Ms_174_P4 != null) Tab4_Ms_174_P4.Text = I18n.T("Tab4_Ms_174_P4");
+		if (Tab4_Ms_174b4_Title != null) Tab4_Ms_174b4_Title.Text = I18n.T("Tab4_Ms_174b4_Title");
+		if (Tab4_Ms_174b4_P1 != null) Tab4_Ms_174b4_P1.Text = I18n.T("Tab4_Ms_174b4_P1");
+		if (Tab4_Ms_174b4_P2 != null) Tab4_Ms_174b4_P2.Text = I18n.T("Tab4_Ms_174b4_P2");
+		if (Tab4_Ms_174b4_P3 != null) Tab4_Ms_174b4_P3.Text = I18n.T("Tab4_Ms_174b4_P3");
+		if (Tab4_Ms_174b4_P4 != null) Tab4_Ms_174b4_P4.Text = I18n.T("Tab4_Ms_174b4_P4");
+		if (Tab4_Ms_174b3_Title != null) Tab4_Ms_174b3_Title.Text = I18n.T("Tab4_Ms_174b3_Title");
+		if (Tab4_Ms_174b3_P1 != null) Tab4_Ms_174b3_P1.Text = I18n.T("Tab4_Ms_174b3_P1");
+		if (Tab4_Ms_174b3_P2 != null) Tab4_Ms_174b3_P2.Text = I18n.T("Tab4_Ms_174b3_P2");
+		if (Tab4_Ms_174b3_P3 != null) Tab4_Ms_174b3_P3.Text = I18n.T("Tab4_Ms_174b3_P3");
+		if (Tab4_Ms_174b2_Title != null) Tab4_Ms_174b2_Title.Text = I18n.T("Tab4_Ms_174b2_Title");
+		if (Tab4_Ms_174b2_P1 != null) Tab4_Ms_174b2_P1.Text = I18n.T("Tab4_Ms_174b2_P1");
+		if (Tab4_Ms_174b2_P2 != null) Tab4_Ms_174b2_P2.Text = I18n.T("Tab4_Ms_174b2_P2");
+		if (Tab4_Ms_174b2_P3 != null) Tab4_Ms_174b2_P3.Text = I18n.T("Tab4_Ms_174b2_P3");
+		if (Tab4_Ms_174b2_P4 != null) Tab4_Ms_174b2_P4.Text = I18n.T("Tab4_Ms_174b2_P4");
+		if (Tab4_Ms_174b1_Title != null) Tab4_Ms_174b1_Title.Text = I18n.T("Tab4_Ms_174b1_Title");
+		if (Tab4_Ms_174b1_P1 != null) Tab4_Ms_174b1_P1.Text = I18n.T("Tab4_Ms_174b1_P1");
+		if (Tab4_Ms_174b1_P2 != null) Tab4_Ms_174b1_P2.Text = I18n.T("Tab4_Ms_174b1_P2");
+		if (Tab4_Ms_174b1_P3 != null) Tab4_Ms_174b1_P3.Text = I18n.T("Tab4_Ms_174b1_P3");
+		if (Tab4_Ms_174b1_P4 != null) Tab4_Ms_174b1_P4.Text = I18n.T("Tab4_Ms_174b1_P4");
+		if (Tab4_Ms_173_Title != null) Tab4_Ms_173_Title.Text = I18n.T("Tab4_Ms_173_Title");
+		if (Tab4_Ms_173_P1 != null) Tab4_Ms_173_P1.Text = I18n.T("Tab4_Ms_173_P1");
+		if (Tab4_Ms_173_P2 != null) Tab4_Ms_173_P2.Text = I18n.T("Tab4_Ms_173_P2");
+		if (Tab4_Ms_173_P3 != null) Tab4_Ms_173_P3.Text = I18n.T("Tab4_Ms_173_P3");
+		if (Tab4_Ms_173_P4 != null) Tab4_Ms_173_P4.Text = I18n.T("Tab4_Ms_173_P4");
+		if (Tab4_Ms_173_P5 != null) Tab4_Ms_173_P5.Text = I18n.T("Tab4_Ms_173_P5");
+		if (Tab4_Ms_173b8_Title != null) Tab4_Ms_173b8_Title.Text = I18n.T("Tab4_Ms_173b8_Title");
+		if (Tab4_Ms_173b8_P1 != null) Tab4_Ms_173b8_P1.Text = I18n.T("Tab4_Ms_173b8_P1");
+		if (Tab4_Ms_173b8_P2 != null) Tab4_Ms_173b8_P2.Text = I18n.T("Tab4_Ms_173b8_P2");
+		if (Tab4_Ms_173b8_P3 != null) Tab4_Ms_173b8_P3.Text = I18n.T("Tab4_Ms_173b8_P3");
+		if (Tab4_Ms_173b8_P4 != null) Tab4_Ms_173b8_P4.Text = I18n.T("Tab4_Ms_173b8_P4");
+		if (Tab4_Ms_173b8_P5 != null) Tab4_Ms_173b8_P5.Text = I18n.T("Tab4_Ms_173b8_P5");
+		if (Tab4_Ms_173b7_Title != null) Tab4_Ms_173b7_Title.Text = I18n.T("Tab4_Ms_173b7_Title");
+		if (Tab4_Ms_173b7_P1 != null) Tab4_Ms_173b7_P1.Text = I18n.T("Tab4_Ms_173b7_P1");
+		if (Tab4_Ms_173b7_P2 != null) Tab4_Ms_173b7_P2.Text = I18n.T("Tab4_Ms_173b7_P2");
+		if (Tab4_Ms_173b7_P3 != null) Tab4_Ms_173b7_P3.Text = I18n.T("Tab4_Ms_173b7_P3");
+		if (Tab4_Ms_173b7_P4 != null) Tab4_Ms_173b7_P4.Text = I18n.T("Tab4_Ms_173b7_P4");
+		if (Tab4_Ms_173b6_Title != null) Tab4_Ms_173b6_Title.Text = I18n.T("Tab4_Ms_173b6_Title");
+		if (Tab4_Ms_173b6_P1 != null) Tab4_Ms_173b6_P1.Text = I18n.T("Tab4_Ms_173b6_P1");
+		if (Tab4_Ms_173b6_P2 != null) Tab4_Ms_173b6_P2.Text = I18n.T("Tab4_Ms_173b6_P2");
+		if (Tab4_Ms_173b5_Title != null) Tab4_Ms_173b5_Title.Text = I18n.T("Tab4_Ms_173b5_Title");
+		if (Tab4_Ms_173b5_P1 != null) Tab4_Ms_173b5_P1.Text = I18n.T("Tab4_Ms_173b5_P1");
+		if (Tab4_Ms_173b5_P2 != null) Tab4_Ms_173b5_P2.Text = I18n.T("Tab4_Ms_173b5_P2");
+		if (Tab4_Ms_173b5_P3 != null) Tab4_Ms_173b5_P3.Text = I18n.T("Tab4_Ms_173b5_P3");
+		if (Tab4_Ms_173b5_P4 != null) Tab4_Ms_173b5_P4.Text = I18n.T("Tab4_Ms_173b5_P4");
+		if (Tab4_Ms_173b4_Title != null) Tab4_Ms_173b4_Title.Text = I18n.T("Tab4_Ms_173b4_Title");
+		if (Tab4_Ms_173b4_P1 != null) Tab4_Ms_173b4_P1.Text = I18n.T("Tab4_Ms_173b4_P1");
+		if (Tab4_Ms_173b4_P2 != null) Tab4_Ms_173b4_P2.Text = I18n.T("Tab4_Ms_173b4_P2");
+		if (Tab4_Ms_173b4_P3 != null) Tab4_Ms_173b4_P3.Text = I18n.T("Tab4_Ms_173b4_P3");
+		if (Tab4_Ms_173b4_P4 != null) Tab4_Ms_173b4_P4.Text = I18n.T("Tab4_Ms_173b4_P4");
+		if (Tab4_Ms_173b3_Title != null) Tab4_Ms_173b3_Title.Text = I18n.T("Tab4_Ms_173b3_Title");
+		if (Tab4_Ms_173b3_Desc != null) Tab4_Ms_173b3_Desc.Text = I18n.T("Tab4_Ms_173b3_Desc");
+		if (Tab4_Ms_173b2_Title != null) Tab4_Ms_173b2_Title.Text = I18n.T("Tab4_Ms_173b2_Title");
+		if (Tab4_Ms_173b2_Desc != null) Tab4_Ms_173b2_Desc.Text = I18n.T("Tab4_Ms_173b2_Desc");
+		if (Tab4_Ms_172b5_Title != null) Tab4_Ms_172b5_Title.Text = I18n.T("Tab4_Ms_172b5_Title");
+		if (Tab4_Ms_172b5_Desc != null) Tab4_Ms_172b5_Desc.Text = I18n.T("Tab4_Ms_172b5_Desc");
+		if (Tab4_Ms_172b2_Title != null) Tab4_Ms_172b2_Title.Text = I18n.T("Tab4_Ms_172b2_Title");
+		if (Tab4_Ms_172b2_Desc != null) Tab4_Ms_172b2_Desc.Text = I18n.T("Tab4_Ms_172b2_Desc");
+		if (Tab4_Ms_171_Title != null) Tab4_Ms_171_Title.Text = I18n.T("Tab4_Ms_171_Title");
+		if (Tab4_Ms_171_Desc != null) Tab4_Ms_171_Desc.Text = I18n.T("Tab4_Ms_171_Desc");
+		if (Tab4_Ms_170_Title != null) Tab4_Ms_170_Title.Text = I18n.T("Tab4_Ms_170_Title");
+		if (Tab4_Ms_170_Desc != null) Tab4_Ms_170_Desc.Text = I18n.T("Tab4_Ms_170_Desc");
+		if (Tab4_Ms_169_Title != null) Tab4_Ms_169_Title.Text = I18n.T("Tab4_Ms_169_Title");
+		if (Tab4_Ms_169_Desc != null) Tab4_Ms_169_Desc.Text = I18n.T("Tab4_Ms_169_Desc");
+		if (Tab4_Ms_168_Title != null) Tab4_Ms_168_Title.Text = I18n.T("Tab4_Ms_168_Title");
+		if (Tab4_Ms_168_Desc != null) Tab4_Ms_168_Desc.Text = I18n.T("Tab4_Ms_168_Desc");
+		if (Tab4_Ms_167_Title != null) Tab4_Ms_167_Title.Text = I18n.T("Tab4_Ms_167_Title");
+		if (Tab4_Ms_167_Desc != null) Tab4_Ms_167_Desc.Text = I18n.T("Tab4_Ms_167_Desc");
+		if (Tab4_Ms_158_Title != null) Tab4_Ms_158_Title.Text = I18n.T("Tab4_Ms_158_Title");
+		if (Tab4_Ms_158_Desc != null) Tab4_Ms_158_Desc.Text = I18n.T("Tab4_Ms_158_Desc");
+		if (Tab4_Ms_157_Title != null) Tab4_Ms_157_Title.Text = I18n.T("Tab4_Ms_157_Title");
+		if (Tab4_Ms_157_Desc != null) Tab4_Ms_157_Desc.Text = I18n.T("Tab4_Ms_157_Desc");
+		if (Tab4_Ms_156_Title != null) Tab4_Ms_156_Title.Text = I18n.T("Tab4_Ms_156_Title");
+		if (Tab4_Ms_156_Desc != null) Tab4_Ms_156_Desc.Text = I18n.T("Tab4_Ms_156_Desc");
+		if (Tab4_Ms_145_Title != null) Tab4_Ms_145_Title.Text = I18n.T("Tab4_Ms_145_Title");
+		if (Tab4_Ms_145_Desc != null) Tab4_Ms_145_Desc.Text = I18n.T("Tab4_Ms_145_Desc");
+		if (Tab4_Ms_144_Title != null) Tab4_Ms_144_Title.Text = I18n.T("Tab4_Ms_144_Title");
+		if (Tab4_Ms_144_Desc != null) Tab4_Ms_144_Desc.Text = I18n.T("Tab4_Ms_144_Desc");
+		if (Tab4_Ms_139_Title != null) Tab4_Ms_139_Title.Text = I18n.T("Tab4_Ms_139_Title");
+		if (Tab4_Ms_139_Desc != null) Tab4_Ms_139_Desc.Text = I18n.T("Tab4_Ms_139_Desc");
+		if (Tab4_Ms_138_Title != null) Tab4_Ms_138_Title.Text = I18n.T("Tab4_Ms_138_Title");
+		if (Tab4_Ms_138_Desc != null) Tab4_Ms_138_Desc.Text = I18n.T("Tab4_Ms_138_Desc");
+		if (Tab4_Ms_134_Title != null) Tab4_Ms_134_Title.Text = I18n.T("Tab4_Ms_134_Title");
+		if (Tab4_Ms_134_Desc != null) Tab4_Ms_134_Desc.Text = I18n.T("Tab4_Ms_134_Desc");
+		if (Tab4_Ms_133_Title != null) Tab4_Ms_133_Title.Text = I18n.T("Tab4_Ms_133_Title");
+		if (Tab4_Ms_133_Desc != null) Tab4_Ms_133_Desc.Text = I18n.T("Tab4_Ms_133_Desc");
+		if (Tab4_Ms_132_Title != null) Tab4_Ms_132_Title.Text = I18n.T("Tab4_Ms_132_Title");
+		if (Tab4_Ms_132_Desc != null) Tab4_Ms_132_Desc.Text = I18n.T("Tab4_Ms_132_Desc");
+		if (Tab4_Ms_131_Title != null) Tab4_Ms_131_Title.Text = I18n.T("Tab4_Ms_131_Title");
+		if (Tab4_Ms_131_Desc != null) Tab4_Ms_131_Desc.Text = I18n.T("Tab4_Ms_131_Desc");
+		if (Tab4_Ms_130_Title != null) Tab4_Ms_130_Title.Text = I18n.T("Tab4_Ms_130_Title");
+		if (Tab4_Ms_130_Desc != null) Tab4_Ms_130_Desc.Text = I18n.T("Tab4_Ms_130_Desc");
+
+		if (OpenCustomSoundConfigButton != null) OpenCustomSoundConfigButton.ToolTip = I18n.T("TipToggleCustomSoundConfig");
+		if (SoundPreviewButton != null) SoundPreviewButton.ToolTip = I18n.T("TipSoundPreview");
+		if (BrowseBlacklistButton != null) BrowseBlacklistButton.ToolTip = I18n.T("TipBrowseBlacklist");
+		if (AddBlacklistButton != null) AddBlacklistButton.ToolTip = I18n.T("TipAddBlacklist");
+		if (DuplicateProfileBtn != null) DuplicateProfileBtn.ToolTip = I18n.T("TipDuplicateProfile");
+		if (AddProfileButton != null) AddProfileButton.ToolTip = I18n.T("TipAddProfile");
+		if (AddCustomProfileButton != null) AddCustomProfileButton.ToolTip = I18n.T("TipAddCustomProfile");
+
+		SetTileSettingsExpanded(TileSettingsContentPanel?.Visibility == Visibility.Visible);
+		UpdateLinkSubActionsButtonUi();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+
+		UpdateFocusEditorUi();
+		RenderLiveWheelPreview();
+
+		// --- Dynamic ComboBoxes Multi-Language Hot Refresh ---
+		RefreshLayoutOptionsUi();
+		UpdateFocusActionTypeItemsSource(force: true);
+		if (FocusTileLayoutComboBox != null)
+		{
+			var selVal = FocusTileLayoutComboBox.SelectedValue;
+			FocusTileLayoutComboBox.ItemsSource = null;
+			FocusTileLayoutComboBox.ItemsSource = SlotViewModel.StaticTileLayoutOptions;
+			if (selVal != null) FocusTileLayoutComboBox.SelectedValue = selVal;
+		}
+		if (FocusCommandTerminalComboBox != null)
+		{
+			var selVal = FocusCommandTerminalComboBox.SelectedValue;
+			FocusCommandTerminalComboBox.ItemsSource = null;
+			FocusCommandTerminalComboBox.ItemsSource = SlotViewModel.LocalizedTerminals;
+			if (selVal != null) FocusCommandTerminalComboBox.SelectedValue = selVal;
+		}
+		if (FocusSystemPresetComboBox != null)
+		{
+			var selVal = FocusSystemPresetComboBox.SelectedValue;
+			FocusSystemPresetComboBox.ItemsSource = null;
+			FocusSystemPresetComboBox.ItemsSource = SlotViewModel.SystemPresetList;
+			if (selVal != null) FocusSystemPresetComboBox.SelectedValue = selVal;
+		}
+		if (MappingsProfileComboBox != null)
+		{
+			var curProf = _selectedProfile;
+			MappingsProfileComboBox.ItemsSource = null;
+			MappingsProfileComboBox.ItemsSource = ConfigManager.CurrentConfig?.Profiles;
+			MappingsProfileComboBox.SelectedItem = curProf;
+		}
+		if (ProfilesListBox != null)
+		{
+			var curProf = _selectedProfile;
+			ProfilesListBox.ItemsSource = null;
+			ProfilesListBox.ItemsSource = ConfigManager.CurrentConfig?.Profiles;
+			ProfilesListBox.SelectedItem = curProf;
+		}
+		if (LayerSelectComboBox != null && _selectedProfile?.Layers != null)
+		{
+			int curLayerIdx = LayerSelectComboBox.SelectedIndex;
+			LayerSelectComboBox.ItemsSource = null;
+			LayerSelectComboBox.ItemsSource = _selectedProfile.Layers;
+			LayerSelectComboBox.SelectedIndex = curLayerIdx >= 0 ? curLayerIdx : 0;
+		}
+		RefreshConfigProfilesUi();
+		ReloadThemePresets();
+
+		// 动作编辑面板的文案是**代码拼串**（不是 XAML 字面量），所以它只在被**重建**时才换语言。
+		// 这里必须补一次重渲染，否则切完语言会得到「同一个窗口里两种语言并存」：
+		// 侧边栏、页签、按钮都换了，而编辑器里那一整块（插件面板，以及
+		// Hotkey / Launch / WebUrl / Folder / Command / WindowManager / System / Ocr /
+		// ShellTool 九个面板）还停在旧语言 —— 而这一块正是用户改动作时盯着看的地方。
+		// 用 IsLoaded 挡住构造期那次调用：那时编辑器还没起来，重跑没有意义，
+		// 平白多走一遍初始化路径也没有好处。UpdateFocusEditorUi 自带重入守卫且幂等，
+		// 与它 40+ 个调用点走的是同一条路。
+		if (IsLoaded)
+		{
+			UpdateFocusEditorUi();
+		}
+
+		App.RefreshTrayMenu();
+	}
+
+	public void ShowSettings(int tabIndex = -1)
+	{
+		if (!((DispatcherObject)this).Dispatcher.CheckAccess())
+		{
+			((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
+			{
+				ShowSettings(tabIndex);
+			});
+			return;
+		}
+		CancelDeferredClose();
+		EnsureUiInitialized();
+		SwitchToTab(tabIndex >= 0 ? tabIndex : _lastSelectedTabIndex);
+		BeginAnimation(UIElement.OpacityProperty, null);
+		base.Opacity = 1.0;
+		ShowInTaskbar = true;
+		if (base.Visibility != Visibility.Visible)
+		{
+			Show();
+		}
+		if (base.WindowState == WindowState.Minimized)
+		{
+			base.WindowState = WindowState.Normal;
+		}
+		Activate();
+		Focus();
+		try
+		{
+			nint handle = new WindowInteropHelper(this).Handle;
+			if (handle != IntPtr.Zero)
+			{
+				SetForegroundWindow(handle);
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	private void NavTab_Checked(object sender, RoutedEventArgs e)
+	{
+		if (!_isUpdatingUi && sender is FrameworkElement { Tag: var tag } && int.TryParse(tag?.ToString(), out var result))
+		{
+			SwitchToTab(result);
+		}
+	}
+
+	public void SwitchToTab(int index)
+	{
+		if (TriggerSettingsGrid == null || AppearanceSettingsGrid == null || MappingsSettingsGrid == null || SystemSettingsGrid == null || AboutSettingsGrid == null || PluginsSettingsGrid == null)
+		{
+			return;
+		}
+		index = Math.Clamp(index, 0, 5);
+		_lastSelectedTabIndex = index;
+		TriggerSettingsGrid.Visibility = ((index != 0) ? Visibility.Collapsed : Visibility.Visible);
+		AppearanceSettingsGrid.Visibility = ((index != 1) ? Visibility.Collapsed : Visibility.Visible);
+		MappingsSettingsGrid.Visibility = ((index != 2) ? Visibility.Collapsed : Visibility.Visible);
+		SystemSettingsGrid.Visibility = ((index != 3) ? Visibility.Collapsed : Visibility.Visible);
+		AboutSettingsGrid.Visibility = ((index != 4) ? Visibility.Collapsed : Visibility.Visible);
+		PluginsSettingsGrid.Visibility = ((index != 5) ? Visibility.Collapsed : Visibility.Visible);
+		_isUpdatingUi = true;
+		try
+		{
+			if (NavTab0 != null)
+			{
+				NavTab0.IsChecked = index == 0;
+			}
+			if (NavTab1 != null)
+			{
+				NavTab1.IsChecked = index == 1;
+			}
+			if (NavTab2 != null)
+			{
+				NavTab2.IsChecked = index == 2;
+			}
+			if (NavTab3 != null)
+			{
+				NavTab3.IsChecked = index == 3;
+			}
+			if (NavTab4 != null)
+			{
+				NavTab4.IsChecked = index == 4;
+			}
+			if (NavTab5 != null)
+			{
+				NavTab5.IsChecked = index == 5;
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		if (index == 5)
+		{
+			// 进入插件页时重新与磁盘对一次账：用户可能在资源管理器里手工拷入了新插件，
+			// 也可能直接删掉了某个插件目录。不重扫的话界面会显示陈旧状态。
+			RefreshPluginManagerUi(resyncFromDisk: true);
+		}
+		switch (index)
+		{
+		case 2:
+			if (_selectedProfile == null && ConfigManager.CurrentConfig.Profiles.Count > 0)
+			{
+				_selectedProfile = ConfigManager.CurrentConfig.Profiles[0];
+			}
+			if (_selectedProfile != null)
+			{
+				_selectedProfile.EnsureLayers();
+				RefreshLayersUi();
+			}
+			if (ProfilesListBox != null)
+			{
+				ProfilesListBox.SelectedItem = _selectedProfile;
+			}
+			if (MappingsProfileComboBox != null)
+			{
+				MappingsProfileComboBox.SelectedItem = _selectedProfile;
+			}
+			if (_selectedProfile == null)
+			{
+				break;
+			}
+			_isUpdatingUi = true;
+			try
+			{
+				ApplySectorCountSelectionToUi(_selectedProfile.SectorCount);
+				RefreshSlots();
+				UpdateFocusEditorUi();
+				RenderMappingsWheelPreview();
+			}
+			finally
+			{
+				_isUpdatingUi = false;
+			}
+			UpdateProfileToolbarButtonStates();
+			break;
+		case 1:
+			RenderLiveWheelPreview();
+			break;
+		}
+	}
+
+	private void ScheduleAutoSave()
+	{
+		if (!_isUiInitialized || _isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.MarkConfigurationChanged();
+		if (_autoSaveDebounceTimer == null)
+		{
+			_autoSaveDebounceTimer = new DispatcherTimer
+			{
+				Interval = TimeSpan.FromMilliseconds(400.0)
+			};
+			_autoSaveDebounceTimer.Tick += delegate
+			{
+				_autoSaveDebounceTimer.Stop();
+				SyncUiToConfigAndSave();
+			};
+		}
+		_autoSaveDebounceTimer.Stop();
+		_autoSaveDebounceTimer.Start();
+	}
+
+	// 返回是否确实写入成功。UI 初始化期间（_isUpdatingUi）或配置为空时直接返回 false，
+	// 调用方不应在 false 时宣称“已保存”。
+	private bool SyncUiToConfigAndSave(bool saveToDisk = true)
+	{
+		if (!_isUiInitialized || _isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return false;
+		}
+		try
+		{
+
+			if (UiStyleComboBox?.SelectedItem is ComboBoxItem comboBoxItem2)
+			{
+				ConfigManager.CurrentConfig.UiStyle = comboBoxItem2.Tag?.ToString() ?? "ClassicRing";
+			}
+			if (ThemeComboBox?.SelectedItem is ComboBoxItem comboBoxItem3)
+			{
+				ConfigManager.CurrentConfig.Theme = comboBoxItem3.Tag?.ToString() ?? "System";
+			}
+			if (ShapeComboBox?.SelectedItem is ComboBoxItem comboBoxItem4)
+			{
+				ConfigManager.CurrentConfig.Shape = comboBoxItem4.Tag?.ToString() ?? "Original";
+			}
+			if (_selectedLayoutSlotIndex < 0)
+			{
+				if (IconLayoutModeComboBox?.SelectedItem is ComboBoxItem comboBoxItem5)
+				{
+					ConfigManager.CurrentConfig.IconLayoutMode = comboBoxItem5.Tag?.ToString() ?? "IconAndText";
+				}
+				if (WheelFontFamilyComboBox?.SelectedItem is ComboBoxItem wheelFontItem)
+				{
+					ConfigManager.CurrentConfig.WheelFontFamily = wheelFontItem.Tag?.ToString() ?? "Microsoft YaHei UI, Segoe UI";
+				}
+				if (SectorIconSizeSlider != null)
+				{
+					ConfigManager.CurrentConfig.SectorIconSize = SectorIconSizeSlider.Value;
+				}
+				if (SectorFontSizeSlider != null)
+				{
+					ConfigManager.CurrentConfig.SectorFontSize = SectorFontSizeSlider.Value;
+				}
+			}
+			if (ShowSelectedActionTextCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.ShowSelectedActionText = ShowSelectedActionTextCheckBox.IsChecked == true;
+			}
+			if (ShowCoreIconCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.ShowCoreIcon = ShowCoreIconCheckBox.IsChecked == true;
+			}
+			if (CoreIconTypeComboBox?.SelectedItem is ComboBoxItem comboBoxItem6)
+			{
+				ConfigManager.CurrentConfig.CoreIconType = comboBoxItem6.Tag?.ToString() ?? "Exit";
+			}
+			if (CoreImagePathTextBox != null)
+			{
+				ConfigManager.CurrentConfig.CoreCustomImagePath = CoreImagePathTextBox.Text.Trim();
+			}
+			if (CoreIconScaleSlider != null)
+			{
+				ConfigManager.CurrentConfig.CoreIconScale = CoreIconScaleSlider.Value;
+			}
+			if (CoreImageOffsetXSlider != null)
+			{
+				ConfigManager.CurrentConfig.CoreImageOffsetX = CoreImageOffsetXSlider.Value;
+			}
+			if (CoreImageOffsetYSlider != null)
+			{
+				ConfigManager.CurrentConfig.CoreImageOffsetY = CoreImageOffsetYSlider.Value;
+			}
+			if (HighlightGlowPresetComboBox?.SelectedItem is ComboBoxItem comboBoxItem7)
+			{
+				ConfigManager.CurrentConfig.HighlightGlowPreset = comboBoxItem7.Tag?.ToString() ?? "Auto";
+			}
+			if (HighlightGlowColorTextBox != null)
+			{
+				ConfigManager.CurrentConfig.HighlightGlowColor = HighlightGlowColorTextBox.Text.Trim();
+			}
+			if (HighlightGlowRadiusSlider != null)
+			{
+				ConfigManager.CurrentConfig.HighlightGlowRadius = HighlightGlowRadiusSlider.Value;
+			}
+			if (HighlightGlowOpacitySlider != null)
+			{
+				ConfigManager.CurrentConfig.HighlightGlowOpacity = HighlightGlowOpacitySlider.Value / 100.0;
+			}
+			if (SubHighlightGlowPresetComboBox?.SelectedItem is ComboBoxItem comboBoxItem8)
+			{
+				ConfigManager.CurrentConfig.SubWheelHighlightGlowPreset = comboBoxItem8.Tag?.ToString() ?? "FollowPrimary";
+			}
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = SubHighlightGlowColorTextBox.Text.Trim();
+			}
+			if (SubHighlightGlowRadiusSlider != null)
+			{
+				ConfigManager.CurrentConfig.SubWheelHighlightGlowRadius = SubHighlightGlowRadiusSlider.Value;
+			}
+			if (SubHighlightGlowOpacitySlider != null)
+			{
+				ConfigManager.CurrentConfig.SubWheelHighlightGlowOpacity = SubHighlightGlowOpacitySlider.Value / 100.0;
+			}
+			if (WheelRadiusSlider != null)
+			{
+				ConfigManager.CurrentConfig.WheelRadius = WheelRadiusSlider.Value;
+			}
+			if (InnerRadiusSlider != null)
+			{
+				ConfigManager.CurrentConfig.InnerRadius = InnerRadiusSlider.Value;
+			}
+			if (CoreRadiusSlider != null)
+			{
+				ConfigManager.CurrentConfig.CoreRadius = CoreRadiusSlider.Value;
+			}
+			if (SectorGapSlider != null)
+			{
+				ConfigManager.CurrentConfig.SectorGap = SectorGapSlider.Value;
+			}
+			if (SectorCornerRadiusSlider != null)
+			{
+				ConfigManager.CurrentConfig.SectorCornerRadius = SectorCornerRadiusSlider.Value;
+			}
+			if (ThresholdSlider != null)
+			{
+				ConfigManager.CurrentConfig.DragThreshold = ThresholdSlider.Value;
+			}
+			if (MouseReleaseDebounceCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.EnableMouseReleaseDebounce = MouseReleaseDebounceCheckBox.IsChecked == true;
+			}
+			if (MouseReleaseDebounceSlider != null)
+			{
+				ConfigManager.CurrentConfig.MouseReleaseDebounceMs = Math.Clamp((int)Math.Round(MouseReleaseDebounceSlider.Value), 1, 100);
+			}
+			if (CoreDeadzoneSlider != null)
+			{
+				ConfigManager.CurrentConfig.CoreDeadzoneRadius = CoreDeadzoneSlider.Value;
+			}
+			if (EnableOuterEscapeCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.EnableOuterEscapeCancel = EnableOuterEscapeCheckBox.IsChecked == true;
+			}
+			if (OuterEscapeDistanceSlider != null)
+			{
+				ConfigManager.CurrentConfig.OuterEscapeDistance = OuterEscapeDistanceSlider.Value;
+			}
+			if (CustomSectorBgTextBox != null)
+			{
+				ConfigManager.CurrentConfig.CustomSectorBg = CustomSectorBgTextBox.Text.Trim();
+			}
+			if (CustomSectorBorderTextBox != null)
+			{
+				ConfigManager.CurrentConfig.CustomSectorBorder = CustomSectorBorderTextBox.Text.Trim();
+			}
+			if (CustomHighlightBgTextBox != null)
+			{
+				ConfigManager.CurrentConfig.CustomHighlightBg = CustomHighlightBgTextBox.Text.Trim();
+			}
+			if (CustomHighlightBorderTextBox != null)
+			{
+				ConfigManager.CurrentConfig.CustomHighlightBorder = CustomHighlightBorderTextBox.Text.Trim();
+			}
+			if (CustomTextTextBox != null)
+			{
+				ConfigManager.CurrentConfig.CustomText = CustomTextTextBox.Text.Trim();
+			}
+			if (DisableOnFullScreenCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.DisableOnFullScreen = DisableOnFullScreenCheckBox.IsChecked == true;
+			}
+			if (CtrlModifierCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.DisableOnCtrl = CtrlModifierCheckBox.IsChecked == true;
+			}
+			if (ShiftModifierCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.DisableOnShift = ShiftModifierCheckBox.IsChecked == true;
+			}
+			if (AltModifierCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.DisableOnAlt = AltModifierCheckBox.IsChecked == true;
+			}
+			if (EnableEdgeCollisionAvoidanceCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.EnableEdgeCollisionAvoidance = EnableEdgeCollisionAvoidanceCheckBox.IsChecked == true;
+			}
+			if (EdgeOverflowPolicyComboBox?.SelectedItem is ComboBoxItem policyItem)
+			{
+				ConfigManager.CurrentConfig.EdgeOverflowPolicy = policyItem.Tag?.ToString() ?? "ClampShift";
+			}
+			if (EdgeSafeMarginXSlider != null)
+			{
+				ConfigManager.CurrentConfig.EdgeSafeMarginX = EdgeSafeMarginXSlider.Value;
+				ConfigManager.CurrentConfig.EdgeSafeMargin = EdgeSafeMarginXSlider.Value;
+			}
+			if (EdgeSafeMarginYSlider != null)
+			{
+				ConfigManager.CurrentConfig.EdgeSafeMarginY = EdgeSafeMarginYSlider.Value;
+			}
+			if (EnableSoundEffectsCheckBox != null)
+			{
+				ConfigManager.CurrentConfig.EnableSoundEffects = EnableSoundEffectsCheckBox.IsChecked == true;
+			}
+			if (SoundThemeComboBox?.SelectedItem is ComboBoxItem soundThemeItem)
+			{
+				ConfigManager.CurrentConfig.SoundTheme = soundThemeItem.Tag?.ToString() ?? "Mechanical";
+			}
+			if (SoundVolumeSlider != null)
+			{
+				ConfigManager.CurrentConfig.SoundVolume = Math.Clamp(SoundVolumeSlider.Value / 100.0, 0.0, 1.0);
+			}
+			if (SoundOnPopupCheckBox != null) ConfigManager.CurrentConfig.SoundOnPopup = SoundOnPopupCheckBox.IsChecked == true;
+			if (SoundOnHoverCheckBox != null) ConfigManager.CurrentConfig.SoundOnHover = SoundOnHoverCheckBox.IsChecked == true;
+			if (SoundOnExpandCheckBox != null) ConfigManager.CurrentConfig.SoundOnExpand = SoundOnExpandCheckBox.IsChecked == true;
+			if (SoundOnExecuteCheckBox != null) ConfigManager.CurrentConfig.SoundOnExecute = SoundOnExecuteCheckBox.IsChecked == true;
+			if (SoundOnCancelCheckBox != null) ConfigManager.CurrentConfig.SoundOnCancel = SoundOnCancelCheckBox.IsChecked == true;
+			if (ConfigManager.CurrentConfig?.Profiles != null)
+			{
+				foreach (var p in ConfigManager.CurrentConfig.Profiles)
+				{
+					if (p == null) continue;
+					if (p == _selectedProfile)
+					{
+						p.SyncActiveLayerFromRootProperties();
+					}
+					p.EnsureLayers();
+				}
+			}
+			if (saveToDisk)
+			{
+				return ConfigManager.SaveConfig();
+			}
+			return true;
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+	}
+
+	private void HandlePluginAvailabilityChanged()
+	{
+		if (!Dispatcher.CheckAccess())
+		{
+			_ = Dispatcher.BeginInvoke(new Action(HandlePluginAvailabilityChanged));
+			return;
+		}
+
+		if (_resourcesReleased || !_isUiInitialized)
+		{
+			return;
+		}
+
+		// 官方插件的安装/启用/停用/卸载可能发生在后台目录同步线程，
+		// 动作类型下拉必须在同一 UI 线程即时重建，避免列表与实际派发路由不一致。
+		RefreshSlots();
+		RefreshGestureMappings();
+		UpdateFocusEditorUi();
+		string? currentTag = (FocusActionTypeComboBox?.SelectedItem as ActionTypeItem)?.Tag;
+		UpdateFocusActionTypeItemsSource(currentTag);
+	}
+
+	private void Window_Closing(object sender, CancelEventArgs e)
+	{
+		if (!_isClosingForRelease && !App.IsExiting)
+		{
+			e.Cancel = true;
+			SyncUiToConfigAndSave();
+			ShowInTaskbar = false;
+			Hide();
+			Opacity = 1.0;
+			ScheduleDeferredClose();
+			App.ShowTrayBalloon(2000, "StarPie", "设置窗口已隐藏，应用将在后台继续运行鼠标手势监视。", ToolTipIcon.Info);
+			return;
+		}
+
+		try
+		{
+			if (_isUiInitialized)
+			{
+				SyncUiToConfigAndSave();
+			}
+		}
+		catch
+		{
+		}
+
+		ShowInTaskbar = false;
+		ReleaseWindowResources();
+	}
+
+	private void ScheduleDeferredClose()
+	{
+		_deferredCloseTimer?.Stop();
+		_deferredCloseTimer = new DispatcherTimer
+		{
+			Interval = TimeSpan.FromSeconds(30)
+		};
+		_deferredCloseTimer.Tick += DeferredCloseTimer_Tick;
+		_deferredCloseTimer.Start();
+	}
+
+	private void DeferredCloseTimer_Tick(object? sender, EventArgs e)
+	{
+		_deferredCloseTimer?.Stop();
+		_deferredCloseTimer = null;
+		_isClosingForRelease = true;
+		Close();
+	}
+
+	private void ReleaseWindowResources()
+	{
+		if (_resourcesReleased)
+		{
+			return;
+		}
+		_resourcesReleased = true;
+		PluginHost.PluginAvailabilityChanged -= HandlePluginAvailabilityChanged;
+
+		if (_deferredCloseTimer != null)
+		{
+			_deferredCloseTimer.Stop();
+			_deferredCloseTimer.Tick -= DeferredCloseTimer_Tick;
+			_deferredCloseTimer = null;
+		}
+		_isClosingForRelease = true;
+
+		UnhookRawInputForSensorAndRecorder();
+
+		_lifetimeCts.Cancel();
+		_lifetimeCts.Dispose();
+
+		_autoSaveDebounceTimer?.Stop();
+		_autoSaveDebounceTimer = null;
+
+		_downloadCts?.Cancel();
+		_downloadCts?.Dispose();
+		_downloadCts = null;
+
+		UnhookExclusiveKeyboardRecordingEvents();
+		CancelExclusiveRecordingIfActive();
+		DetachTileCycleItems();
+		DisposeSlotViewModels();
+	}
+
+	// 使用独立订阅状态，不依赖 _isUiInitialized，确保初始化中途异常时也能解除全局 Hook 引用。
+	private void HookExclusiveKeyboardRecordingEvents()
+	{
+		if (_exclusiveKeyboardHookAttached || App.MainKeyboardHook == null)
+		{
+			return;
+		}
+
+		App.MainKeyboardHook.OnExclusiveRecordCompleted += MainKeyboardHook_OnExclusiveRecordCompleted;
+		App.MainKeyboardHook.OnExclusiveRecordCancelled += MainKeyboardHook_OnExclusiveRecordCancelled;
+		App.MainKeyboardHook.OnExclusiveRecordModifiersChanged += MainKeyboardHook_OnExclusiveRecordModifiersChanged;
+		_exclusiveKeyboardHookAttached = true;
+	}
+
+	private void UnhookExclusiveKeyboardRecordingEvents()
+	{
+		if (!_exclusiveKeyboardHookAttached)
+		{
+			return;
+		}
+
+		if (App.MainKeyboardHook != null)
+		{
+			App.MainKeyboardHook.OnExclusiveRecordCompleted -= MainKeyboardHook_OnExclusiveRecordCompleted;
+			App.MainKeyboardHook.OnExclusiveRecordCancelled -= MainKeyboardHook_OnExclusiveRecordCancelled;
+			App.MainKeyboardHook.OnExclusiveRecordModifiersChanged -= MainKeyboardHook_OnExclusiveRecordModifiersChanged;
+		}
+		_exclusiveKeyboardHookAttached = false;
+	}
+
+	private void ProfilesListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi)
+		{
+			return;
+		}
+		if (ProfilesListBox.SelectedItem is WheelProfile newProfile)
+		{
+			if (_selectedProfile != null && _selectedProfile != newProfile)
+			{
+				_selectedProfile.SyncActiveLayerFromRootProperties();
+			}
+			_selectedProfile = newProfile;
+			_selectedProfile.EnsureLayers();
+			_selectedProfile.SyncRootPropertiesFromActiveLayer();
+			RefreshLayersUi();
+		}
+		else
+		{
+			_selectedProfile = null;
+		}
+
+		if (_selectedProfile == null)
+		{
+			return;
+		}
+		_isUpdatingUi = true;
+		try
+		{
+			ApplySectorCountSelectionToUi(_selectedProfile.SectorCount);
+			if (MappingsProfileComboBox != null && MappingsProfileComboBox.SelectedItem != _selectedProfile)
+			{
+				MappingsProfileComboBox.SelectedItem = _selectedProfile;
+			}
+			_selectedSlotIndex = 0;
+			_selectedSubActionIndex = null;
+			if (MappingsTier1SegmentRadio != null)
+			{
+				MappingsTier1SegmentRadio.IsChecked = true;
+			}
+			RefreshSlots();
+			UpdateFocusEditorUi();
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		UpdateProfileToolbarButtonStates();
+		UpdateProfileBindingUi();
+		if (AppearanceSettingsGrid != null && AppearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		if (MappingsSettingsGrid != null && MappingsSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderMappingsWheelPreview();
+		}
+	}
+
+	private void RefreshSlots()
+	{
+		try
+		{
+			WheelProfile? profile = _selectedProfile;
+			if (profile == null)
+			{
+				profile = ProfilesListBox?.SelectedItem as WheelProfile ?? ConfigManager.CurrentConfig.Profiles.FirstOrDefault();
+				_selectedProfile = profile;
+			}
+
+			const int maxSectorCount = 12;
+			EnsureSlotViewModels(maxSectorCount);
+
+			if (profile == null)
+			{
+				for (int i = 0; i < _slotViewModels.Count; i++)
+				{
+					_slotViewModels[i].Update(i, 8, string.Empty, null, false);
+				}
+				return;
+			}
+
+			int count = NormalizeSectorCount(profile.SectorCount);
+			if (profile.SectorCount != count)
+			{
+				profile.SectorCount = count;
+			}
+
+			string[] directions = ResolveDirectionNames(count);
+
+			profile.Actions ??= new List<ActionItem>();
+			if (profile.Actions.Count > count)
+			{
+				profile.Actions = profile.Actions.Take(count).ToList();
+				profile.SyncActiveLayerFromRootProperties();
+			}
+			while (profile.Actions.Count < count)
+			{
+				int index = profile.Actions.Count;
+				if (count == 12 && index < DefaultPresets12.Length)
+				{
+					ActionItem preset = DefaultPresets12[index];
+					profile.Actions.Add(new ActionItem
+					{
+						Type = preset.Type,
+						Name = preset.Name,
+						Parameter = preset.Parameter,
+						IconKey = preset.IconKey
+					});
+				}
+				else if (count == 8 && index < DefaultPresets8.Length)
+				{
+					ActionItem preset = DefaultPresets8[index];
+					profile.Actions.Add(new ActionItem
+					{
+						Type = preset.Type,
+						Name = preset.Name,
+						Parameter = preset.Parameter,
+						IconKey = preset.IconKey
+					});
+				}
+				else if (count == 4 && index < DefaultPresets4.Length)
+				{
+					ActionItem preset = DefaultPresets4[index];
+					profile.Actions.Add(new ActionItem
+					{
+						Type = preset.Type,
+						Name = preset.Name,
+						Parameter = preset.Parameter,
+						IconKey = preset.IconKey
+					});
+				}
+				else
+				{
+					profile.Actions.Add(new ActionItem
+					{
+						Type = "Hotkey",
+						Name = $"快捷动作 {index + 1}",
+						Parameter = ""
+					});
+				}
+			}
+
+			for (int i = 0; i < _slotViewModels.Count; i++)
+			{
+				ActionItem? action = i < profile.Actions.Count ? profile.Actions[i] : null;
+				bool isVisible = i < count;
+				string direction = isVisible ? directions[i] : string.Empty;
+				_slotViewModels[i].Update(i, count, direction, action, isVisible);
+			}
+		}
+		catch (Exception ex)
+		{
+			Debug.WriteLine($"[RefreshSlots Error]: {ex}");
+		}
+	}
+
+	private void DisposeSlotViewModels()
+	{
+		foreach (SlotViewModel slot in _slotViewModels)
+		{
+			slot.Dispose();
+		}
+	}
+
+	private static int NormalizeSectorCount(int sectorCount)
+	{
+		return sectorCount is 4 or 8 or 12 ? sectorCount : 8;
+	}
+
+	/// <summary>
+	/// 两处扇区数量卡片的唯一 UI 回填入口：按实际档位同步手势页与 Mappings 页的三个单选（4/8/12 键），
+	/// 杜绝双页控件手工交叉镜像导致的接线错误。必须在 _isUpdatingUi 保护内调用。
+	/// </summary>
+	private void ApplySectorCountSelectionToUi(int sectorCount)
+	{
+		if (SectorCount4Radio != null) SectorCount4Radio.IsChecked = sectorCount == 4;
+		if (SectorCount8Radio != null) SectorCount8Radio.IsChecked = sectorCount == 8;
+		if (SectorCount12Radio != null) SectorCount12Radio.IsChecked = sectorCount == 12;
+		if (MappingsSectorCount4Radio != null) MappingsSectorCount4Radio.IsChecked = sectorCount == 4;
+		if (MappingsSectorCount8Radio != null) MappingsSectorCount8Radio.IsChecked = sectorCount == 8;
+		if (MappingsSectorCount12Radio != null) MappingsSectorCount12Radio.IsChecked = sectorCount == 12;
+	}
+
+	/// <summary>
+	/// 扇区数量切换的共享执行路径（两处单选 handler 与两处自定义下拉 handler 收敛于此）：
+	/// 迁移动作 → 写入方案 → 同步活跃层 → 双页控件回填 → 槽位/聚焦/预览刷新 → 配置保存。
+	/// 返回 false 表示档位未变化（无需任何处理）。
+	/// </summary>
+	private bool ApplySectorCountChange(int sectorCount)
+	{
+		if (_selectedProfile == null || _selectedProfile.SectorCount == sectorCount)
+		{
+			return false;
+		}
+
+		_isChangingSectorCount = true;
+		try
+		{
+			int oldSectorCount = _selectedProfile.SectorCount;
+			_selectedProfile.Actions = MigrateActionsBetweenSectorCounts(_selectedProfile.Actions, oldSectorCount, sectorCount);
+			_selectedProfile.SectorCount = sectorCount;
+			_selectedProfile.SyncActiveLayerFromRootProperties();
+
+			_isUpdatingUi = true;
+			try
+			{
+				ApplySectorCountSelectionToUi(sectorCount);
+
+				if (_selectedSlotIndex >= sectorCount) _selectedSlotIndex = 0;
+				_selectedSubActionIndex = null;
+
+				RefreshSlots();
+				UpdateFocusEditorUi();
+				RenderMappingsWheelPreview();
+			}
+			finally
+			{
+				_isUpdatingUi = false;
+			}
+
+			if (AppearanceSettingsGrid?.Visibility == Visibility.Visible)
+			{
+				ScheduleLiveWheelPreviewRender();
+			}
+			SyncUiToConfigAndSave();
+			return true;
+		}
+		finally
+		{
+			_isChangingSectorCount = false;
+		}
+	}
+
+	/// <summary>
+	/// 在不同扇区数量 (4键、8键、12键) 切换时，根据绝对极坐标空间方位进行智能几何方位映射继承。
+	/// 保证东 (0° / 右)、南 (90° / 下)、西 (180° / 左)、北 (270° / 上) 等正交方位 100% 物理对齐，杜绝索引位移倒置。
+	/// </summary>
+	public static List<ActionItem> MigrateActionsBetweenSectorCounts(List<ActionItem>? sourceActions, int oldSectorCount, int newSectorCount)
+	{
+		oldSectorCount = NormalizeSectorCount(oldSectorCount);
+		newSectorCount = NormalizeSectorCount(newSectorCount);
+
+		if (sourceActions == null || sourceActions.Count == 0)
+		{
+			List<ActionItem> emptyResult = new List<ActionItem>(newSectorCount);
+			for (int i = 0; i < newSectorCount; i++)
+			{
+				emptyResult.Add(CreateDefaultPreset(newSectorCount, i));
+			}
+			return emptyResult;
+		}
+
+		if (oldSectorCount == newSectorCount && sourceActions.Count == newSectorCount)
+		{
+			return sourceActions;
+		}
+
+		ActionItem? GetSource(int index)
+		{
+			if (index >= 0 && index < sourceActions.Count && sourceActions[index] != null)
+			{
+				return sourceActions[index].Clone();
+			}
+			return null;
+		}
+
+		ActionItem CreateDefaultPreset(int count, int index)
+		{
+			if (count == 4 && index < DefaultPresets4.Length)
+			{
+				return DefaultPresets4[index].Clone();
+			}
+			if (count == 8 && index < DefaultPresets8.Length)
+			{
+				return DefaultPresets8[index].Clone();
+			}
+			if (count == 12 && index < DefaultPresets12.Length)
+			{
+				return DefaultPresets12[index].Clone();
+			}
+			return new ActionItem
+			{
+				Type = "Hotkey",
+				Name = $"动作 {index + 1}",
+				Parameter = ""
+			};
+		}
+
+		List<ActionItem> result = new List<ActionItem>(newSectorCount);
+
+		if (oldSectorCount == 4 && newSectorCount == 8)
+		{
+			// 4 -> 8: 保持 E(0), S(1->2), W(2->4), N(3->6)；斜向填充 8 键默认预设
+			result.Add(GetSource(0) ?? CreateDefaultPreset(8, 0)); // E (0°)
+			result.Add(CreateDefaultPreset(8, 1));                  // SE (45°)
+			result.Add(GetSource(1) ?? CreateDefaultPreset(8, 2)); // S (90°)
+			result.Add(CreateDefaultPreset(8, 3));                  // SW (135°)
+			result.Add(GetSource(2) ?? CreateDefaultPreset(8, 4)); // W (180°)
+			result.Add(CreateDefaultPreset(8, 5));                  // NW (225°)
+			result.Add(GetSource(3) ?? CreateDefaultPreset(8, 6)); // N (270°)
+			result.Add(CreateDefaultPreset(8, 7));                  // NE (315°)
+		}
+		else if (oldSectorCount == 8 && newSectorCount == 4)
+		{
+			// 8 -> 4: 提取 8 键中正交方位的 4 个动作 E(0), S(2), W(4), N(6)
+			result.Add(GetSource(0) ?? CreateDefaultPreset(4, 0)); // E
+			result.Add(GetSource(2) ?? CreateDefaultPreset(4, 1)); // S
+			result.Add(GetSource(4) ?? CreateDefaultPreset(4, 2)); // W
+			result.Add(GetSource(6) ?? CreateDefaultPreset(4, 3)); // N
+		}
+		else if (oldSectorCount == 4 && newSectorCount == 12)
+		{
+			// 4 -> 12: 对齐至 3点钟(0), 6点钟(3), 9点钟(6), 12点钟(9)
+			for (int i = 0; i < 12; i++)
+			{
+				if (i == 0) result.Add(GetSource(0) ?? CreateDefaultPreset(12, 0));
+				else if (i == 3) result.Add(GetSource(1) ?? CreateDefaultPreset(12, 3));
+				else if (i == 6) result.Add(GetSource(2) ?? CreateDefaultPreset(12, 6));
+				else if (i == 9) result.Add(GetSource(3) ?? CreateDefaultPreset(12, 9));
+				else result.Add(CreateDefaultPreset(12, i));
+			}
+		}
+		else if (oldSectorCount == 12 && newSectorCount == 4)
+		{
+			// 12 -> 4: 提取 12 键钟表中正交的 4 个点位 3点钟(0), 6点钟(3), 9点钟(6), 12点钟(9)
+			result.Add(GetSource(0) ?? CreateDefaultPreset(4, 0)); // E
+			result.Add(GetSource(3) ?? CreateDefaultPreset(4, 1)); // S
+			result.Add(GetSource(6) ?? CreateDefaultPreset(4, 2)); // W
+			result.Add(GetSource(9) ?? CreateDefaultPreset(4, 3)); // N
+		}
+		else if (oldSectorCount == 8 && newSectorCount == 12)
+		{
+			// 8 -> 12: 正交对齐 0, 3, 6, 9；斜向就近对齐 1->1, 3->4, 5->7, 7->10
+			for (int i = 0; i < 12; i++)
+			{
+				switch (i)
+				{
+					case 0: result.Add(GetSource(0) ?? CreateDefaultPreset(12, 0)); break; // 0°
+					case 1: result.Add(GetSource(1) ?? CreateDefaultPreset(12, 1)); break; // 30° from 45°
+					case 2: result.Add(CreateDefaultPreset(12, 2)); break;
+					case 3: result.Add(GetSource(2) ?? CreateDefaultPreset(12, 3)); break; // 90°
+					case 4: result.Add(GetSource(3) ?? CreateDefaultPreset(12, 4)); break; // 120° from 135°
+					case 5: result.Add(CreateDefaultPreset(12, 5)); break;
+					case 6: result.Add(GetSource(4) ?? CreateDefaultPreset(12, 6)); break; // 180°
+					case 7: result.Add(GetSource(5) ?? CreateDefaultPreset(12, 7)); break; // 210° from 225°
+					case 8: result.Add(CreateDefaultPreset(12, 8)); break;
+					case 9: result.Add(GetSource(6) ?? CreateDefaultPreset(12, 9)); break; // 270°
+					case 10: result.Add(GetSource(7) ?? CreateDefaultPreset(12, 10)); break; // 300° from 315°
+					case 11: result.Add(CreateDefaultPreset(12, 11)); break;
+				}
+			}
+		}
+		else if (oldSectorCount == 12 && newSectorCount == 8)
+		{
+			// 12 -> 8: 正交取 0->0, 3->2, 6->4, 9->6；斜向优先保留有实际配置的动作
+			ActionItem PickPreferred(int idxA, int idxB, int fallbackIdx8)
+			{
+				var a = GetSource(idxA);
+				var b = GetSource(idxB);
+				bool aConfigured = a != null && (!string.IsNullOrWhiteSpace(a.Parameter) || !string.IsNullOrWhiteSpace(a.InheritAppIconPath) || (a.SubActions != null && a.SubActions.Count > 0));
+				bool bConfigured = b != null && (!string.IsNullOrWhiteSpace(b.Parameter) || !string.IsNullOrWhiteSpace(b.InheritAppIconPath) || (b.SubActions != null && b.SubActions.Count > 0));
+				if (aConfigured) return a!;
+				if (bConfigured) return b!;
+				return a ?? b ?? CreateDefaultPreset(8, fallbackIdx8);
+			}
+
+			result.Add(GetSource(0) ?? CreateDefaultPreset(8, 0)); // E
+			result.Add(PickPreferred(1, 2, 1));                    // SE
+			result.Add(GetSource(3) ?? CreateDefaultPreset(8, 2)); // S
+			result.Add(PickPreferred(4, 5, 3));                    // SW
+			result.Add(GetSource(6) ?? CreateDefaultPreset(8, 4)); // W
+			result.Add(PickPreferred(7, 8, 5));                    // NW
+			result.Add(GetSource(9) ?? CreateDefaultPreset(8, 6)); // N
+			result.Add(PickPreferred(10, 11, 7));                  // NE
+		}
+		else
+		{
+			for (int i = 0; i < newSectorCount; i++)
+			{
+				result.Add(GetSource(i) ?? CreateDefaultPreset(newSectorCount, i));
+			}
+		}
+
+		return result;
+	}
+
+	private void EnsureSlotViewModels(int count)
+	{
+		while (_slotViewModels.Count < count)
+		{
+			int positionIndex = _slotViewModels.Count;
+			_slotViewModels.Add(new SlotViewModel(
+				positionIndex,
+				8,
+				string.Empty,
+				new ActionItem
+				{
+					Type = "Hotkey",
+					Name = $"快捷动作 {positionIndex + 1}",
+					Parameter = ""
+				}));
+		}
+	}
+
+	private void MoveSlotUp_Click(object sender, RoutedEventArgs e)
+	{
+		MoveSlot(sender, -1);
+		e.Handled = true;
+	}
+
+	private void MoveSlotDown_Click(object sender, RoutedEventArgs e)
+	{
+		MoveSlot(sender, 1);
+		e.Handled = true;
+	}
+
+	private void MoveSlot(object sender, int offset)
+	{
+		if (sender is not FrameworkElement element ||
+			element.DataContext is not SlotViewModel slot ||
+			_selectedProfile?.Actions == null)
+		{
+			return;
+		}
+
+		int sourceIndex = _slotViewModels.IndexOf(slot);
+		int activeCount = NormalizeSectorCount(_selectedProfile.SectorCount);
+		int targetIndex = sourceIndex + offset;
+		if (sourceIndex < 0 || sourceIndex >= activeCount ||
+			targetIndex < 0 || targetIndex >= activeCount ||
+			targetIndex >= _selectedProfile.Actions.Count)
+		{
+			return;
+		}
+
+		(_selectedProfile.Actions[sourceIndex], _selectedProfile.Actions[targetIndex]) =
+			(_selectedProfile.Actions[targetIndex], _selectedProfile.Actions[sourceIndex]);
+
+		RefreshSlots();
+		SyncUiToConfigAndSave(true);
+		if (AppearanceSettingsGrid?.Visibility == Visibility.Visible)
+		{
+			ScheduleLiveWheelPreviewRender();
+		}
+	}
+
+	private void SectorCountRadio_Checked(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || _isChangingSectorCount)
+		{
+			return;
+		}
+		if (_selectedProfile == null)
+		{
+			_selectedProfile = (ProfilesListBox?.SelectedItem as WheelProfile) ?? ConfigManager.CurrentConfig.Profiles.FirstOrDefault();
+		}
+		if (_selectedProfile == null)
+		{
+			return;
+		}
+		int count = 8;
+		if (SectorCount4Radio?.IsChecked == true) count = 4;
+		else if (SectorCount12Radio?.IsChecked == true) count = 12;
+
+		ApplySectorCountChange(count);
+	}
+
+	private void ScheduleLiveWheelPreviewRender()
+	{
+		if (_previewRenderPending || LiveWheelPreviewCanvas == null ||
+			AppearanceSettingsGrid?.Visibility != Visibility.Visible)
+		{
+			return;
+		}
+
+		_previewRenderPending = true;
+		Dispatcher.BeginInvoke(
+			new Action(() =>
+			{
+				_previewRenderPending = false;
+				if (!IsLoaded || AppearanceSettingsGrid?.Visibility != Visibility.Visible)
+				{
+					return;
+				}
+				RenderLiveWheelPreview();
+			}),
+			DispatcherPriority.Render);
+	}
+
+	private void AddProfileBtn2_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is Button btn && btn.ContextMenu != null)
+		{
+			btn.ContextMenu.PlacementTarget = btn;
+			btn.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+			btn.ContextMenu.IsOpen = true;
+		}
+		else
+		{
+			AddProfileButton_Click(sender, e);
+		}
+	}
+
+	private void AddProfileButton_Click(object sender, RoutedEventArgs e)
+	{
+		ProgramPickerWindow programPickerWindow = new ProgramPickerWindow();
+		programPickerWindow.Owner = this;
+		if (programPickerWindow.ShowDialog() != true || string.IsNullOrEmpty(programPickerWindow.SelectedPath))
+		{
+			return;
+		}
+		string procName = System.IO.Path.GetFileName(programPickerWindow.SelectedPath).ToLowerInvariant();
+		string appName = !string.IsNullOrWhiteSpace(programPickerWindow.SelectedName) 
+			? programPickerWindow.SelectedName 
+			: System.IO.Path.GetFileNameWithoutExtension(procName);
+		if (ConfigManager.CurrentConfig.Profiles.Any((WheelProfile p) => 
+			p.ProcessName.Equals(procName, StringComparison.OrdinalIgnoreCase) ||
+			(!string.IsNullOrEmpty(p.BoundProcesses) && p.BoundProcesses.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries).Any(x => x.Trim().Equals(procName, StringComparison.OrdinalIgnoreCase)))))
+		{
+			System.Windows.MessageBox.Show(this, $"已存在针对「{procName}」的配置方案！", "提示", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+			return;
+		}
+		_selectedProfile?.SyncActiveLayerFromRootProperties();
+		int num = _selectedProfile?.SectorCount ?? 8;
+		WheelProfile wheelProfile = new WheelProfile
+		{
+			ProcessName = procName,
+			DisplayName = appName,
+			BoundProcesses = procName,
+			SectorCount = num,
+			Actions = new List<ActionItem>()
+		};
+		for (int i = 0; i < num; i++)
+		{
+			wheelProfile.Actions.Add(new ActionItem
+			{
+				Type = "Hotkey",
+				Name = $"动作 {i + 1}",
+				Parameter = "",
+				SubActions = new List<ActionItem>()
+			});
+		}
+		wheelProfile.EnsureLayers();
+		wheelProfile.SyncRootPropertiesFromActiveLayer();
+		ConfigManager.CurrentConfig.Profiles.Add(wheelProfile);
+		ConfigManager.SaveConfig();
+
+		RefreshProfilesUi(wheelProfile);
+	}
+
+	private void AddProfileByCapture_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			WindowPickerWindow picker = new WindowPickerWindow(WindowPickerMode.ProcessNameOnly)
+			{
+				Owner = this
+			};
+			if (picker.ShowDialog() != true || string.IsNullOrEmpty(picker.SelectedProcessName))
+			{
+				return;
+			}
+			string procName = picker.SelectedProcessName.ToLowerInvariant();
+			if (ConfigManager.CurrentConfig.Profiles.Any((WheelProfile p) => 
+				p.ProcessName.Equals(procName, StringComparison.OrdinalIgnoreCase) ||
+				(!string.IsNullOrEmpty(p.BoundProcesses) && p.BoundProcesses.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries).Any(x => x.Trim().Equals(procName, StringComparison.OrdinalIgnoreCase)))))
+			{
+				System.Windows.MessageBox.Show(this, $"已存在针对「{procName}」的配置方案！", "提示", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+				return;
+			}
+			_selectedProfile?.SyncActiveLayerFromRootProperties();
+			int num = _selectedProfile?.SectorCount ?? 8;
+			string displayName = !string.IsNullOrWhiteSpace(picker.SelectedTitle) ? picker.SelectedTitle : System.IO.Path.GetFileNameWithoutExtension(procName);
+			WheelProfile wheelProfile = new WheelProfile
+			{
+				ProcessName = procName,
+				DisplayName = displayName,
+				BoundProcesses = procName,
+				SectorCount = num,
+				Actions = new List<ActionItem>()
+			};
+			for (int i = 0; i < num; i++)
+			{
+				wheelProfile.Actions.Add(new ActionItem
+				{
+					Type = "Hotkey",
+					Name = $"动作 {i + 1}",
+					Parameter = "",
+					SubActions = new List<ActionItem>()
+				});
+			}
+			wheelProfile.EnsureLayers();
+			wheelProfile.SyncRootPropertiesFromActiveLayer();
+			ConfigManager.CurrentConfig.Profiles.Add(wheelProfile);
+			ConfigManager.SaveConfig();
+
+			RefreshProfilesUi(wheelProfile);
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, "捕捉窗口添加配置失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	private void AddProfileByBrowse_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			var dlg = new Microsoft.Win32.OpenFileDialog
+			{
+				Filter = "可执行程序与快捷方式 (*.exe;*.lnk)|*.exe;*.lnk|所有文件 (*.*)|*.*",
+				Title = "选择要创建专属配置的程序文件"
+			};
+			if (dlg.ShowDialog(this) != true || string.IsNullOrEmpty(dlg.FileName))
+			{
+				return;
+			}
+			string procName = System.IO.Path.GetFileName(dlg.FileName).ToLowerInvariant();
+			if (ConfigManager.CurrentConfig.Profiles.Any((WheelProfile p) => 
+				p.ProcessName.Equals(procName, StringComparison.OrdinalIgnoreCase) ||
+				(!string.IsNullOrEmpty(p.BoundProcesses) && p.BoundProcesses.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries).Any(x => x.Trim().Equals(procName, StringComparison.OrdinalIgnoreCase)))))
+			{
+				System.Windows.MessageBox.Show(this, $"已存在针对「{procName}」的配置方案！", "提示", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+				return;
+			}
+			_selectedProfile?.SyncActiveLayerFromRootProperties();
+			int num = _selectedProfile?.SectorCount ?? 8;
+			string displayName = System.IO.Path.GetFileNameWithoutExtension(dlg.FileName);
+			WheelProfile wheelProfile = new WheelProfile
+			{
+				ProcessName = procName,
+				DisplayName = displayName,
+				BoundProcesses = procName,
+				SectorCount = num,
+				Actions = new List<ActionItem>()
+			};
+			for (int i = 0; i < num; i++)
+			{
+				wheelProfile.Actions.Add(new ActionItem
+				{
+					Type = "Hotkey",
+					Name = $"动作 {i + 1}",
+					Parameter = "",
+					SubActions = new List<ActionItem>()
+				});
+			}
+			wheelProfile.EnsureLayers();
+			wheelProfile.SyncRootPropertiesFromActiveLayer();
+			ConfigManager.CurrentConfig.Profiles.Add(wheelProfile);
+			ConfigManager.SaveConfig();
+
+			RefreshProfilesUi(wheelProfile);
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, "浏览文件添加配置失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	private void AddCustomProfileButton_Click(object sender, RoutedEventArgs e)
+	{
+		InputDialog inputDialog = new InputDialog("新建自定义配置", "请输入新配置方案名称（如：游戏模式、绘图工作流、PS修图 或 myapp.exe）：", $"自定义配置_{ConfigManager.CurrentConfig.Profiles.Count}", (string input) =>
+		{
+			if (string.IsNullOrWhiteSpace(input)) return (IsValid: false, ErrorMessage: "方案名称不能为空！");
+			return ConfigManager.CurrentConfig.Profiles.Any((WheelProfile p) => 
+				p.ProcessName.Equals(input.Trim(), StringComparison.OrdinalIgnoreCase) ||
+				(!string.IsNullOrEmpty(p.DisplayName) && p.DisplayName.Equals(input.Trim(), StringComparison.OrdinalIgnoreCase))
+			) ? (IsValid: false, ErrorMessage: "已存在同名的配置方案，请换一个名称！") : (IsValid: true, ErrorMessage: "");
+		});
+		inputDialog.Owner = this;
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string newName = inputDialog.InputText.Trim();
+			_selectedProfile?.SyncActiveLayerFromRootProperties();
+			int num = _selectedProfile?.SectorCount ?? 8;
+			string boundProcs = newName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? newName.ToLowerInvariant() : "";
+			WheelProfile wheelProfile = new WheelProfile
+			{
+				ProcessName = newName,
+				DisplayName = newName,
+				BoundProcesses = boundProcs,
+				SectorCount = num,
+				Actions = new List<ActionItem>()
+			};
+			for (int i = 0; i < num; i++)
+			{
+				wheelProfile.Actions.Add(new ActionItem
+				{
+					Type = "Hotkey",
+					Name = $"动作 {i + 1}",
+					Parameter = "",
+					SubActions = new List<ActionItem>()
+				});
+			}
+			wheelProfile.EnsureLayers();
+			wheelProfile.SyncRootPropertiesFromActiveLayer();
+			ConfigManager.CurrentConfig.Profiles.Add(wheelProfile);
+			ConfigManager.SaveConfig();
+
+			RefreshProfilesUi(wheelProfile);
+		}
+	}
+
+	private void RenameProfileButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null)
+		{
+			System.Windows.MessageBox.Show(this, "请先在列表中选择要重命名的配置方案！", "提示", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+			return;
+		}
+		if (_selectedProfile.ProcessName.Equals("Global", StringComparison.OrdinalIgnoreCase))
+		{
+			System.Windows.MessageBox.Show(this, "「Global」为系统全局默认基础配置，不可重命名。", "提示", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+			return;
+		}
+		string oldName = !string.IsNullOrWhiteSpace(_selectedProfile.DisplayName) ? _selectedProfile.DisplayName : _selectedProfile.ProcessName;
+		InputDialog inputDialog = new InputDialog("重命名配置方案", "请输入配置方案「" + oldName + "」的新名称：", oldName, delegate(string input)
+		{
+			if (string.IsNullOrWhiteSpace(input))
+			{
+				return (IsValid: false, ErrorMessage: "方案名称不能为空！");
+			}
+			if (input.Trim().Equals(oldName, StringComparison.OrdinalIgnoreCase))
+			{
+				return (IsValid: true, ErrorMessage: "");
+			}
+			return ConfigManager.CurrentConfig.Profiles.Any((WheelProfile p) => 
+				p != _selectedProfile &&
+				(p.ProcessName.Equals(input.Trim(), StringComparison.OrdinalIgnoreCase) ||
+				(!string.IsNullOrEmpty(p.DisplayName) && p.DisplayName.Equals(input.Trim(), StringComparison.OrdinalIgnoreCase)))
+			) ? (IsValid: false, ErrorMessage: "已存在同名的配置方案，请换一个名称！") : (IsValid: true, ErrorMessage: "");
+		});
+		inputDialog.Owner = this;
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string newName = inputDialog.InputText.Trim();
+			_selectedProfile.DisplayName = newName;
+			if (newName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(_selectedProfile.BoundProcesses))
+			{
+				_selectedProfile.BoundProcesses = newName.ToLowerInvariant();
+			}
+			ConfigManager.SaveConfig();
+
+			RefreshProfilesUi(_selectedProfile);
+		}
+	}
+
+	private void UpdateProfileBindingUi()
+	{
+		if (ProfileBindingCardBorder == null) return;
+
+		bool isGlobal = _selectedProfile == null || string.Equals(_selectedProfile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase);
+
+		if (isGlobal)
+		{
+			if (ProfileGlobalHintPanel != null) ProfileGlobalHintPanel.Visibility = Visibility.Visible;
+			if (ProfileCustomBindingPanel != null) ProfileCustomBindingPanel.Visibility = Visibility.Collapsed;
+		}
+		else
+		{
+			if (ProfileGlobalHintPanel != null) ProfileGlobalHintPanel.Visibility = Visibility.Collapsed;
+			if (ProfileCustomBindingPanel != null) ProfileCustomBindingPanel.Visibility = Visibility.Visible;
+
+			if (ProfileBoundProcessesTextBox != null)
+			{
+				bool oldUpdating = _isUpdatingUi;
+				try
+				{
+					_isUpdatingUi = true;
+					string procs = !string.IsNullOrWhiteSpace(_selectedProfile?.BoundProcesses) 
+						? _selectedProfile.BoundProcesses 
+						: (_selectedProfile?.ProcessName ?? "");
+					ProfileBoundProcessesTextBox.Text = procs;
+				}
+				finally
+				{
+					_isUpdatingUi = oldUpdating;
+				}
+			}
+		}
+	}
+
+	private void ProfileBoundProcessesTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingUi || _selectedProfile == null) return;
+		if (string.Equals(_selectedProfile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase)) return;
+
+		_selectedProfile.BoundProcesses = ProfileBoundProcessesTextBox?.Text?.Trim() ?? "";
+		ScheduleAutoSave();
+	}
+
+	private void ProfileCaptureWindowBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null || string.Equals(_selectedProfile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase)) return;
+
+		try
+		{
+			WindowPickerWindow picker = new WindowPickerWindow(WindowPickerMode.ProcessNameOnly)
+			{
+				Owner = this
+			};
+			if (picker.ShowDialog() == true && !string.IsNullOrEmpty(picker.SelectedProcessName))
+			{
+				string proc = picker.SelectedProcessName.ToLowerInvariant();
+				string current = ProfileBoundProcessesTextBox?.Text?.Trim() ?? "";
+				if (string.IsNullOrEmpty(current))
+				{
+					if (ProfileBoundProcessesTextBox != null) ProfileBoundProcessesTextBox.Text = proc;
+				}
+				else
+				{
+					var parts = current.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()).ToList();
+					if (!parts.Any(p => p.Equals(proc, StringComparison.OrdinalIgnoreCase)))
+					{
+						parts.Add(proc);
+						if (ProfileBoundProcessesTextBox != null) ProfileBoundProcessesTextBox.Text = string.Join(", ", parts);
+					}
+				}
+				_selectedProfile.BoundProcesses = ProfileBoundProcessesTextBox?.Text ?? proc;
+				// 「配置名是占位还是用户起的」—— 这个判断在本文件里有三处（本节 3 次，动作名之外的另一套）。
+				// 与动作名那套的区别：配置名<b>没有任何走 I18n 的默认值</b>（生成点是
+				// 下面的「<c> - 副本</c>」拼接与设置页的重命名），所以这里的中文字面量
+				// 与赋值同源、不随语言变，属于可接受项，不必收进 ActionNameDefaults。
+				if (string.IsNullOrEmpty(_selectedProfile.DisplayName) || _selectedProfile.DisplayName.StartsWith("自定义配置_") || _selectedProfile.DisplayName.EndsWith(" - 副本"))
+				{
+					if (!string.IsNullOrWhiteSpace(picker.SelectedTitle))
+					{
+						_selectedProfile.DisplayName = picker.SelectedTitle;
+					}
+				}
+				ScheduleAutoSave();
+			}
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, "捕捉窗口绑定失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	private void ProfilePickProgramBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null || string.Equals(_selectedProfile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase)) return;
+
+		try
+		{
+			ProgramPickerWindow picker = new ProgramPickerWindow
+			{
+				Owner = this
+			};
+			if (picker.ShowDialog() == true && !string.IsNullOrEmpty(picker.SelectedPath))
+			{
+				string proc = System.IO.Path.GetFileName(picker.SelectedPath).ToLowerInvariant();
+				string current = ProfileBoundProcessesTextBox?.Text?.Trim() ?? "";
+				if (string.IsNullOrEmpty(current))
+				{
+					if (ProfileBoundProcessesTextBox != null) ProfileBoundProcessesTextBox.Text = proc;
+				}
+				else
+				{
+					var parts = current.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()).ToList();
+					if (!parts.Any(p => p.Equals(proc, StringComparison.OrdinalIgnoreCase)))
+					{
+						parts.Add(proc);
+						if (ProfileBoundProcessesTextBox != null) ProfileBoundProcessesTextBox.Text = string.Join(", ", parts);
+					}
+				}
+				_selectedProfile.BoundProcesses = ProfileBoundProcessesTextBox?.Text ?? proc;
+				if (string.IsNullOrEmpty(_selectedProfile.DisplayName) || _selectedProfile.DisplayName.StartsWith("自定义配置_") || _selectedProfile.DisplayName.EndsWith(" - 副本"))
+				{
+					if (!string.IsNullOrWhiteSpace(picker.SelectedName))
+					{
+						_selectedProfile.DisplayName = picker.SelectedName;
+					}
+				}
+				ScheduleAutoSave();
+			}
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, "选取程序绑定失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	private void ProfileBrowseExeBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null || string.Equals(_selectedProfile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase)) return;
+
+		try
+		{
+			var dlg = new Microsoft.Win32.OpenFileDialog
+			{
+				Filter = "可执行程序与快捷方式 (*.exe;*.lnk)|*.exe;*.lnk|所有文件 (*.*)|*.*",
+				Title = "选择目标程序可执行文件"
+			};
+			if (dlg.ShowDialog(this) == true && !string.IsNullOrEmpty(dlg.FileName))
+			{
+				string proc = System.IO.Path.GetFileName(dlg.FileName).ToLowerInvariant();
+				string current = ProfileBoundProcessesTextBox?.Text?.Trim() ?? "";
+				if (string.IsNullOrEmpty(current))
+				{
+					if (ProfileBoundProcessesTextBox != null) ProfileBoundProcessesTextBox.Text = proc;
+				}
+				else
+				{
+					var parts = current.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()).ToList();
+					if (!parts.Any(p => p.Equals(proc, StringComparison.OrdinalIgnoreCase)))
+					{
+						parts.Add(proc);
+						if (ProfileBoundProcessesTextBox != null) ProfileBoundProcessesTextBox.Text = string.Join(", ", parts);
+					}
+				}
+				_selectedProfile.BoundProcesses = ProfileBoundProcessesTextBox?.Text ?? proc;
+				if (string.IsNullOrEmpty(_selectedProfile.DisplayName) || _selectedProfile.DisplayName.StartsWith("自定义配置_") || _selectedProfile.DisplayName.EndsWith(" - 副本"))
+				{
+					_selectedProfile.DisplayName = System.IO.Path.GetFileNameWithoutExtension(dlg.FileName);
+				}
+				ScheduleAutoSave();
+			}
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, "浏览选择文件失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	private void ProfilesListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+	{
+		if (ProfilesListBox.SelectedItem is WheelProfile wheelProfile && !wheelProfile.ProcessName.Equals("Global", StringComparison.OrdinalIgnoreCase))
+		{
+			RenameProfileButton_Click(sender, e);
+		}
+	}
+
+	private void DeleteProfileButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null)
+		{
+			return;
+		}
+		if (_selectedProfile.ProcessName.Equals("Global", StringComparison.OrdinalIgnoreCase))
+		{
+			System.Windows.MessageBox.Show(this, "全局默认配置 (Global) 是系统的基础兜底方案，不能删除！", "提示", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+			return;
+		}
+		string procName = _selectedProfile.ProcessName;
+		if (System.Windows.MessageBox.Show(this, $"确定要删除配置方案 [{procName}] 吗？\n删除后该程序将自动回退使用全局 (Global) 默认轮盘配置。", "确认删除", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+		{
+			var target = _selectedProfile;
+			ConfigManager.CurrentConfig.Profiles.RemoveAll(p => p == target || string.Equals(p.ProcessName, procName, StringComparison.OrdinalIgnoreCase));
+			ConfigManager.SaveConfig();
+
+			var fallbackProfile = ConfigManager.CurrentConfig.Profiles.FirstOrDefault(p => p.ProcessName.Equals("Global", StringComparison.OrdinalIgnoreCase))
+				?? ConfigManager.CurrentConfig.Profiles.FirstOrDefault();
+
+			RefreshProfilesUi(fallbackProfile);
+		}
+	}
+
+	private void UpdateProfileToolbarButtonStates()
+	{
+		bool isGlobalOrNull = _selectedProfile == null ||
+			string.Equals(_selectedProfile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase);
+
+		bool canModify = !isGlobalOrNull;
+
+		if (RenameProfileBtn2 != null)
+		{
+			RenameProfileBtn2.IsEnabled = canModify;
+			RenameProfileBtn2.ToolTip = canModify ? "重命名选中的配置方案" : "全局基础配置 (Global) 为系统兜底方案，不可重命名";
+		}
+		if (DeleteProfileBtn2 != null)
+		{
+			DeleteProfileBtn2.IsEnabled = canModify;
+			DeleteProfileBtn2.ToolTip = canModify ? "删除当前选中的配置方案" : "全局基础配置 (Global) 为系统兜底方案，不可删除";
+		}
+		if (RenameProfileButton != null)
+		{
+			RenameProfileButton.IsEnabled = canModify;
+			RenameProfileButton.ToolTip = canModify ? "重命名选中的配置方案" : "全局基础配置 (Global) 为系统兜底方案，不可重命名";
+		}
+		if (DeleteProfileButton != null)
+		{
+			DeleteProfileButton.IsEnabled = canModify;
+			DeleteProfileButton.ToolTip = canModify ? "删除当前选中的配置方案" : "全局基础配置 (Global) 为系统兜底方案，不可删除";
+		}
+		if (DuplicateProfileBtn != null)
+		{
+			DuplicateProfileBtn.IsEnabled = _selectedProfile != null;
+		}
+	}
+
+	private void RefreshProfilesUi(WheelProfile? profileToSelect = null)
+	{
+		var profiles = ConfigManager.CurrentConfig?.Profiles;
+		if (profiles == null || profiles.Count == 0) return;
+
+		if (_selectedProfile != null && _selectedProfile != profileToSelect)
+		{
+			_selectedProfile.SyncActiveLayerFromRootProperties();
+		}
+
+		if (profileToSelect == null || !profiles.Contains(profileToSelect))
+		{
+			profileToSelect = profiles.FirstOrDefault(p => p.ProcessName.Equals("Global", StringComparison.OrdinalIgnoreCase))
+				?? profiles.FirstOrDefault();
+		}
+		_selectedProfile = profileToSelect;
+		if (_selectedProfile != null)
+		{
+			_selectedProfile.EnsureLayers();
+			_selectedProfile.SyncRootPropertiesFromActiveLayer();
+		}
+		RefreshLayersUi();
+
+		_isUpdatingUi = true;
+		try
+		{
+			if (ProfilesListBox != null)
+			{
+				ProfilesListBox.ItemsSource = null;
+				ProfilesListBox.ItemsSource = profiles;
+				ProfilesListBox.SelectedItem = _selectedProfile;
+			}
+
+			if (MappingsProfileComboBox != null)
+			{
+				MappingsProfileComboBox.ItemsSource = null;
+				MappingsProfileComboBox.ItemsSource = profiles;
+				MappingsProfileComboBox.SelectedItem = _selectedProfile;
+			}
+
+			if (_selectedProfile != null)
+			{
+				ApplySectorCountSelectionToUi(_selectedProfile.SectorCount);
+			}
+
+			_selectedSlotIndex = 0;
+			_selectedSubActionIndex = null;
+			RefreshSlots();
+			UpdateFocusEditorUi();
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+
+		UpdateProfileToolbarButtonStates();
+		UpdateProfileBindingUi();
+
+		if (AppearanceSettingsGrid != null && AppearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		if (MappingsSettingsGrid != null && MappingsSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderMappingsWheelPreview();
+		}
+	}
+
+	#region Tab 2 Mappings Dual-Column Canvas & Focus Editor
+
+	private void MappingsViewMode_Checked(object sender, RoutedEventArgs e)
+	{
+		if (MappingsCanvasModeGrid == null || MappingsListModeGrid == null) return;
+		if (MappingsViewModeCanvasRadio != null && MappingsViewModeCanvasRadio.IsChecked == true)
+		{
+			MappingsCanvasModeGrid.Visibility = Visibility.Visible;
+			MappingsListModeGrid.Visibility = Visibility.Collapsed;
+			bool oldUpdating = _isUpdatingUi;
+			try
+			{
+				_isUpdatingUi = true;
+				if (MappingsProfileComboBox != null && _selectedProfile != null)
+				{
+					MappingsProfileComboBox.SelectedItem = _selectedProfile;
+				}
+				ApplySectorCountSelectionToUi(_selectedProfile?.SectorCount ?? 8);
+				RefreshSlots();
+				UpdateFocusEditorUi();
+				RenderMappingsWheelPreview();
+			}
+			finally
+			{
+				_isUpdatingUi = oldUpdating;
+			}
+		}
+		else
+		{
+			MappingsCanvasModeGrid.Visibility = Visibility.Collapsed;
+			MappingsListModeGrid.Visibility = Visibility.Visible;
+			bool oldUpdating = _isUpdatingUi;
+			try
+			{
+				_isUpdatingUi = true;
+				if (ProfilesListBox != null && _selectedProfile != null)
+				{
+					ProfilesListBox.SelectedItem = _selectedProfile;
+				}
+				ApplySectorCountSelectionToUi(_selectedProfile?.SectorCount ?? 8);
+				RefreshSlots();
+			}
+			finally
+			{
+				_isUpdatingUi = oldUpdating;
+			}
+		}
+	}
+
+	private void MappingsProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi) return;
+		if (MappingsProfileComboBox.SelectedItem is WheelProfile profile)
+		{
+			if (_selectedProfile != null && _selectedProfile != profile)
+			{
+				_selectedProfile.SyncActiveLayerFromRootProperties();
+			}
+			_selectedProfile = profile;
+			_selectedProfile.EnsureLayers();
+			_selectedProfile.SyncRootPropertiesFromActiveLayer();
+			RefreshLayersUi();
+			_isUpdatingUi = true;
+			try
+			{
+				if (ProfilesListBox != null) ProfilesListBox.SelectedItem = profile;
+				ApplySectorCountSelectionToUi(profile.SectorCount);
+				_selectedSlotIndex = 0;
+				_selectedSubActionIndex = null;
+				if (MappingsTier1SegmentRadio != null)
+				{
+					MappingsTier1SegmentRadio.IsChecked = true;
+				}
+				RefreshSlots();
+				UpdateFocusEditorUi();
+				RenderMappingsWheelPreview();
+				RenderLiveWheelPreview();
+			}
+			finally
+			{
+				_isUpdatingUi = false;
+			}
+			UpdateProfileToolbarButtonStates();
+			UpdateProfileBindingUi();
+		}
+	}
+
+	private void RefreshLayersUi()
+	{
+		if (_selectedProfile == null) return;
+		_selectedProfile.EnsureLayers();
+
+		bool oldUpdating = _isUpdatingUi;
+		try
+		{
+			_isUpdatingUi = true;
+			if (LayerSelectComboBox != null)
+			{
+				LayerSelectComboBox.ItemsSource = null;
+				LayerSelectComboBox.ItemsSource = _selectedProfile.Layers;
+				int targetIdx = Math.Clamp(_selectedProfile.ActiveLayerIndex, 0, _selectedProfile.Layers.Count - 1);
+				LayerSelectComboBox.SelectedIndex = targetIdx;
+			}
+			if (DeleteLayerBtn != null)
+			{
+				DeleteLayerBtn.IsEnabled = (_selectedProfile.Layers.Count > 1);
+			}
+			UpdateLayerSwitchTriggerUi();
+		}
+		finally
+		{
+			_isUpdatingUi = oldUpdating;
+		}
+	}
+
+	private void LayerSelectComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || _selectedProfile == null) return;
+		int newIdx = LayerSelectComboBox.SelectedIndex;
+		if (newIdx < 0 || newIdx >= _selectedProfile.Layers.Count) return;
+
+		// 切换前先将当前层改动写回旧层，彻底避免层与层之间配置相互覆盖与丢失
+		_selectedProfile.SyncActiveLayerFromRootProperties();
+		_selectedProfile.ActiveLayerIndex = newIdx;
+		_selectedProfile.SyncRootPropertiesFromActiveLayer();
+
+		bool oldUpdating = _isUpdatingUi;
+		try
+		{
+			_isUpdatingUi = true;
+			ApplySectorCountSelectionToUi(_selectedProfile.SectorCount);
+
+			_selectedSlotIndex = 0;
+			_selectedSubActionIndex = null;
+			RefreshSlots();
+			UpdateFocusEditorUi();
+			RenderMappingsWheelPreview();
+			if (AppearanceSettingsGrid != null && AppearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = oldUpdating;
+		}
+
+		if (DeleteLayerBtn != null)
+		{
+			DeleteLayerBtn.IsEnabled = (_selectedProfile.Layers.Count > 1);
+		}
+		ScheduleAutoSave();
+	}
+
+	private void AddLayerBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null) return;
+		_selectedProfile.EnsureLayers();
+		_selectedProfile.SyncActiveLayerFromRootProperties();
+
+		int nextNum = _selectedProfile.Layers.Count + 1;
+		int sectorCount = _selectedProfile.SectorCount is 4 or 8 or 12 ? _selectedProfile.SectorCount : 8;
+		WheelLayer newLayer = new WheelLayer
+		{
+			Name = $"第 {nextNum} 层",
+			SectorCount = sectorCount,
+			EnableCenterAction = false,
+			Actions = new List<ActionItem>()
+		};
+		for (int i = 0; i < sectorCount; i++)
+		{
+			newLayer.Actions.Add(new ActionItem
+			{
+				Type = "Hotkey",
+				Name = $"动作 {i + 1}",
+				Parameter = "",
+				SubActions = new List<ActionItem>()
+			});
+		}
+		_selectedProfile.Layers.Add(newLayer);
+		_selectedProfile.ActiveLayerIndex = _selectedProfile.Layers.Count - 1;
+		_selectedProfile.SyncRootPropertiesFromActiveLayer();
+
+		RefreshLayersUi();
+
+		bool oldUpdating = _isUpdatingUi;
+		try
+		{
+			_isUpdatingUi = true;
+			ApplySectorCountSelectionToUi(_selectedProfile.SectorCount);
+
+			_selectedSlotIndex = 0;
+			_selectedSubActionIndex = null;
+			RefreshSlots();
+			UpdateFocusEditorUi();
+			RenderMappingsWheelPreview();
+			if (AppearanceSettingsGrid != null && AppearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = oldUpdating;
+		}
+
+		ScheduleAutoSave();
+	}
+
+	private void CopyLayerBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null) return;
+		_selectedProfile.EnsureLayers();
+		_selectedProfile.SyncActiveLayerFromRootProperties();
+
+		WheelLayer curLayer = _selectedProfile.GetActiveLayer();
+		WheelLayer clonedLayer = curLayer.Clone();
+		clonedLayer.Name = $"{curLayer.Name} - 副本";
+
+		_selectedProfile.Layers.Add(clonedLayer);
+		_selectedProfile.ActiveLayerIndex = _selectedProfile.Layers.Count - 1;
+		_selectedProfile.SyncRootPropertiesFromActiveLayer();
+
+		RefreshLayersUi();
+
+		bool oldUpdating = _isUpdatingUi;
+		try
+		{
+			_isUpdatingUi = true;
+			ApplySectorCountSelectionToUi(_selectedProfile.SectorCount);
+
+			_selectedSlotIndex = 0;
+			_selectedSubActionIndex = null;
+			RefreshSlots();
+			UpdateFocusEditorUi();
+			RenderMappingsWheelPreview();
+			if (AppearanceSettingsGrid != null && AppearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = oldUpdating;
+		}
+
+		ScheduleAutoSave();
+	}
+
+	private void RenameLayerBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null) return;
+		_selectedProfile.EnsureLayers();
+
+		WheelLayer curLayer = _selectedProfile.GetActiveLayer();
+		InputDialog dlg = new InputDialog("重命名轮盘层", "请输入当前轮盘层的新名称（例如：办公快捷 / 浏览器 / 建模）：", curLayer.Name, input =>
+		{
+			if (string.IsNullOrWhiteSpace(input)) return (false, "层名称不能为空！");
+			return (true, "");
+		});
+		dlg.Owner = this;
+		if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.InputText))
+		{
+			curLayer.Name = dlg.InputText.Trim();
+			RefreshLayersUi();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void DeleteLayerBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null) return;
+		_selectedProfile.EnsureLayers();
+
+		if (_selectedProfile.Layers.Count <= 1)
+		{
+			MessageBox.Show("至少需要保留一个轮盘层！", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+			return;
+		}
+
+		int curIdx = _selectedProfile.ActiveLayerIndex;
+		WheelLayer layerToDelete = _selectedProfile.Layers[curIdx];
+		var result = MessageBox.Show($"确定要删除「{layerToDelete.Name}」吗？删除后该层配置将无法恢复。", "确认删除轮盘层", MessageBoxButton.YesNo, MessageBoxImage.Question);
+		if (result == MessageBoxResult.Yes)
+		{
+			_selectedProfile.Layers.RemoveAt(curIdx);
+			_selectedProfile.ActiveLayerIndex = Math.Max(0, curIdx - 1);
+			_selectedProfile.SyncRootPropertiesFromActiveLayer();
+
+			RefreshLayersUi();
+
+			bool oldUpdating = _isUpdatingUi;
+			try
+			{
+				_isUpdatingUi = true;
+				ApplySectorCountSelectionToUi(_selectedProfile.SectorCount);
+
+				_selectedSlotIndex = 0;
+				_selectedSubActionIndex = null;
+				RefreshSlots();
+				UpdateFocusEditorUi();
+				RenderMappingsWheelPreview();
+				if (AppearanceSettingsGrid != null && AppearanceSettingsGrid.Visibility == Visibility.Visible)
+				{
+					RenderLiveWheelPreview();
+				}
+			}
+			finally
+			{
+				_isUpdatingUi = oldUpdating;
+			}
+
+			ScheduleAutoSave();
+		}
+	}
+
+	private void UpdateLayerSwitchTriggerUi()
+	{
+		string currentTrigger = ConfigManager.CurrentConfig?.LayerSwitchTrigger ?? "Wheel";
+		if (LayerSwitchTriggerComboBox != null)
+		{
+			foreach (ComboBoxItem item in LayerSwitchTriggerComboBox.Items)
+			{
+				if (item?.Tag is string tag && string.Equals(tag, currentTrigger, StringComparison.OrdinalIgnoreCase))
+				{
+					LayerSwitchTriggerComboBox.SelectedItem = item;
+					break;
+				}
+			}
+		}
+	}
+
+	private void LayerSwitchTriggerComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		if (LayerSwitchTriggerComboBox.SelectedItem is ComboBoxItem item && item.Tag is string tag)
+		{
+			ConfigManager.CurrentConfig.LayerSwitchTrigger = tag;
+			ConfigManager.SaveConfig();
+		}
+	}
+
+	private void Tab2GridSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
+	{
+		try
+		{
+			if (Tab2RightColumn != null && Tab2RightColumn.ActualWidth >= 300)
+			{
+				if (ConfigManager.CurrentConfig != null)
+				{
+					ConfigManager.CurrentConfig.MappingsCanvasColumnWidth = Math.Round(Tab2RightColumn.ActualWidth, 1);
+					ConfigManager.SaveConfig();
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("Tab2GridSplitter_DragCompleted error", ex);
+		}
+	}
+
+	private void Tab2GridSplitter_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+	{
+		try
+		{
+			if (Tab2LeftColumn != null && Tab2RightColumn != null)
+			{
+				Tab2LeftColumn.Width = new GridLength(1.15, GridUnitType.Star);
+				Tab2RightColumn.Width = new GridLength(1.0, GridUnitType.Star);
+			}
+			if (ConfigManager.CurrentConfig != null)
+			{
+				ConfigManager.CurrentConfig.MappingsCanvasColumnWidth = 0.0;
+				ConfigManager.SaveConfig();
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("Tab2GridSplitter_MouseDoubleClick error", ex);
+		}
+	}
+
+	private void DuplicateProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedProfile == null) return;
+		_selectedProfile.SyncActiveLayerFromRootProperties();
+		string currentTitle = !string.IsNullOrWhiteSpace(_selectedProfile.DisplayName) ? _selectedProfile.DisplayName : _selectedProfile.ProcessName;
+		string defaultCopyName = currentTitle + " - 副本";
+		InputDialog inputDialog = new InputDialog("复制配置方案", "请输入新配置方案名称（如工作流名或程序名）：", defaultCopyName, (string input) =>
+		{
+			if (string.IsNullOrWhiteSpace(input)) return (IsValid: false, ErrorMessage: "方案名称不能为空！");
+			return ConfigManager.CurrentConfig.Profiles.Any((WheelProfile p) => 
+				p.ProcessName.Equals(input.Trim(), StringComparison.OrdinalIgnoreCase) ||
+				(!string.IsNullOrEmpty(p.DisplayName) && p.DisplayName.Equals(input.Trim(), StringComparison.OrdinalIgnoreCase))
+			) ? (IsValid: false, ErrorMessage: "已存在同名的配置方案，请换一个名称！") : (IsValid: true, ErrorMessage: "");
+		});
+		inputDialog.Owner = this;
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string newName = inputDialog.InputText.Trim();
+			WheelProfile newProfile = _selectedProfile.Clone(newName);
+			newProfile.DisplayName = newName;
+			if (newName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+			{
+				newProfile.BoundProcesses = newName.ToLowerInvariant();
+			}
+			newProfile.EnsureLayers();
+			newProfile.SyncRootPropertiesFromActiveLayer();
+			ConfigManager.CurrentConfig.Profiles.Add(newProfile);
+			ConfigManager.SaveConfig();
+
+			RefreshProfilesUi(newProfile);
+		}
+	}
+
+	private void MappingsSectorCountRadio_Checked(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || _isChangingSectorCount || _selectedProfile == null) return;
+		int count = 8;
+		if (MappingsSectorCount4Radio?.IsChecked == true) count = 4;
+		else if (MappingsSectorCount12Radio?.IsChecked == true) count = 12;
+
+		ApplySectorCountChange(count);
+	}
+
+	public void SelectPrimarySlot(int slotIndex)
+	{
+		int count = _selectedProfile?.SectorCount ?? 8;
+		_selectedSlotIndex = Math.Max(0, Math.Min(slotIndex, count - 1));
+		_selectedSubActionIndex = null;
+		if (MappingsTier1SegmentRadio != null && MappingsTier1SegmentRadio.IsChecked != true)
+		{
+			_isUpdatingUi = true;
+			try { MappingsTier1SegmentRadio.IsChecked = true; }
+			finally { _isUpdatingUi = false; }
+		}
+		UpdateFocusEditorUi();
+		RenderMappingsWheelPreview();
+	}
+
+	public void SelectCenterCore()
+	{
+		_selectedSlotIndex = -1;
+		_selectedSubActionIndex = null;
+		if (MappingsTier1SegmentRadio != null && MappingsTier1SegmentRadio.IsChecked != true)
+		{
+			_isUpdatingUi = true;
+			try { MappingsTier1SegmentRadio.IsChecked = true; }
+			finally { _isUpdatingUi = false; }
+		}
+		UpdateFocusEditorUi();
+		RenderMappingsWheelPreview();
+	}
+
+	public void SelectSubAction(int parentSlotIndex, int subIndex)
+	{
+		_selectedSlotIndex = parentSlotIndex;
+		_selectedSubActionIndex = subIndex;
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		if (profile != null && !string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase) && ConfigManager.CurrentConfig?.EnableGlobalInheritance == true)
+		{
+			EnsureLocalSubActionForEdit(profile, parentSlotIndex, subIndex);
+		}
+		if (MappingsTier2SegmentRadio != null && MappingsTier2SegmentRadio.IsChecked != true)
+		{
+			_isUpdatingUi = true;
+			try { MappingsTier2SegmentRadio.IsChecked = true; }
+			finally { _isUpdatingUi = false; }
+		}
+		UpdateFocusEditorUi();
+		RefreshFocusSubActionsChips();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+	}
+
+	private void FocusBackToParentBtn_Click(object sender, RoutedEventArgs e)
+	{
+		SelectPrimarySlot(_selectedSlotIndex);
+	}
+
+	private void FocusPrevSlotBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedSubActionIndex.HasValue && _selectedSlotIndex >= 0)
+		{
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+			if (profile != null && _selectedSlotIndex < profile.Actions.Count)
+			{
+				int subCount = profile.Actions[_selectedSlotIndex].SubActions?.Count ?? 0;
+				if (subCount > 0)
+				{
+					int nextSub = (_selectedSubActionIndex.Value - 1 + subCount) % subCount;
+					SelectSubAction(_selectedSlotIndex, nextSub);
+					return;
+				}
+			}
+		}
+
+		int count = _selectedProfile?.SectorCount ?? 8;
+		if (_selectedSlotIndex == -1)
+		{
+			SelectPrimarySlot(count - 1);
+		}
+		else if (_selectedSlotIndex == 0)
+		{
+			SelectCenterCore();
+		}
+		else
+		{
+			SelectPrimarySlot(_selectedSlotIndex - 1);
+		}
+	}
+
+	private void FocusNextSlotBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedSubActionIndex.HasValue && _selectedSlotIndex >= 0)
+		{
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+			if (profile != null && _selectedSlotIndex < profile.Actions.Count)
+			{
+				int subCount = profile.Actions[_selectedSlotIndex].SubActions?.Count ?? 0;
+				if (subCount > 0)
+				{
+					int nextSub = (_selectedSubActionIndex.Value + 1) % subCount;
+					SelectSubAction(_selectedSlotIndex, nextSub);
+					return;
+				}
+			}
+		}
+
+		int count = _selectedProfile?.SectorCount ?? 8;
+		if (_selectedSlotIndex == -1)
+		{
+			SelectPrimarySlot(0);
+		}
+		else if (_selectedSlotIndex == count - 1)
+		{
+			SelectCenterCore();
+		}
+		else
+		{
+			SelectPrimarySlot(_selectedSlotIndex + 1);
+		}
+	}
+
+	private void FocusCenterCoreBtn_Click(object sender, RoutedEventArgs e)
+	{
+		SelectCenterCore();
+	}
+
+	private ActionItem? EnsureLocalSubActionForEdit(WheelProfile profile, int slotIndex, int subIndex)
+	{
+		if (profile.Actions == null || slotIndex < 0 || slotIndex >= profile.Actions.Count) return null;
+		ActionItem primaryAction = profile.Actions[slotIndex];
+		primaryAction.SubActions ??= new List<ActionItem>();
+
+		if (subIndex >= 0 && subIndex < primaryAction.SubActions.Count)
+		{
+			return primaryAction.SubActions[subIndex];
+		}
+
+		if (!string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase) &&
+		    ConfigManager.CurrentConfig?.EnableGlobalInheritance == true)
+		{
+			ActionItem? eff = profile.GetEffectiveAction(slotIndex);
+			if (eff != null && eff.IsInherited)
+			{
+				if (!WheelProfile.IsActionConfigured(primaryAction))
+				{
+					primaryAction.Name = eff.Name;
+					primaryAction.Type = eff.Type;
+					primaryAction.Parameter = eff.Parameter;
+					primaryAction.Arguments = eff.Arguments;
+					primaryAction.IconKey = eff.IconKey;
+					primaryAction.CustomIconSvg = eff.CustomIconSvg;
+					primaryAction.InheritAppIconPath = eff.InheritAppIconPath;
+					primaryAction.CommandTerminal = eff.CommandTerminal;
+					primaryAction.CustomIconSize = eff.CustomIconSize;
+					primaryAction.CustomTextColor = eff.CustomTextColor;
+					primaryAction.IsInherited = false;
+				}
+
+				if (eff.SubActions != null && eff.SubActions.Count > 0)
+				{
+					primaryAction.SubActions = eff.SubActions.Select(s =>
+					{
+						var cloned = s.Clone();
+						cloned.IsInherited = false;
+						return cloned;
+					}).ToList();
+
+					if (subIndex >= 0 && subIndex < primaryAction.SubActions.Count)
+					{
+						return primaryAction.SubActions[subIndex];
+					}
+				}
+			}
+		}
+
+		return null;
+	}
+
+	private ActionItem? EnsureLocalPrimaryActionForEdit(WheelProfile profile, int slotIndex)
+	{
+		if (profile.Actions == null || slotIndex < 0 || slotIndex >= profile.Actions.Count) return null;
+		ActionItem primaryAction = profile.Actions[slotIndex];
+
+		if (!string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase) &&
+		    ConfigManager.CurrentConfig?.EnableGlobalInheritance == true &&
+		    !WheelProfile.IsActionConfigured(primaryAction))
+		{
+			ActionItem? eff = profile.GetEffectiveAction(slotIndex);
+			if (eff != null && eff.IsInherited)
+			{
+				primaryAction.Name = eff.Name;
+				primaryAction.Type = eff.Type;
+				primaryAction.Parameter = eff.Parameter;
+				primaryAction.Arguments = eff.Arguments;
+				primaryAction.IconKey = eff.IconKey;
+				primaryAction.CustomIconSvg = eff.CustomIconSvg;
+				primaryAction.InheritAppIconPath = eff.InheritAppIconPath;
+				primaryAction.CommandTerminal = eff.CommandTerminal;
+				primaryAction.CustomIconSize = eff.CustomIconSize;
+				primaryAction.CustomTextColor = eff.CustomTextColor;
+				primaryAction.IsInherited = false;
+				if (primaryAction.SubActions == null || primaryAction.SubActions.Count == 0)
+				{
+					if (eff.SubActions != null && eff.SubActions.Count > 0)
+					{
+						primaryAction.SubActions = eff.SubActions.Select(s =>
+						{
+							var cloned = s.Clone();
+							cloned.IsInherited = false;
+							return cloned;
+						}).ToList();
+					}
+				}
+			}
+		}
+
+		return primaryAction;
+	}
+
+	private ActionItem? GetCurrentFocusActionItem(bool ensureLocalForEdit = false)
+	{
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		if (profile == null) return null;
+		if (_selectedSlotIndex == -1)
+		{
+			// 中心动作同时存在于旧版根属性和当前活跃层。先确保层结构存在，
+			// 再把当前根属性作为编辑源同步到活跃层，避免 UI 勾选/预设刚写入根属性，
+			// 随后被 GetEffectiveCenterAction 的 EnsureLayers 立即覆盖回旧值。
+			profile.EnsureLayers();
+			profile.SyncActiveLayerFromRootProperties();
+			if (profile.CenterAction == null)
+			{
+				if (string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase))
+				{
+					profile.CenterAction = new ActionItem
+					{
+						Name = "StarPie控制台",
+						Type = "System",
+						Parameter = "OpenSettings",
+						IconKey = "Settings"
+					};
+				}
+				else
+				{
+					profile.CenterAction = new ActionItem
+					{
+						Name = "",
+						Type = "Inherit",
+						Parameter = "",
+						IconKey = ""
+					};
+				}
+			}
+			// 初始化中心动作后再次同步，避免 EnsureLayers 在下一次读取时以空的层属性覆盖它。
+			profile.SyncActiveLayerFromRootProperties();
+			return profile.CenterAction;
+		}
+		if (profile.Actions == null || _selectedSlotIndex < 0 || _selectedSlotIndex >= profile.Actions.Count)
+		{
+			return null;
+		}
+		if (_selectedSubActionIndex.HasValue)
+		{
+			if (ensureLocalForEdit)
+			{
+				var localSub = EnsureLocalSubActionForEdit(profile, _selectedSlotIndex, _selectedSubActionIndex.Value);
+				if (localSub != null) return localSub;
+			}
+			ActionItem primaryAction = profile.Actions[_selectedSlotIndex];
+			if (primaryAction.SubActions != null && _selectedSubActionIndex.Value >= 0 && _selectedSubActionIndex.Value < primaryAction.SubActions.Count)
+			{
+				return primaryAction.SubActions[_selectedSubActionIndex.Value];
+			}
+			if (!string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase) &&
+			    ConfigManager.CurrentConfig?.EnableGlobalInheritance == true &&
+			    _selectedSubActionIndex.Value >= 0)
+			{
+				ActionItem? eff = profile.GetEffectiveAction(_selectedSlotIndex);
+				if (eff?.SubActions != null && _selectedSubActionIndex.Value < eff.SubActions.Count)
+				{
+					return eff.SubActions[_selectedSubActionIndex.Value];
+				}
+			}
+			return null;
+		}
+		if (ensureLocalForEdit)
+		{
+			EnsureLocalPrimaryActionForEdit(profile, _selectedSlotIndex);
+		}
+		return profile.Actions[_selectedSlotIndex];
+	}
+
+	private void UpdateFocusEditorUi()
+	{
+		if (_selectedMultiSlots.Count > 1)
+		{
+			EnterBatchModeUi();
+			return;
+		}
+		else
+		{
+			ExitBatchModeUi();
+		}
+
+		if (_isUpdatingFocusUi) return;
+		_isUpdatingFocusUi = true;
+		try
+		{
+			ActionItem? item = GetCurrentFocusActionItem();
+			if (item == null) return;
+
+			WheelProfile profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault() ?? new WheelProfile();
+			int sectorCount = profile.SectorCount > 0 ? profile.SectorCount : 8;
+			string[] directions = ResolveDirectionNames(sectorCount);
+
+			ActionItem? primaryAction = (_selectedSlotIndex >= 0 && profile.Actions != null && _selectedSlotIndex < profile.Actions.Count) ? profile.Actions[_selectedSlotIndex] : null;
+
+			bool isGlobalProfile = string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase);
+			bool inheritanceEnabled = ConfigManager.CurrentConfig?.EnableGlobalInheritance == true;
+
+			bool isInherited = false;
+			ActionItem? effectiveInheritedAction = null;
+			if (!isGlobalProfile && inheritanceEnabled)
+			{
+				if (_selectedSlotIndex == -1)
+				{
+					if (!profile.EnableCenterAction || !WheelProfile.IsActionConfigured(profile.CenterAction))
+					{
+						effectiveInheritedAction = profile.GetEffectiveCenterAction();
+						if (effectiveInheritedAction != null && effectiveInheritedAction.IsInherited)
+						{
+							isInherited = true;
+						}
+					}
+				}
+				else if (!_selectedSubActionIndex.HasValue)
+				{
+					if (!WheelProfile.IsActionConfigured(primaryAction))
+					{
+						effectiveInheritedAction = profile.GetEffectiveAction(_selectedSlotIndex);
+						if (effectiveInheritedAction != null && effectiveInheritedAction.IsInherited)
+						{
+							isInherited = true;
+						}
+					}
+				}
+				else if (_selectedSubActionIndex.HasValue)
+				{
+					if (primaryAction?.SubActions == null || _selectedSubActionIndex.Value >= primaryAction.SubActions.Count)
+					{
+						effectiveInheritedAction = profile.GetEffectiveAction(_selectedSlotIndex);
+						if (effectiveInheritedAction != null && effectiveInheritedAction.IsInherited)
+						{
+							isInherited = true;
+						}
+					}
+				}
+			}
+
+			bool hasAnySubActions = (primaryAction?.SubActions != null && primaryAction.SubActions.Count > 0) ||
+			                       (isInherited && effectiveInheritedAction?.SubActions != null && effectiveInheritedAction.SubActions.Count > 0);
+			bool isTier2NoSubActions = (MappingsTier2SegmentRadio?.IsChecked == true && _selectedSlotIndex >= 0 && !hasAnySubActions);
+
+			if (FocusSlotInheritedBadge != null)
+			{
+				FocusSlotInheritedBadge.Visibility = isInherited ? Visibility.Visible : Visibility.Collapsed;
+			}
+
+			if (FocusRestoreInheritBtn != null)
+			{
+				bool hasLocalOverride = (!isGlobalProfile && !isInherited && (_selectedSlotIndex == -1 ? (profile.EnableCenterAction && WheelProfile.IsActionConfigured(profile.CenterAction)) : (primaryAction != null && WheelProfile.IsActionConfigured(primaryAction))));
+				FocusRestoreInheritBtn.Visibility = hasLocalOverride ? Visibility.Visible : Visibility.Collapsed;
+			}
+
+			ActionItem displayItem = (isInherited && effectiveInheritedAction != null) ? effectiveInheritedAction : item;
+
+			UpdateFocusActionUnavailableHint(displayItem);
+
+			if (_selectedSlotIndex == -1)
+			{
+				// Center Core
+				if (FocusSlotBadgeBorder != null) FocusSlotBadgeBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(245, 158, 11));
+				if (FocusSlotBadgeText != null) FocusSlotBadgeText.Text = "🎯";
+				if (FocusSlotTitleText != null) FocusSlotTitleText.Text = I18n.T("FocusSlotCenterCoreTitle");
+				if (FocusSlotTagText != null) FocusSlotTagText.Text = I18n.T("FocusSlotCenterCoreTag");
+				if (FocusSlotSubtitleText != null)
+				{
+					FocusSlotSubtitleText.Text = isInherited
+						? string.Format(I18n.T("FocusSlotCenterCoreSubtitleInherited"), displayItem.Name)
+						: I18n.T("FocusSlotCenterCoreSubtitleDefault");
+				}
+				if (FocusBackToParentBtn != null) FocusBackToParentBtn.Visibility = Visibility.Collapsed;
+				if (FocusCenterCoreBanner != null) FocusCenterCoreBanner.Visibility = Visibility.Visible;
+				if (EnableCenterActionCheckBox != null) EnableCenterActionCheckBox.IsChecked = profile.EnableCenterAction;
+				if (FocusSubActionsBorder != null) FocusSubActionsBorder.Visibility = Visibility.Collapsed;
+				if (FocusTier2EmptyNoticeBorder != null) FocusTier2EmptyNoticeBorder.Visibility = Visibility.Collapsed;
+				if (FocusNameAndIconBorder != null) FocusNameAndIconBorder.Visibility = Visibility.Visible;
+				if (FocusActionTypeAndParamsBorder != null) FocusActionTypeAndParamsBorder.Visibility = Visibility.Visible;
+				if (CenterPatternPriorityTip != null)
+				{
+					bool hasCustom = IconHelper.HasCustomCenterPattern(ConfigManager.CurrentConfig);
+					CenterPatternPriorityTip.Visibility = (hasCustom && profile.EnableCenterAction) ? Visibility.Visible : Visibility.Collapsed;
+				}
+			}
+			else if (isTier2NoSubActions)
+			{
+				// 二级级联模式但尚未添加任何子动作：展示空状态引导卡片，不误改配置，不渲染虚假子扇区
+				if (FocusSlotBadgeBorder != null) FocusSlotBadgeBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(168, 85, 247));
+				if (FocusSlotBadgeText != null) FocusSlotBadgeText.Text = "🌟";
+				string parentDir = (_selectedSlotIndex >= 0 && _selectedSlotIndex < directions.Length) ? directions[_selectedSlotIndex] : $"{_selectedSlotIndex + 1}";
+				if (FocusSlotTitleText != null) FocusSlotTitleText.Text = string.Format(I18n.T("FocusSlotTier2EmptyTitleFormat"), _selectedSlotIndex + 1, parentDir);
+				if (FocusSlotTagText != null) FocusSlotTagText.Text = I18n.T("FocusSlotTier2EmptyTag");
+				if (FocusSlotSubtitleText != null) FocusSlotSubtitleText.Text = I18n.T("FocusSlotTier2EmptySubtitle");
+				if (FocusBackToParentBtn != null) FocusBackToParentBtn.Visibility = Visibility.Visible;
+				if (FocusCenterCoreBanner != null) FocusCenterCoreBanner.Visibility = Visibility.Collapsed;
+				if (CenterPatternPriorityTip != null) CenterPatternPriorityTip.Visibility = Visibility.Collapsed;
+				if (FocusTier2EmptyNoticeBorder != null) FocusTier2EmptyNoticeBorder.Visibility = Visibility.Visible;
+				if (FocusNameAndIconBorder != null) FocusNameAndIconBorder.Visibility = Visibility.Collapsed;
+				if (FocusActionTypeAndParamsBorder != null) FocusActionTypeAndParamsBorder.Visibility = Visibility.Collapsed;
+				if (FocusInheritIconBorder != null) FocusInheritIconBorder.Visibility = Visibility.Collapsed;
+				if (FocusSubActionsBorder != null) FocusSubActionsBorder.Visibility = Visibility.Visible;
+				RefreshFocusSubActionsChips();
+				return;
+			}
+			else if (_selectedSubActionIndex.HasValue)
+			{
+				// Secondary SubAction
+				if (FocusSlotBadgeBorder != null) FocusSlotBadgeBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(168, 85, 247));
+				if (FocusSlotBadgeText != null) FocusSlotBadgeText.Text = "🌟";
+				string parentDir = (_selectedSlotIndex >= 0 && _selectedSlotIndex < directions.Length) ? directions[_selectedSlotIndex] : $"{_selectedSlotIndex + 1}";
+				if (FocusSlotTitleText != null) FocusSlotTitleText.Text = string.Format(I18n.T("FocusSlotTier2SubActionTitleFormat"), displayItem.Name);
+				if (FocusSlotTagText != null) FocusSlotTagText.Text = string.Format(I18n.T("FocusSlotTier2SubActionTagFormat"), _selectedSlotIndex + 1, parentDir);
+				if (FocusSlotSubtitleText != null) FocusSlotSubtitleText.Text = I18n.T("FocusSlotTier2SubActionSubtitle");
+				if (FocusBackToParentBtn != null) FocusBackToParentBtn.Visibility = Visibility.Visible;
+				if (FocusCenterCoreBanner != null) FocusCenterCoreBanner.Visibility = Visibility.Collapsed;
+				if (CenterPatternPriorityTip != null) CenterPatternPriorityTip.Visibility = Visibility.Collapsed;
+				if (FocusTier2EmptyNoticeBorder != null) FocusTier2EmptyNoticeBorder.Visibility = Visibility.Collapsed;
+				if (FocusNameAndIconBorder != null) FocusNameAndIconBorder.Visibility = Visibility.Visible;
+				if (FocusActionTypeAndParamsBorder != null) FocusActionTypeAndParamsBorder.Visibility = Visibility.Visible;
+				if (FocusSubActionsBorder != null) FocusSubActionsBorder.Visibility = Visibility.Collapsed;
+			}
+			else
+			{
+				// Primary Sector
+				if (FocusSlotBadgeBorder != null) FocusSlotBadgeBorder.Background = (System.Windows.Media.Brush)FindResource("AccentPrimaryBrush");
+				string dirName = (_selectedSlotIndex >= 0 && _selectedSlotIndex < directions.Length) ? directions[_selectedSlotIndex] : $"{_selectedSlotIndex + 1}";
+				string badgeChar = dirName.Length > 0 ? dirName.Substring(0, 1) : $"{_selectedSlotIndex + 1}";
+				if (FocusSlotBadgeText != null) FocusSlotBadgeText.Text = badgeChar;
+				if (FocusSlotTitleText != null) FocusSlotTitleText.Text = string.Format(I18n.T("FocusSlotPrimaryTitleFormat"), _selectedSlotIndex + 1, dirName);
+				if (FocusSlotTagText != null) FocusSlotTagText.Text = I18n.T("FocusSlotPrimaryTag");
+				if (FocusSlotSubtitleText != null)
+				{
+					FocusSlotSubtitleText.Text = isInherited
+						? string.Format(I18n.T("FocusSlotPrimarySubtitleInherited"), displayItem.Name)
+						: I18n.T("FocusSlotPrimarySubtitleDefault");
+				}
+				if (FocusBackToParentBtn != null) FocusBackToParentBtn.Visibility = Visibility.Collapsed;
+				if (FocusCenterCoreBanner != null) FocusCenterCoreBanner.Visibility = Visibility.Collapsed;
+				if (CenterPatternPriorityTip != null) CenterPatternPriorityTip.Visibility = Visibility.Collapsed;
+				if (FocusTier2EmptyNoticeBorder != null) FocusTier2EmptyNoticeBorder.Visibility = Visibility.Collapsed;
+				if (FocusNameAndIconBorder != null) FocusNameAndIconBorder.Visibility = Visibility.Visible;
+				if (FocusActionTypeAndParamsBorder != null) FocusActionTypeAndParamsBorder.Visibility = Visibility.Visible;
+				if (FocusSubActionsBorder != null) FocusSubActionsBorder.Visibility = Visibility.Visible;
+				RefreshFocusSubActionsChips();
+			}
+
+			// Name & Icon
+			if (FocusActionNameTextBox != null) FocusActionNameTextBox.Text = displayItem.Name ?? "";
+			string iconKey = displayItem.IconKey ?? "";
+			ImageSource? inheritedAppIcon = !string.IsNullOrWhiteSpace(displayItem.InheritAppIconPath) ? IconHelper.GetIcon(displayItem.InheritAppIconPath) : null;
+			if (inheritedAppIcon != null)
+			{
+				if (FocusIconImage != null)
+				{
+					FocusIconImage.Source = inheritedAppIcon;
+					FocusIconImage.Visibility = Visibility.Visible;
+				}
+				if (FocusIconPath != null) FocusIconPath.Visibility = Visibility.Collapsed;
+				if (FocusIconLabel != null)
+				{
+					try
+					{
+						string fn = System.IO.Path.GetFileNameWithoutExtension(displayItem.InheritAppIconPath);
+						FocusIconLabel.Text = !string.IsNullOrEmpty(fn) ? fn : "关联图标";
+					}
+					catch
+					{
+						FocusIconLabel.Text = "关联图标";
+					}
+				}
+			}
+			else
+			{
+				if (FocusIconImage != null)
+				{
+					FocusIconImage.Source = null;
+					FocusIconImage.Visibility = Visibility.Collapsed;
+				}
+				if (FocusIconPath != null) FocusIconPath.Visibility = Visibility.Visible;
+				if (FocusIconLabel != null) FocusIconLabel.Text = !string.IsNullOrEmpty(iconKey) ? iconKey : "图标...";
+				string svg = !string.IsNullOrEmpty(displayItem.CustomIconSvg) ? displayItem.CustomIconSvg : IconHelper.GetSvgPathByKey(iconKey);
+				if (FocusIconPath != null)
+				{
+					try
+					{
+						FocusIconPath.Data = !string.IsNullOrEmpty(svg) ? Geometry.Parse(svg) : null;
+					}
+					catch
+					{
+						FocusIconPath.Data = null;
+					}
+				}
+			}
+
+			// Action Type & Panels
+			string type = !string.IsNullOrEmpty(displayItem.Type) ? displayItem.Type : "Hotkey";
+			bool isWindowManager = type == "Tile" || type == "ToggleTopmost" || type == "MoveMonitor" || type == "WindowOpacity" || type == "SwitchWindow";
+			if (FocusActionTypeComboBox != null)
+			{
+				// 插件动作在类型下拉里就投影成它自己（只有这一项）；
+				// 具体是哪一个动作由下方的子下拉承载，见 RefreshFocusPluginActionComboBox。
+				string targetTag = type == PluginActionBinding.TypeName
+					? PluginActionBinding.TypeName
+					: (isWindowManager ? "WindowManager" : type);
+				UpdateFocusActionTypeItemsSource(targetTag);
+				if (FocusActionTypeComboBox.ItemsSource is IEnumerable<ActionTypeItem> typeItems)
+				{
+					var match = typeItems.FirstOrDefault(ti => string.Equals(ti.Tag, targetTag, StringComparison.OrdinalIgnoreCase));
+					if (match != null && !object.ReferenceEquals(FocusActionTypeComboBox.SelectedItem, match))
+					{
+						FocusActionTypeComboBox.SelectedItem = match;
+					}
+				}
+				else
+				{
+					FocusActionTypeComboBox.SelectedValue = targetTag;
+				}
+			}
+
+			if (FocusHotkeyPanel != null) FocusHotkeyPanel.Visibility = type == "Hotkey" ? Visibility.Visible : Visibility.Collapsed;
+			if (FocusLaunchPanel != null) FocusLaunchPanel.Visibility = (type == "Launch" || type == "App") ? Visibility.Visible : Visibility.Collapsed;
+			if (FocusWebUrlPanel != null) FocusWebUrlPanel.Visibility = (type == "WebUrl" || type == "Url") ? Visibility.Visible : Visibility.Collapsed;
+			if (FocusFolderPanel != null) FocusFolderPanel.Visibility = (type == "Folder" || type == "OpenFolder") ? Visibility.Visible : Visibility.Collapsed;
+			if (FocusCommandPanel != null) FocusCommandPanel.Visibility = type == "Command" ? Visibility.Visible : Visibility.Collapsed;
+			if (FocusWindowManagerPanel != null) FocusWindowManagerPanel.Visibility = isWindowManager ? Visibility.Visible : Visibility.Collapsed;
+			if (FocusSystemPanel != null) FocusSystemPanel.Visibility = type == "System" ? Visibility.Visible : Visibility.Collapsed;
+			if (FocusOcrPanel != null) FocusOcrPanel.Visibility = (type == "Ocr" || type == "ScreenOcr") ? Visibility.Visible : Visibility.Collapsed;
+			if (FocusPluginPanel != null) FocusPluginPanel.Visibility = (type == PluginActionBinding.TypeName) ? Visibility.Visible : Visibility.Collapsed;
+			if (type == PluginActionBinding.TypeName) RefreshFocusPluginPanel(displayItem);
+
+			// 插件动作子下拉（按插件分组）。非插件类型时由该方法自行隐藏并清空。
+			RefreshFocusPluginActionComboBox(displayItem);
+			if (FocusShellToolPanel != null)
+			{
+				FocusShellToolPanel.Visibility = (type == "ShellTool") ? Visibility.Visible : Visibility.Collapsed;
+				if (type == "ShellTool")
+				{
+					string param = displayItem.Parameter ?? "Windows.CopyAsPath";
+					var toolInfo = ShellActionPickerWindow.ShellTools?.FirstOrDefault(t => t.Id == param || string.Equals(t.Verb, param, StringComparison.OrdinalIgnoreCase));
+					if (toolInfo != null)
+					{
+						if (FocusShellToolIconText != null)
+						{
+							FocusShellToolIconText.Text = toolInfo.Icon;
+							FocusShellToolIconText.FontFamily = new FontFamily("Segoe UI Emoji, Segoe UI Symbol, Segoe UI");
+							FocusShellToolIconText.Foreground = (Brush)FindResource("AccentPrimaryBrush");
+						}
+						if (FocusShellToolTitleText != null) FocusShellToolTitleText.Text = $"{toolInfo.Name} ({toolInfo.Id})";
+						if (FocusShellToolDescText != null) FocusShellToolDescText.Text = toolInfo.Description;
+					}
+					else
+					{
+						if (FocusShellToolIconText != null)
+						{
+							FocusShellToolIconText.Text = "⚡";
+							FocusShellToolIconText.FontFamily = new FontFamily("Segoe UI Emoji, Segoe UI Symbol, Segoe UI");
+							FocusShellToolIconText.Foreground = (Brush)FindResource("AccentPrimaryBrush");
+						}
+						if (FocusShellToolTitleText != null) FocusShellToolTitleText.Text = string.IsNullOrEmpty(param) ? I18n.T("FocusShellToolDefaultTitle") : param;
+						if (FocusShellToolDescText != null) FocusShellToolDescText.Text = I18n.T("FocusShellToolDefaultDesc");
+					}
+				}
+			}
+			if (FocusLaunchStandardUserCheckBox != null) FocusLaunchStandardUserCheckBox.IsChecked = displayItem.RunAsStandardUser;
+
+			bool canInherit = type != "Launch" && type != "App";
+			if (FocusInheritIconBorder != null)
+			{
+				FocusInheritIconBorder.Visibility = canInherit ? Visibility.Visible : Visibility.Collapsed;
+				if (canInherit)
+				{
+					bool hasInherit = !string.IsNullOrWhiteSpace(displayItem.InheritAppIconPath);
+					if (FocusInheritIconPathTextBox != null) FocusInheritIconPathTextBox.Text = displayItem.InheritAppIconPath ?? "";
+					if (FocusInheritIconPreviewImage != null)
+					{
+						FocusInheritIconPreviewImage.Source = inheritedAppIcon;
+						FocusInheritIconPreviewImage.Visibility = (inheritedAppIcon != null) ? Visibility.Visible : Visibility.Collapsed;
+					}
+					if (FocusInheritIconStatusLabel != null)
+					{
+						FocusInheritIconStatusLabel.Text = hasInherit ? string.Format(I18n.T("FocusInheritIconLinkedFormat"), System.IO.Path.GetFileName(displayItem.InheritAppIconPath)) : I18n.T("FocusInheritIconUnlinked");
+						FocusInheritIconStatusLabel.Foreground = hasInherit ? System.Windows.Media.Brushes.MediumSpringGreen : (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+					}
+					if (FocusClearInheritedIconBtn != null)
+					{
+						FocusClearInheritedIconBtn.Visibility = hasInherit ? Visibility.Visible : Visibility.Collapsed;
+					}
+				}
+			}
+
+			if (isWindowManager)
+			{
+				string subMode = type switch
+				{
+					"ToggleTopmost" => "ToggleTopmost",
+					"MoveMonitor" => "MoveMonitor",
+					"WindowOpacity" => "WindowOpacity",
+					"SwitchWindow" => "SwitchWindow",
+					_ => (displayItem.Parameter == WindowTiler.CycleParam ? "TileCycle" : (displayItem.Parameter == WindowTiler.CycleBackParam ? "TileCycleBack" : (displayItem.Parameter == WindowTiler.RestoreParam ? "TileRestore" : "Tile")))
+				};
+
+				if (FocusWindowSubModeComboBox != null)
+				{
+					foreach (ComboBoxItem cbi in FocusWindowSubModeComboBox.Items)
+					{
+						if (string.Equals(cbi.Tag?.ToString(), subMode, StringComparison.OrdinalIgnoreCase))
+						{
+							FocusWindowSubModeComboBox.SelectedItem = cbi;
+							break;
+						}
+					}
+				}
+
+				UpdateWindowSubModeVisibility(subMode);
+
+				if (subMode == "Tile")
+				{
+					if (FocusTileLayoutComboBox != null)
+					{
+						FocusTileLayoutComboBox.SelectedValue = !string.IsNullOrEmpty(displayItem.Parameter) && WindowTiler.IsValidLayout(displayItem.Parameter) ? displayItem.Parameter : "2L";
+					}
+				}
+				else if (subMode == "WindowOpacity")
+				{
+					int opacityVal = 80;
+					if (int.TryParse(displayItem.Parameter, out int parsed)) opacityVal = Math.Clamp(parsed, 30, 100);
+					if (FocusWindowOpacitySlider != null) FocusWindowOpacitySlider.Value = opacityVal;
+					if (FocusWindowOpacityLabel != null) FocusWindowOpacityLabel.Text = opacityVal + "%";
+				}
+				else if (subMode == "SwitchWindow")
+				{
+					if (FocusWindowSwitchTextBox != null) FocusWindowSwitchTextBox.Text = displayItem.Parameter ?? "1";
+				}
+			}
+
+			// Parameters
+			if (FocusHotkeyRecorder != null) FocusHotkeyRecorder.HotkeyText = displayItem.Parameter ?? "";
+			if (FocusLaunchPathTextBox != null) FocusLaunchPathTextBox.Text = displayItem.Parameter ?? "";
+			if (FocusLaunchArgsTextBox != null) FocusLaunchArgsTextBox.Text = displayItem.Arguments ?? "";
+			if (FocusWebUrlTextBox != null) FocusWebUrlTextBox.Text = displayItem.Parameter ?? "";
+			if (FocusWebBrowserComboBox != null)
+			{
+				string browser = displayItem.BrowserChoice ?? "Default";
+				foreach (ComboBoxItem cbi in FocusWebBrowserComboBox.Items)
+				{
+					if (string.Equals(cbi.Tag?.ToString(), browser, StringComparison.OrdinalIgnoreCase))
+					{
+						FocusWebBrowserComboBox.SelectedItem = cbi;
+						break;
+					}
+				}
+			}
+			if (FocusCustomBrowserPathPanel != null)
+			{
+				FocusCustomBrowserPathPanel.Visibility = string.Equals(displayItem.BrowserChoice, "Custom", StringComparison.OrdinalIgnoreCase) ? Visibility.Visible : Visibility.Collapsed;
+			}
+			if (FocusCustomBrowserPathTextBox != null) FocusCustomBrowserPathTextBox.Text = displayItem.BrowserPath ?? "";
+			if (FocusFolderPathTextBox != null) FocusFolderPathTextBox.Text = displayItem.Parameter ?? "";
+			if (FocusCommandTextBox != null) FocusCommandTextBox.Text = displayItem.Parameter ?? "";
+			if (FocusCommandTerminalComboBox != null) FocusCommandTerminalComboBox.SelectedValue = displayItem.CommandTerminal ?? "cmd";
+			if (FocusWindowSwitchTextBox != null) FocusWindowSwitchTextBox.Text = displayItem.Parameter ?? "1";
+			if (FocusSystemPresetComboBox != null) FocusSystemPresetComboBox.SelectedValue = displayItem.Parameter ?? "OpenSettings";
+		}
+		finally
+		{
+			_isUpdatingFocusUi = false;
+		}
+	}
+
+	private void RefreshFocusSubActionsChips()
+	{
+		if (FocusSubActionsChipsPanel == null) return;
+		FocusSubActionsChipsPanel.Children.Clear();
+		if (_selectedSlotIndex < 0) return;
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		if (profile?.Actions == null || _selectedSlotIndex >= profile.Actions.Count) return;
+		ActionItem primaryAction = profile.Actions[_selectedSlotIndex];
+
+		bool isGlobalProfile = string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase);
+		bool inheritanceEnabled = ConfigManager.CurrentConfig?.EnableGlobalInheritance == true;
+		bool isInherited = false;
+		ActionItem? effAction = null;
+		if (!isGlobalProfile && inheritanceEnabled && !WheelProfile.IsActionConfigured(primaryAction))
+		{
+			effAction = profile.GetEffectiveAction(_selectedSlotIndex);
+			if (effAction != null && effAction.IsInherited)
+			{
+				isInherited = true;
+			}
+		}
+
+		var subActions = (primaryAction.SubActions != null && primaryAction.SubActions.Count > 0)
+			? primaryAction.SubActions
+			: (isInherited && effAction?.SubActions != null && effAction.SubActions.Count > 0 ? effAction.SubActions : primaryAction.SubActions);
+
+		int count = subActions?.Count ?? 0;
+		bool isUsingInheritedSubs = isInherited && (primaryAction.SubActions == null || primaryAction.SubActions.Count == 0) && count > 0;
+
+		bool isFan = string.Equals(ConfigManager.CurrentConfig?.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+		int maxAllowed = isFan ? 3 : 4;
+		bool canAdd = count < maxAllowed;
+
+		// 关键修复 1：始终在方法顶层统一更新【➕ 添加二级动作】按钮的启用状态与 ToolTip，彻底根除因早期 return 导致的偶发或持续禁用！
+		if (FocusAddSubActionBtn != null)
+		{
+			FocusAddSubActionBtn.IsEnabled = canAdd;
+			FocusAddSubActionBtn.ToolTip = canAdd 
+				? null 
+				: (isFan ? "当前蜂窝扇模式下最多支持配置 3 个二级级联子动作" : "当前外圈子环模式下最多支持配置 4 个二级级联子动作");
+		}
+
+		if (FocusClearSubActionsBtn != null)
+		{
+			FocusClearSubActionsBtn.IsEnabled = count > 0;
+		}
+
+		if (FocusSubActionsCountLabel != null)
+		{
+			FocusSubActionsCountLabel.Text = isUsingInheritedSubs ? $"({count} 项 - 全局继承)" : string.Format(I18n.T("FocusSubActionsCountFormat"), count);
+		}
+
+		if (subActions == null || subActions.Count == 0)
+		{
+			TextBlock emptyText = new TextBlock
+			{
+				Text = "暂无二级级联子动作，点击上方【➕ 添加二级动作】添加",
+				FontSize = 11,
+				Foreground = (System.Windows.Media.Brush)FindResource("TextMutedBrush"),
+				Margin = new Thickness(2, 4, 0, 4)
+			};
+			FocusSubActionsChipsPanel.Children.Add(emptyText);
+			UpdateUndoSubActionsButtonState();
+			return;
+		}
+
+		for (int i = 0; i < subActions.Count; i++)
+		{
+			int subIdx = i;
+			ActionItem subItem = subActions[i];
+			bool isSelected = (_selectedSubActionIndex == subIdx);
+			bool isExceeded = (i >= maxAllowed);
+
+			Border chip = new Border
+			{
+				Background = isSelected 
+					? (System.Windows.Media.Brush)FindResource("NavTabActiveBgBrush") 
+					: (System.Windows.Media.Brush)FindResource("CardBackgroundBrush"),
+				BorderBrush = isSelected 
+					? (System.Windows.Media.Brush)FindResource("AccentPrimaryBrush") 
+					: (System.Windows.Media.Brush)FindResource("CardBorderBrush"),
+				BorderThickness = new Thickness(isSelected ? 1.5 : 1.0),
+				CornerRadius = new CornerRadius(6),
+				Padding = new Thickness(8, 4, 6, 4),
+				Margin = new Thickness(0, 0, 6, 6),
+				Cursor = System.Windows.Input.Cursors.Hand,
+				Opacity = isExceeded ? 0.55 : (isUsingInheritedSubs ? 0.85 : 1.0),
+				ToolTip = isExceeded 
+					? (isFan ? "当前二级菜单样式为蜂窝扇，轮盘呼出与手势最多激活前 3 项子动作" : "当前二级菜单样式为外圈子环，最多激活前 4 项子动作")
+					: (isUsingInheritedSubs ? "继承自全局方案：点击可转为本专属方案自定义子动作" : null)
+			};
+
+			Grid chipGrid = new Grid();
+			chipGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+			chipGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+			chipGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+			string iconSvg = !string.IsNullOrEmpty(subItem.CustomIconSvg) 
+				? subItem.CustomIconSvg 
+				: IconHelper.GetSvgPathByKey(subItem.IconKey);
+			if (!string.IsNullOrEmpty(iconSvg))
+			{
+				try
+				{
+					System.Windows.Shapes.Path iconPath = new System.Windows.Shapes.Path
+					{
+						Data = Geometry.Parse(iconSvg),
+						Fill = (System.Windows.Media.Brush)FindResource("AccentPrimaryBrush"),
+						Width = 12,
+						Height = 12,
+						Stretch = Stretch.Uniform,
+						Margin = new Thickness(0, 0, 4, 0),
+						VerticalAlignment = VerticalAlignment.Center
+					};
+					Grid.SetColumn(iconPath, 0);
+					chipGrid.Children.Add(iconPath);
+				}
+				catch { }
+			}
+
+			string chipName = string.IsNullOrEmpty(subItem.Name) ? $"子动作 {subIdx + 1}" : subItem.Name;
+			if (isExceeded)
+			{
+				chipName += " (未激活)";
+			}
+			else if (isUsingInheritedSubs)
+			{
+				chipName += " (继承)";
+			}
+
+			TextBlock textBlock = new TextBlock
+			{
+				Text = chipName,
+				FontSize = 11,
+				FontWeight = isSelected ? FontWeights.SemiBold : FontWeights.Normal,
+				Foreground = isSelected 
+					? (System.Windows.Media.Brush)FindResource("AccentPrimaryBrush") 
+					: (System.Windows.Media.Brush)FindResource("TextPrimaryBrush"),
+				VerticalAlignment = VerticalAlignment.Center,
+				Margin = new Thickness(0, 0, 6, 0)
+			};
+			Grid.SetColumn(textBlock, 1);
+			chipGrid.Children.Add(textBlock);
+
+			if (!isUsingInheritedSubs)
+			{
+				TextBlock deleteBtn = new TextBlock
+				{
+					Text = "✕",
+					FontSize = 10,
+					Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush"),
+					VerticalAlignment = VerticalAlignment.Center,
+					Cursor = System.Windows.Input.Cursors.Hand,
+					Padding = new Thickness(2)
+				};
+				deleteBtn.MouseEnter += (s, e) => deleteBtn.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(239, 68, 68));
+				deleteBtn.MouseLeave += (s, e) => deleteBtn.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+				deleteBtn.MouseLeftButtonDown += (s, e) =>
+				{
+					e.Handled = true;
+					BackupSubActionsForUndo(_selectedSlotIndex, primaryAction.SubActions);
+					primaryAction.SubActions.RemoveAt(subIdx);
+					if (_selectedSubActionIndex == subIdx) _selectedSubActionIndex = null;
+					else if (_selectedSubActionIndex > subIdx) _selectedSubActionIndex--;
+					UpdateFocusEditorUi();
+					RefreshSlots();
+					RenderMappingsWheelPreview();
+					ScheduleAutoSave();
+				};
+				Grid.SetColumn(deleteBtn, 2);
+				chipGrid.Children.Add(deleteBtn);
+			}
+
+			chip.Child = chipGrid;
+			chip.MouseLeftButtonDown += (s, e) =>
+			{
+				e.Handled = true;
+				if (isUsingInheritedSubs)
+				{
+					EnsureLocalSubActionForEdit(profile, _selectedSlotIndex, subIdx);
+					RefreshSlots();
+					RefreshFocusSubActionsChips();
+					ScheduleAutoSave();
+				}
+				SelectSubAction(_selectedSlotIndex, subIdx);
+			};
+
+			FocusSubActionsChipsPanel.Children.Add(chip);
+		}
+
+		if (isUsingInheritedSubs)
+		{
+			TextBlock inheritTip = new TextBlock
+			{
+				Text = "💡 当前二级子动作继承自全局方案。点击子动作或【➕ 添加二级动作】可转为专属方案独立配置。",
+				FontSize = 10.5,
+				Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush"),
+				Margin = new Thickness(2, 6, 0, 2),
+				TextWrapping = TextWrapping.Wrap
+			};
+			FocusSubActionsChipsPanel.Children.Add(inheritTip);
+		}
+
+		UpdateUndoSubActionsButtonState();
+	}
+
+	private void FocusAddSubActionBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedSlotIndex < 0) return;
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		if (profile?.Actions == null || _selectedSlotIndex >= profile.Actions.Count) return;
+		ActionItem primaryAction = profile.Actions[_selectedSlotIndex];
+		primaryAction.SubActions ??= new List<ActionItem>();
+
+		// 如果是非 Global 方案且属于继承扇区，将继承的主动作属性与可能已继承的子动作物化到本地专属方案
+		bool isGlobal = string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase);
+		bool inheritanceEnabled = ConfigManager.CurrentConfig?.EnableGlobalInheritance == true;
+		if (!isGlobal && inheritanceEnabled)
+		{
+			ActionItem? eff = profile.GetEffectiveAction(_selectedSlotIndex);
+			if (eff != null && eff.IsInherited)
+			{
+				if (!WheelProfile.IsActionConfigured(primaryAction))
+				{
+					primaryAction.Name = eff.Name;
+					primaryAction.Type = eff.Type;
+					primaryAction.Parameter = eff.Parameter;
+					primaryAction.Arguments = eff.Arguments;
+					primaryAction.IconKey = eff.IconKey;
+					primaryAction.CustomIconSvg = eff.CustomIconSvg;
+					primaryAction.InheritAppIconPath = eff.InheritAppIconPath;
+					primaryAction.CommandTerminal = eff.CommandTerminal;
+					primaryAction.CustomIconSize = eff.CustomIconSize;
+					primaryAction.CustomTextColor = eff.CustomTextColor;
+					primaryAction.IsInherited = false;
+				}
+				if (primaryAction.SubActions.Count == 0 && eff.SubActions != null && eff.SubActions.Count > 0)
+				{
+					primaryAction.SubActions = eff.SubActions.Select(s => {
+						var cloned = s.Clone();
+						cloned.IsInherited = false;
+						return cloned;
+					}).ToList();
+				}
+			}
+		}
+
+		bool isFan = string.Equals(ConfigManager.CurrentConfig?.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+		int maxAllowed = isFan ? 3 : 4;
+		if (primaryAction.SubActions.Count >= maxAllowed)
+		{
+			string styleName = isFan ? "蜂窝扇 (Honeycomb Fan)" : "外圈子环 (Sub-Ring)";
+			System.Windows.MessageBox.Show(this, $"当前二级菜单样式为【{styleName}】，每个主扇区最多支持配置 {maxAllowed} 个二级级联子动作。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+			return;
+		}
+		BackupSubActionsForUndo(_selectedSlotIndex, primaryAction.SubActions);
+		int newIdx = primaryAction.SubActions.Count + 1;
+		primaryAction.SubActions.Add(new ActionItem
+		{
+			Name = $"子动作 {newIdx}",
+			Type = "Hotkey",
+			Parameter = "",
+			IconKey = ""
+		});
+		_selectedSubActionIndex = primaryAction.SubActions.Count - 1;
+		if (MappingsTier2SegmentRadio != null && MappingsTier2SegmentRadio.IsChecked != true)
+		{
+			_isUpdatingUi = true;
+			try { MappingsTier2SegmentRadio.IsChecked = true; }
+			finally { _isUpdatingUi = false; }
+		}
+		UpdateFocusEditorUi();
+		RefreshFocusSubActionsChips();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusClearSubActionsBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedSlotIndex < 0) return;
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		if (profile?.Actions == null || _selectedSlotIndex >= profile.Actions.Count) return;
+		ActionItem primaryAction = profile.Actions[_selectedSlotIndex];
+
+		bool isGlobal = string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase);
+		bool inheritanceEnabled = ConfigManager.CurrentConfig?.EnableGlobalInheritance == true;
+		bool hasInheritedSubs = false;
+		ActionItem? eff = null;
+		if (!isGlobal && inheritanceEnabled && (primaryAction.SubActions == null || primaryAction.SubActions.Count == 0))
+		{
+			eff = profile.GetEffectiveAction(_selectedSlotIndex);
+			if (eff != null && eff.IsInherited && eff.SubActions != null && eff.SubActions.Count > 0)
+			{
+				hasInheritedSubs = true;
+			}
+		}
+
+		if ((primaryAction.SubActions != null && primaryAction.SubActions.Count > 0) || hasInheritedSubs)
+		{
+			if (System.Windows.MessageBox.Show(this, "确定要清空该扇区的所有二级动作吗？", "确认清空", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+			{
+				BackupSubActionsForUndo(_selectedSlotIndex, primaryAction.SubActions);
+				if (hasInheritedSubs && eff != null)
+				{
+					if (!WheelProfile.IsActionConfigured(primaryAction))
+					{
+						primaryAction.Name = eff.Name;
+						primaryAction.Type = eff.Type;
+						primaryAction.Parameter = eff.Parameter;
+						primaryAction.Arguments = eff.Arguments;
+						primaryAction.IconKey = eff.IconKey;
+						primaryAction.CustomIconSvg = eff.CustomIconSvg;
+						primaryAction.InheritAppIconPath = eff.InheritAppIconPath;
+						primaryAction.CommandTerminal = eff.CommandTerminal;
+						primaryAction.CustomIconSize = eff.CustomIconSize;
+						primaryAction.CustomTextColor = eff.CustomTextColor;
+						primaryAction.IsInherited = false;
+					}
+				}
+				primaryAction.SubActions ??= new List<ActionItem>();
+				primaryAction.SubActions.Clear();
+				_selectedSubActionIndex = null;
+				UpdateFocusEditorUi();
+				RefreshFocusSubActionsChips();
+				RefreshSlots();
+				RenderMappingsWheelPreview();
+				ScheduleAutoSave();
+			}
+		}
+	}
+
+	private void FocusUndoSubActionsBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedSlotIndex < 0 || _lastSubActionsBackup == null || _lastSubActionsBackupSlotIndex != _selectedSlotIndex) return;
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		if (profile?.Actions == null || _selectedSlotIndex >= profile.Actions.Count) return;
+		ActionItem primaryAction = profile.Actions[_selectedSlotIndex];
+
+		var previous = primaryAction.SubActions;
+		primaryAction.SubActions = _lastSubActionsBackup;
+		_lastSubActionsBackup = previous?.Select(item => new ActionItem
+		{
+			Name = item.Name,
+			Type = item.Type,
+			Parameter = item.Parameter,
+			Arguments = item.Arguments,
+			IconKey = item.IconKey,
+			CustomIconSvg = item.CustomIconSvg,
+			InheritAppIconPath = item.InheritAppIconPath,
+			BrowserChoice = item.BrowserChoice,
+			BrowserPath = item.BrowserPath,
+			CommandTerminal = item.CommandTerminal,
+			RunAsStandardUser = item.RunAsStandardUser
+		}).ToList();
+
+		_selectedSubActionIndex = null;
+		UpdateUndoSubActionsButtonState();
+		UpdateFocusEditorUi();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void BackupSubActionsForUndo(int slotIndex, List<ActionItem>? currentSubActions)
+	{
+		_lastSubActionsBackupSlotIndex = slotIndex;
+		if (currentSubActions == null)
+		{
+			_lastSubActionsBackup = null;
+		}
+		else
+		{
+			_lastSubActionsBackup = currentSubActions.Select(item => new ActionItem
+			{
+				Name = item.Name,
+				Type = item.Type,
+				Parameter = item.Parameter,
+				Arguments = item.Arguments,
+				IconKey = item.IconKey,
+				CustomIconSvg = item.CustomIconSvg,
+				InheritAppIconPath = item.InheritAppIconPath,
+				BrowserChoice = item.BrowserChoice,
+				BrowserPath = item.BrowserPath,
+				CommandTerminal = item.CommandTerminal,
+				RunAsStandardUser = item.RunAsStandardUser
+			}).ToList();
+		}
+		UpdateUndoSubActionsButtonState();
+	}
+
+	private void UpdateUndoSubActionsButtonState()
+	{
+		if (FocusUndoSubActionsBtn != null)
+		{
+			bool canUndo = _lastSubActionsBackup != null && _lastSubActionsBackupSlotIndex == _selectedSlotIndex;
+			FocusUndoSubActionsBtn.IsEnabled = canUndo;
+			FocusUndoSubActionsBtn.Opacity = canUndo ? 1.0 : 0.45;
+		}
+	}
+
+	private void EnableGlobalInheritanceCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || _isUiInitializing || ConfigManager.CurrentConfig == null) return;
+		ConfigManager.CurrentConfig.EnableGlobalInheritance = (EnableGlobalInheritanceCheckBox?.IsChecked == true);
+		ScheduleAutoSave();
+		RefreshSlots();
+		UpdateFocusEditorUi();
+		RenderMappingsWheelPreview();
+		RenderLiveWheelPreview();
+	}
+
+	private void FocusRestoreInheritBtn_Click(object sender, RoutedEventArgs e)
+	{
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		if (profile == null || string.Equals(profile.ProcessName, "Global", StringComparison.OrdinalIgnoreCase)) return;
+
+		if (_selectedSlotIndex == -1)
+		{
+			if (profile.CenterAction != null)
+			{
+				profile.CenterAction.Type = "Inherit";
+				profile.CenterAction.Name = "";
+				profile.CenterAction.Parameter = "";
+				profile.CenterAction.IconKey = "";
+				profile.CenterAction.InheritAppIconPath = null;
+			}
+			profile.EnableCenterAction = false;
+		}
+		else if (_selectedSubActionIndex.HasValue)
+		{
+			if (profile.Actions != null && _selectedSlotIndex >= 0 && _selectedSlotIndex < profile.Actions.Count)
+			{
+				var action = profile.Actions[_selectedSlotIndex];
+				if (action != null)
+				{
+					action.SubActions?.Clear();
+					_selectedSubActionIndex = null;
+				}
+			}
+		}
+		else
+		{
+			if (profile.Actions != null && _selectedSlotIndex >= 0 && _selectedSlotIndex < profile.Actions.Count)
+			{
+				var action = profile.Actions[_selectedSlotIndex];
+				if (action != null)
+				{
+					action.Type = "Inherit";
+					action.Name = "";
+					action.Parameter = "";
+					action.IconKey = "";
+					action.InheritAppIconPath = null;
+					action.SubActions?.Clear();
+				}
+			}
+		}
+
+		ScheduleAutoSave();
+		RefreshSlots();
+		UpdateFocusEditorUi();
+		RenderMappingsWheelPreview();
+		RenderLiveWheelPreview();
+	}
+
+	private void EnableCenterActionCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingFocusUi || _selectedProfile == null) return;
+		_selectedProfile.EnableCenterAction = (EnableCenterActionCheckBox.IsChecked == true);
+		_selectedProfile.SyncActiveLayerFromRootProperties();
+		if (CenterPatternPriorityTip != null)
+		{
+			bool hasCustom = IconHelper.HasCustomCenterPattern(ConfigManager.CurrentConfig);
+			CenterPatternPriorityTip.Visibility = (hasCustom && _selectedProfile.EnableCenterAction) ? Visibility.Visible : Visibility.Collapsed;
+		}
+		RenderMappingsWheelPreview();
+		RenderLiveWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void CenterPresetsToggleBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (CenterPresetsContainer == null) return;
+		CenterPresetsContainer.Visibility = (CenterPresetsContainer.Visibility == Visibility.Visible) ? Visibility.Collapsed : Visibility.Visible;
+	}
+
+	private void CenterInfoToggleBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (CenterInfoContainer == null) return;
+		CenterInfoContainer.Visibility = (CenterInfoContainer.Visibility == Visibility.Visible) ? Visibility.Collapsed : Visibility.Visible;
+	}
+
+	private void ApplyCenterPreset_OpenSettings(object sender, RoutedEventArgs e)
+	{
+		SetCenterCoreAction("StarPie控制台", "System", "OpenSettings", "Settings");
+	}
+
+	private void ApplyCenterPreset_Desktop(object sender, RoutedEventArgs e)
+	{
+		SetCenterCoreAction("显示桌面", "System", "ShowDesktop", "ShowDesktop");
+	}
+
+	private void ApplyCenterPreset_Lock(object sender, RoutedEventArgs e)
+	{
+		SetCenterCoreAction("锁定屏幕", "System", "Lock", "Lock");
+	}
+
+	private void ApplyCenterPreset_WebUrl(object sender, RoutedEventArgs e)
+	{
+		SetCenterCoreAction("GitHub", "WebUrl", "https://github.com", "Globe");
+	}
+
+	private void ApplyCenterPreset_Explorer(object sender, RoutedEventArgs e)
+	{
+		SetCenterCoreAction("资源管理", "System", "Explorer", "Explorer");
+	}
+
+	private void SetCenterCoreAction(string name, string type, string parameter, string iconKey)
+	{
+		if (_selectedProfile == null) return;
+		_selectedProfile.CenterAction ??= new ActionItem();
+		_selectedProfile.CenterAction.Name = name;
+		_selectedProfile.CenterAction.Type = type;
+		_selectedProfile.CenterAction.Parameter = parameter;
+		_selectedProfile.CenterAction.IconKey = iconKey;
+		_selectedProfile.EnableCenterAction = true;
+		_selectedProfile.SyncActiveLayerFromRootProperties();
+		if (EnableCenterActionCheckBox != null) EnableCenterActionCheckBox.IsChecked = true;
+		UpdateFocusEditorUi();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusPickIcon_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		IconPickerWindow iconPickerWindow = new IconPickerWindow(item.IconKey);
+		iconPickerWindow.Owner = this;
+		if (iconPickerWindow.ShowDialog() == true)
+		{
+			item.IconKey = iconPickerWindow.SelectedIconKey ?? "";
+			item.InheritAppIconPath = "";
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusActionNameTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingUi || _isUpdatingFocusUi || !_isUiInitialized || _isUiInitializing) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null)
+		{
+			item.Name = FocusActionNameTextBox.Text;
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	/// <summary>
+	/// 刷新焦点编辑器的「插件动作」子下拉（按插件分组）。
+	/// <para>
+	/// 候选集合每次重建，以便在插件管理页里启用 / 停用一个插件后立刻反映到这里。
+	/// 重建会让下拉框短暂把 <c>SelectedValue</c> 置空，因此整段用
+	/// <c>_isUpdatingFocusUi</c> 包住 —— 否则那次置空会被 SelectionChanged 当成
+	/// 用户的选择，把已配好的动作清掉。
+	/// </para>
+	/// </summary>
+	private void RefreshFocusPluginActionComboBox(ActionItem item)
+	{
+		if (FocusPluginActionComboBox == null || FocusPluginActionRow == null) return;
+
+		bool isPlugin = item.Type == PluginActionBinding.TypeName;
+		if (!isPlugin)
+		{
+			FocusPluginActionRow.Visibility = Visibility.Collapsed;
+			FocusPluginActionComboBox.ItemsSource = null;
+			return;
+		}
+
+		FocusPluginActionRow.Visibility = Visibility.Visible;
+
+		bool oldUpdating = _isUpdatingFocusUi;
+		try
+		{
+			_isUpdatingFocusUi = true;
+			FocusPluginActionComboBox.ItemsSource = PluginActionBinding.BuildPluginActionView();
+
+			// 引用失效（插件停用 / 卸载）时 ProjectSelectedAction 会返回 null，
+			// 下拉框显示为未选中；具体原因由下方的插件面板如实说明。
+			FocusPluginActionComboBox.SelectedValue = PluginActionBinding.ProjectSelectedAction(item);
+		}
+		finally
+		{
+			_isUpdatingFocusUi = oldUpdating;
+		}
+	}
+
+	/// <summary>
+	/// 用户在子下拉里选定了一个具体的插件动作。
+	/// <para>
+	/// 这里刻意不复用 <c>UpdateFocusEditorUi</c> 之外的路径：<c>Apply</c> 在「名称 / 图标尚未
+	/// 自定义」时会自动填充，必须整体刷新一次界面对齐，否则名称框会停在旧动作的名字上。
+	/// </para>
+	/// </summary>
+	private void FocusPluginActionComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || _isUpdatingFocusUi || !_isUiInitialized || _isUiInitializing) return;
+		if (FocusPluginActionComboBox == null) return;
+
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null || item.Type != PluginActionBinding.TypeName) return;
+
+		if (FocusPluginActionComboBox.SelectedValue is not string fullId || string.IsNullOrWhiteSpace(fullId)) return;
+
+		// 写失败说明插件刚好被停用 / 卸载 —— 保持原配置不动，重新拉一次候选让界面回到真实状态。
+		if (!PluginActionBinding.Apply(item, fullId))
+		{
+			RefreshFocusPluginActionComboBox(item);
+			return;
+		}
+
+		UpdateFocusEditorUi();
+		ScheduleAutoSave();
+	}
+
+	/// <summary>
+	/// 刷新焦点编辑器中的「插件动作」面板：动作信息 + 参数表单 + 参数校验结论。
+	/// <para>
+	/// 参数表单完全由插件声明的 <see cref="StarPie.Plugin.ParameterField"/> 驱动，
+	/// 插件不提供 XAML —— 深浅色对比度、字体、圆角因此都由宿主统一保证，
+	/// 主程序改版也不会让插件界面错位。
+	/// </para>
+	/// </summary>
+	private void RefreshFocusPluginPanel(ActionItem item)
+	{
+		if (FocusPluginTitleText == null || FocusPluginDetailText == null) return;
+
+		StarPie.Plugin.PluginActionRef? reference = item.PluginActionRef;
+		if (reference == null || !reference.IsValid)
+		{
+			// 「还没选」与「根本没得选」要给出两句不同的话，这个分支判据收在
+			// PluginActionPanelText 里（见那里的注释）。窗口类只负责摆控件 ——
+			// 拼串留在窗口类里的话，无界面自检够不着它，[3g] 就写不出来。
+			var notChosen = PluginActionPanelText.NotChosen(PluginActionBinding.BuildPluginActionItems().Count);
+			FocusPluginTitleText.Text = notChosen.Title;
+			FocusPluginDetailText.Text = notChosen.Detail;
+			if (FocusPluginParamsHintText != null) FocusPluginParamsHintText.Visibility = Visibility.Collapsed;
+			if (FocusPluginReloadBtn != null) FocusPluginReloadBtn.Visibility = Visibility.Collapsed;
+			ClearFocusPluginParameterForm();
+			return;
+		}
+
+		if (!PluginHost.TryGetAction(reference.FullId, out PluginActionRegistration registration))
+		{
+			// 引用还在、贡献点却没了 —— 最常见的是插件被停用/卸载，或插件升级后不再提供该动作。
+			var unavailable = PluginActionPanelText.Unavailable(reference.FullId);
+			FocusPluginTitleText.Text = unavailable.Title;
+			FocusPluginDetailText.Text = unavailable.Detail;
+			if (FocusPluginParamsHintText != null)
+			{
+				FocusPluginParamsHintText.Text = unavailable.Hint ?? "";
+				FocusPluginParamsHintText.Visibility = Visibility.Visible;
+			}
+			if (FocusPluginReloadBtn != null) FocusPluginReloadBtn.Visibility = Visibility.Visible;
+			ClearFocusPluginParameterForm(keepHintText: true);
+			return;
+		}
+
+		// 插件名与子下拉的分组标题保持一致，用户才能把两处对上号；ID 另行标注，
+		// 排查问题时仍然需要它。这几行摘要的拼串全部收在 PluginActionPanelText 里。
+		var registered = PluginActionPanelText.Registered(
+			registration.DisplayName,
+			registration.PluginId,
+			PluginActionBinding.ResolvePluginDisplayName(registration.PluginId),
+			registration.FullId,
+			registration.Kind == StarPie.Plugin.ActionKind.Background,
+			registration.TimeoutSeconds,
+			registration.Description);
+		FocusPluginTitleText.Text = registered.Title;
+		FocusPluginDetailText.Text = registered.Detail;
+
+		BuildFocusPluginParameterForm(registration);
+
+		if (FocusPluginReloadBtn != null) FocusPluginReloadBtn.Visibility = Visibility.Visible;
+	}
+
+	/// <summary>按插件的字段声明重建参数表单。</summary>
+	private void BuildFocusPluginParameterForm(PluginActionRegistration registration)
+	{
+		if (FocusPluginParamsPanel == null) return;
+
+		PluginParameterForm form = EnsureFocusPluginParameterForm();
+		form.Build(registration.Parameters, registration.PluginId);
+
+		bool hasFields = !form.IsEmpty;
+		FocusPluginParamsPanel.Visibility = hasFields ? Visibility.Visible : Visibility.Collapsed;
+
+		if (FocusPluginParamsHintText != null)
+		{
+			if (hasFields)
+			{
+				// 布尔项不计入必填提示：它未填即视为 false，不存在「留空被拦」的问题，
+				// 把它算进去会让用户以为有个开关必须先动一下才能保存。
+				int requiredCount = registration.Parameters.Count(
+					p => p.Required && p.Type != StarPie.Plugin.ParameterFieldType.Bool);
+
+				FocusPluginParamsHintText.Text = PluginActionPanelText.ParamsHint(requiredCount);
+				FocusPluginParamsHintText.Visibility = Visibility.Visible;
+			}
+			else
+			{
+				FocusPluginParamsHintText.Visibility = Visibility.Collapsed;
+			}
+		}
+
+		RefreshFocusPluginValidation();
+	}
+
+	/// <summary>
+	/// 刷新参数校验结论。
+	/// <para>
+	/// 走 <see cref="PluginHost.ValidateActionParameters"/> —— 与用户真正触发轮盘时同一个入口，
+	/// 因此界面上显示的结论与触发时的判断必然一致，不会出现
+	/// 「这里看着没问题、一触发就说参数不合法」。
+	/// </para>
+	/// </summary>
+	private void RefreshFocusPluginValidation()
+	{
+		if (FocusPluginValidationText == null) return;
+
+		try
+		{
+			PluginActionValidation validation =
+				PluginHost.ValidateActionParameters(GetCurrentFocusActionItem());
+
+			// 字段级错误交给表单就地标红，此处只给「字段之外的结论」+ 未通过字段的计数，
+			// 免得同一条信息在界面上出现两遍。
+			_focusPluginParameterForm?.ShowIssues(validation.DeclaredIssues);
+
+			string? message = validation.PluginMessage;
+			if (message == null && validation.DeclaredIssues.Count > 0)
+			{
+				message = PluginActionPanelText.IssuesCount(validation.DeclaredIssues.Count);
+			}
+
+			if (string.IsNullOrWhiteSpace(message))
+			{
+				FocusPluginValidationText.Text = "";
+				FocusPluginValidationText.Visibility = Visibility.Collapsed;
+			}
+			else
+			{
+				FocusPluginValidationText.Text = "⛔ " + message;
+				FocusPluginValidationText.Visibility = Visibility.Visible;
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("[plugin] 刷新插件参数校验结论时异常", ex);
+			FocusPluginValidationText.Visibility = Visibility.Collapsed;
+		}
+	}
+
+	/// <summary>参数表单内任一字段变化时的回调。</summary>
+	private void OnFocusPluginParameterChanged()
+	{
+		if (_isUpdatingFocusUi || _isUpdatingUi || !_isUiInitialized) return;
+
+		try
+		{
+			// 只刷新校验结论与自动保存，刻意<b>不</b>调用 RefreshSlots()：
+			// 那会重建槽位列表并连带刷新焦点编辑器，把用户正在输入的参数控件整个换掉 ——
+			// 外在表现就是「每敲一个字就失去焦点」。参数不影响槽位显示名，无需刷新列表。
+			RefreshFocusPluginValidation();
+			ScheduleAutoSave();
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("[plugin] 处理插件参数变更时异常", ex);
+		}
+	}
+
+	private PluginParameterForm EnsureFocusPluginParameterForm() =>
+		_focusPluginParameterForm ??= new PluginParameterForm(
+			FocusPluginParamsPanel,
+			() => GetCurrentFocusActionItem(),
+			OnFocusPluginParameterChanged);
+
+	/// <param name="keepHintText">为真时保留提示行（用于「动作不可用」这类需要继续展示给的说明）。</param>
+	private void ClearFocusPluginParameterForm(bool keepHintText = false)
+	{
+		_focusPluginParameterForm?.Reset();
+
+		if (FocusPluginParamsPanel != null) FocusPluginParamsPanel.Visibility = Visibility.Collapsed;
+		if (FocusPluginValidationText != null)
+		{
+			FocusPluginValidationText.Text = "";
+			FocusPluginValidationText.Visibility = Visibility.Collapsed;
+		}
+		if (!keepHintText && FocusPluginParamsHintText != null)
+		{
+			FocusPluginParamsHintText.Visibility = Visibility.Collapsed;
+		}
+	}
+
+	private void FocusOpenPluginPageBtn_Click(object sender, RoutedEventArgs e)
+	{
+		SwitchToTab(5);
+	}
+
+	private async void FocusReloadPluginBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		StarPie.Plugin.PluginActionRef? reference = item?.PluginActionRef;
+		if (item == null || reference == null || !reference.IsValid)
+		{
+			System.Windows.MessageBox.Show(this, I18n.T("PluginsActionNotSelected"), I18n.T("PluginsMsgTitle"),
+				MessageBoxButton.OK, MessageBoxImage.Information);
+			return;
+		}
+
+		if (PluginHost.Find(reference.PluginId) == null)
+		{
+			System.Windows.MessageBox.Show(this, I18n.TF("PluginsActionPluginNotFound", reference.PluginId), I18n.T("PluginsMsgTitle"),
+				MessageBoxButton.OK, MessageBoxImage.Warning);
+			return;
+		}
+
+		// 进程内插件无法原地热替换 —— 已加载的程序集不会被重新读取。
+		// 必须走「停用 → 启用」才会真正把磁盘上的新二进制加载进来。
+		string msgTitle = I18n.T("PluginsMsgTitle");
+
+		// 用 DisableAsync 而不是同步 Disable：前者会等未归还的调用租约，IsFullyStopped
+		// 为 false 说明还有调用在跑，此时替换程序集等于让旧实例继续吃旧代码。
+		PluginStopResult stop = await PluginHost.DisableAsync(
+			reference.PluginId,
+			PluginStopReason.Reload,
+			PluginHost.DefaultStopGracePeriod);
+
+		if (!stop.IsFullyStopped)
+		{
+			System.Windows.MessageBox.Show(this,
+				I18n.TF("PluginsReloadNotStopped", stop.Message),
+				msgTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+			return;
+		}
+
+		if (!PluginHost.Enable(reference.PluginId, out string enableError))
+		{
+			System.Windows.MessageBox.Show(this, I18n.TF("PluginsReloadFailed", enableError), msgTitle,
+				MessageBoxButton.OK, MessageBoxImage.Warning);
+			return;
+		}
+
+		PluginInstance? reloaded = PluginHost.Find(reference.PluginId);
+		PluginHost.NotifyUser(msgTitle, I18n.TF("PluginsReloaded", reference.PluginId));
+
+		if (reloaded?.RequiresRestart == true)
+		{
+			System.Windows.MessageBox.Show(this,
+				I18n.TF("PluginsReloadedRestartNeeded", reference.PluginId),
+				msgTitle, MessageBoxButton.OK, MessageBoxImage.Information);
+		}
+
+		UpdateFocusEditorUi();
+		RefreshPluginManagerUi();
+	}
+
+	private void UpdateFocusActionUnavailableHint(ActionItem displayItem)
+	{
+		if (FocusActionUnavailableText == null || FocusActionUnavailableBanner == null) return;
+
+		if (!string.IsNullOrWhiteSpace(displayItem.Type) &&
+			!string.Equals(displayItem.Type, PluginActionBinding.TypeName, StringComparison.Ordinal) &&
+			PluginHost.IsOfficialClaimedType(displayItem.Type) &&
+			!PluginHost.IsClaimedTypeAvailable(displayItem.Type, out string reason))
+		{
+			FocusActionUnavailableText.Text = "⚠️ " + reason;
+			FocusActionUnavailableBanner.Visibility = Visibility.Visible;
+			return;
+		}
+
+		FocusActionUnavailableBanner.Visibility = Visibility.Collapsed;
+	}
+	// ==================== 🧩 插件与扩展 ====================
+
+	/// <summary>
+	/// 刷新插件管理页。
+	/// </summary>
+	/// <param name="resyncFromDisk">
+	/// 是否先与磁盘对账。进入页面时为 true —— 用户可能刚在资源管理器里拷入或删除了插件目录；
+	/// 页面内操作（启用/停用/卸载）之后为 false，那些操作自身已经把状态同步过了。
+	/// </param>
+	private async void RefreshOfficialPluginsButton_Click(object sender, RoutedEventArgs e)
+	{
+		await RefreshOfficialPluginsAsync();
+	}
+
+	private async Task RefreshOfficialPluginsAsync()
+	{
+		if (_officialPluginsLoading) return;
+		_officialPluginsLoading = true;
+		if (RefreshOfficialPluginsButton != null) RefreshOfficialPluginsButton.IsEnabled = false;
+		RenderOfficialPluginsStatus();
+
+		try
+		{
+			_officialPluginCatalog = await OfficialPluginClient.FetchCatalogAsync();
+			_officialPluginsError = null;
+			RenderOfficialPluginItems();
+			RenderOfficialPluginsStatus();
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogWarn($"[plugin] 刷新官方插件目录失败：{ex.Message}");
+			_officialPluginsError = ex.Message;
+			RenderOfficialPluginsStatus();
+		}
+		finally
+		{
+			_officialPluginsLoading = false;
+			if (RefreshOfficialPluginsButton != null) RefreshOfficialPluginsButton.IsEnabled = true;
+		}
+	}
+
+	/// <summary>
+	/// 按当前状态重渲染官方目录的进度行。
+	/// <para>
+	/// 必须由状态推导、而不是在几处分支里各写一遍字面量：切换语言时只有重跑这里，
+	/// 才能把「正在获取 / 目录版本 / 拉取失败」三种状态一起换成新语言 ——
+	/// 否则用户切到英文后，卡片与标题都换了，只有这行残留中文。
+	/// </para>
+	/// </summary>
+	private void RenderOfficialPluginsStatus()
+	{
+		if (OfficialPluginsStatusText == null) return;
+
+		if (_officialPluginsLoading)
+		{
+			OfficialPluginsStatusText.Text = I18n.T("PluginsOfficialLoading");
+		}
+		else if (_officialPluginCatalog != null)
+		{
+			OfficialPluginsStatusText.Text = I18n.TF("PluginsOfficialCatalogInfo", _officialPluginCatalog.CatalogVersion, _officialPluginCatalog.Modules.Count);
+		}
+		else if (!string.IsNullOrWhiteSpace(_officialPluginsError))
+		{
+			OfficialPluginsStatusText.Text = I18n.TF("PluginsOfficialUnavailable", _officialPluginsError);
+		}
+		else
+		{
+			OfficialPluginsStatusText.Text = I18n.T("PluginsOfficialStatusHint");
+		}
+	}
+
+	private void RenderOfficialPluginItems()
+	{
+		if (OfficialPluginItemsControl == null || _officialPluginCatalog == null) return;
+		var installed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (PluginInstance instance in PluginHost.ListInstances()) installed[instance.PluginId] = instance.Entry.Version;
+		OfficialPluginItemsControl.ItemsSource = _officialPluginCatalog.Modules.OrderBy(module => module.Name, StringComparer.CurrentCultureIgnoreCase).Select(module => new OfficialPluginListItem(module, installed.TryGetValue(module.Id, out string? version) ? version : null)).ToList();
+	}
+
+	private async void InstallOfficialPluginButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is not System.Windows.Controls.Button { Tag: OfficialPluginModule module } button) return;
+		if (!EnsurePluginSystemReady()) return;
+		button.IsEnabled = false;
+		try
+		{
+			OfficialPluginInstallResult result = await OfficialPluginClient.InstallAsync(module);
+			string title = I18n.T("PluginsOfficialMsgTitle");
+			if (!result.Success) System.Windows.MessageBox.Show(this, I18n.TF("PluginsOfficialInstallFailed", module.Name, result.Error), title, MessageBoxButton.OK, MessageBoxImage.Warning);
+			else System.Windows.MessageBox.Show(this, I18n.TF("PluginsOfficialInstalled", module.Name, module.Version), title, MessageBoxButton.OK, MessageBoxImage.Information);
+		}
+		finally
+		{
+			button.IsEnabled = true;
+			RefreshPluginManagerUi();
+			RenderOfficialPluginItems();
+		}
+	}
+
+	private void RefreshPluginManagerUi(bool resyncFromDisk = false)
+	{
+		if (PluginListBox == null) return;
+
+		if (resyncFromDisk && PluginHost.IsInitialized)
+		{
+			try
+			{
+				PluginHost.SyncFromDisk();
+			}
+			catch (Exception ex)
+			{
+				AppLogger.LogWarn($"[plugin] 与磁盘对账失败：{ex.Message}");
+			}
+		}
+
+		// 候选列表每次都重扫。扫描目录里的 .dll 是用户随时会替换的东西，
+		// 缓存一次再复用只会让界面显示上一个版本的信息；而且通常只有寥寥几枚文件。
+		if (PluginHost.IsInitialized)
+		{
+			try
+			{
+				PluginHost.ScanCandidates();
+			}
+			catch (Exception ex)
+			{
+				AppLogger.LogWarn($"[plugin] 扫描候选目录失败：{ex.Message}");
+			}
+		}
+
+		var items = new List<PluginListItem>();
+		try
+		{
+			foreach (PluginInstance instance in PluginHost.ListInstances())
+			{
+				items.Add(PluginListItem.Build(instance));
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogWarn($"[plugin] 读取插件列表失败：{ex.Message}");
+		}
+
+		PluginListBox.ItemsSource = items;
+
+		if (PluginsEmptyStatePanel != null)
+		{
+			PluginsEmptyStatePanel.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+		}
+
+		if (PluginSystemEnabledCheckBox != null)
+		{
+			PluginSystemEnabledCheckBox.IsChecked = PluginHost.IsEnabled;
+			PluginSystemEnabledCheckBox.IsEnabled = PluginHost.IsInitialized;
+		}
+
+		if (PluginsStatusSummaryText != null)
+		{
+			int enabledCount = items.Count(i => i.IsEnabled);
+			string directoryHint = I18n.TF("PluginsDataDirectoryHint", PluginPaths.Root);
+			PluginsStatusSummaryText.Text = items.Count == 0
+				? I18n.TF("PluginsStatusEmpty", directoryHint)
+				: I18n.TF("PluginsStatusSummary", items.Count, enabledCount, directoryHint);
+		}
+
+		if (PluginsSafeModeText != null)
+		{
+			PluginsSafeModeText.Visibility = PluginHost.IsSafeModeActive ? Visibility.Visible : Visibility.Collapsed;
+			if (PluginHost.IsSafeModeActive)
+			{
+				PluginsSafeModeText.Text = I18n.T("PluginsSafeModeWarning");
+			}
+		}
+
+		RenderOfficialPluginsStatus();
+
+		if (_officialPluginCatalog == null && !_officialPluginsLoading)
+		{
+			_ = RefreshOfficialPluginsAsync();
+		}
+		else
+		{
+			RenderOfficialPluginItems();
+		}
+
+		RefreshPluginCandidatesUi();
+	}
+
+	/// <summary>
+	/// 刷新「只读扫描目录」那一块。
+	/// <para>
+	/// 目录不存在时也要显示这一块（而不是整块藏起来）：用户按文档把 .dll 放进
+	/// 「程序目录\plugin」，结果发现界面上什么都没有，是最容易让人以为功能坏了的情形。
+	/// 所以这里始终把<b>实际路径</b>写出来，并明确说明宿主不会替用户创建它。
+	/// </para>
+	/// </summary>
+	/// <summary>
+	/// 插件页的静态文案：页头、副标题、各按钮与复选框。
+	/// <para>
+	/// 覆盖的是 <c>SettingsWindow.xaml</c> 里那几个硬编码中文默认值。插件页是 S4 拆包时新加的，
+	/// 当时没有同步接进 <see cref="ApplyLocalization"/>，于是切到英文 / 日文时整页仍是中文。
+	/// 列表状态、候选区那几段带数字的文案各自在刷新方法里取（见 <see cref="TF"/>）。
+	/// </para>
+	/// </summary>
+	private void ApplyPluginsPageLocalization()
+	{
+		if (PluginsPageHeader != null)
+		{
+			PluginsPageHeader.Text = I18n.T("TabPlugins");
+		}
+		if (PluginsPageSubheader != null)
+		{
+			PluginsPageSubheader.Text = I18n.T("PluginsPageSubheader");
+		}
+		if (InstallPluginButton != null)
+		{
+			InstallPluginButton.Content = I18n.T("PluginsInstallButton");
+		}
+		if (RescanPluginsButton != null)
+		{
+			RescanPluginsButton.Content = I18n.T("PluginsRescanButton");
+		}
+		if (OpenPluginsFolderButton != null)
+		{
+			OpenPluginsFolderButton.Content = I18n.T("PluginsOpenDataFolderButton");
+		}
+		if (OpenPluginScanFolderButton != null)
+		{
+			OpenPluginScanFolderButton.Content = I18n.T("PluginsOpenScanFolderButton");
+		}
+		if (PluginSystemEnabledCheckBox != null)
+		{
+			PluginSystemEnabledCheckBox.Content = I18n.T("PluginsEnableCheckBox");
+		}
+		if (PluginsEmptyTitleText != null)
+		{
+			PluginsEmptyTitleText.Text = I18n.T("PluginsEmptyTitle");
+		}
+		if (PluginsEmptyHintText != null)
+		{
+			PluginsEmptyHintText.Text = I18n.T("PluginsEmptyHint");
+		}
+
+		// 官方在线目录那一块。进度行是状态推导出来的（三种状态各一句），
+		// 所以这里不能只设一个固定文案 —— 得让状态机自己重渲染一次。
+		if (OfficialPluginsHeaderText != null)
+		{
+			OfficialPluginsHeaderText.Text = I18n.T("PluginsOfficialHeader");
+		}
+		if (RefreshOfficialPluginsButton != null)
+		{
+			RefreshOfficialPluginsButton.Content = I18n.T("PluginsOfficialRefreshButton");
+		}
+		RenderOfficialPluginsStatus();
+
+		// 候选卡片的状态徽标与安装按钮文案是 getter（每次读取时才查表），
+		// 光设静态文本不会让它们换语言 —— 得重新绑定一次数据源。
+		RefreshPluginManagerUi();
+	}
+
+	private void RefreshPluginCandidatesUi()
+	{
+		if (PluginCandidatesPanel == null) return;
+
+		IReadOnlyList<PluginCandidate> candidates;
+		try
+		{
+			candidates = PluginHost.Candidates;
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogWarn($"[plugin] 读取候选列表失败：{ex.Message}");
+			candidates = Array.Empty<PluginCandidate>();
+		}
+
+		int installable = candidates.Count(c => c.CanInstall);
+
+		if (PluginCandidatesHeaderText != null)
+		{
+			PluginCandidatesHeaderText.Text = PluginPaths.ScanRootExists
+				? (installable > 0
+					? I18n.TF("PluginsScanHeaderFound", candidates.Count, installable)
+					: I18n.T("PluginsScanHeaderNone"))
+				: I18n.T("PluginsScanHeaderMissing");
+		}
+
+		if (PluginCandidatesPathText != null)
+		{
+			PluginCandidatesPathText.Text = PluginPaths.ScanRootExists
+				? PluginPaths.ScanRoot
+				: PluginPaths.ScanRoot + "　—　" + I18n.T("PluginsScanPathHint");
+		}
+
+		if (PluginCandidateItemsControl != null)
+		{
+			PluginCandidateItemsControl.ItemsSource = candidates.Count == 0 ? null : candidates;
+		}
+
+		PluginCandidatesPanel.Visibility = Visibility.Visible;
+	}
+
+	/// <summary>点候选卡片上的「安装 / 更新 / 降级安装」。</summary>
+	private async void InstallPluginCandidateButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is not System.Windows.Controls.Button button) return;
+		string? dllPath = button.Tag as string;
+		if (string.IsNullOrWhiteSpace(dllPath)) return;
+
+		PluginCandidate? candidate = PluginHost.Candidates
+			.FirstOrDefault(c => string.Equals(c.DllPath, dllPath, StringComparison.OrdinalIgnoreCase));
+
+		if (candidate == null)
+		{
+			System.Windows.MessageBox.Show(this,
+				I18n.T("PluginsCandidateGone"),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+			RefreshPluginManagerUi();
+			return;
+		}
+
+		if (!ConfirmPluginInstall(new PluginInstallConfirmation
+		{
+			Scan = candidate.Scan,
+			State = candidate.State,
+			Note = candidate.Note,
+			// 与 PluginHost.InstallCandidateAsync 保持一致：候选安装走 EnableAfterInstall = true。
+			EnableAfterInstall = true,
+		})) return;
+
+		PluginInstallResult installResult = await PluginHost.InstallCandidateAsync(candidate);
+		string error = installResult.Error;
+
+		if (!installResult.Success)
+		{
+			System.Windows.MessageBox.Show(this,
+				I18n.TF("PluginsInstallFailed", error), I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+		else if (candidate.State == PluginCandidateState.Update)
+		{
+			System.Windows.MessageBox.Show(this,
+				I18n.TF("PluginsUpdatedAndEnabled", candidate.DisplayName, candidate.VersionText),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+		}
+
+		RefreshPluginManagerUi();
+	}
+
+	/// <summary>打开只读扫描目录。目录不存在时只提示路径，绝不代为创建。</summary>
+	private void OpenPluginScanFolderButton_Click(object sender, RoutedEventArgs e)
+	{
+		string scanRoot = PluginPaths.ScanRoot;
+
+		if (!PluginPaths.ScanRootExists)
+		{
+			System.Windows.MessageBox.Show(this,
+				I18n.TF("PluginsScanFolderMissing", scanRoot),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+			return;
+		}
+
+		try
+		{
+			System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+			{
+				FileName = scanRoot,
+				UseShellExecute = true,
+			});
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, I18n.TF("PluginsOpenScanFolderFailed", ex.Message),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	private bool EnsurePluginSystemReady()
+	{
+		if (PluginHost.IsInitialized) return true;
+
+		System.Windows.MessageBox.Show(this,
+			I18n.T("PluginsNotReady"),
+			I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+		return false;
+	}
+
+	private async void InstallPluginButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (!EnsurePluginSystemReady()) return;
+
+		var dialog = new Microsoft.Win32.OpenFileDialog
+		{
+			Title = I18n.T("PluginsPickDllTitle"),
+			Filter = I18n.T("PluginsPickDllFilter"),
+			CheckFileExists = true,
+			Multiselect = false,
+		};
+
+		if (dialog.ShowDialog(this) != true) return;
+
+		PluginScanResult scan;
+		try
+		{
+			scan = PluginHost.PrepareInstall(dialog.FileName);
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, I18n.TF("PluginsReadFileFailed", ex.Message),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Error);
+			return;
+		}
+
+		if (!scan.Accepted)
+		{
+			System.Windows.MessageBox.Show(this,
+				I18n.TF("PluginsNotAPlugin",
+					PluginScanFailureText.Title(scan.Failure),
+					scan.ErrorDetail,
+					PluginScanFailureText.Hint(scan.Failure),
+					scan.DllPath),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+			return;
+		}
+
+		// 识别已通过 —— 把「它到底是什么」摊开给用户看，确认后才落盘。
+		// 插件是以 StarPie 的权限在进程内跑代码的，这一步是唯一的知情同意关口。
+		//
+		// 这里的「装下去会怎样」与候选路径共用同一套判定（PluginHost.ClassifyManualInstall），
+		// 否则同一枚文件从扫描目录装与手动选进来装，会在确认页上得到两种说法。
+		(PluginCandidateState manualState, string manualNote) = PluginHost.ClassifyManualInstall(scan);
+		if (!ConfirmPluginInstall(new PluginInstallConfirmation
+		{
+			Scan = scan,
+			State = manualState,
+			Note = manualNote,
+			// 与下面 CommitInstallAsync 的 EnableAfterInstall 保持一致。
+			EnableAfterInstall = false,
+		})) return;
+
+		PluginInstallResult result = await PluginHost.CommitInstallAsync(scan, new PluginInstallOptions
+		{
+			Acknowledged = true,
+			OverwriteExisting = true,
+			// 安装与启用分开：先让用户在列表里看清它、再决定是否启用，
+			// 避免「装完即运行」这种用户还没反应过来就已经生效的体验。
+			EnableAfterInstall = false,
+			AcknowledgedCapabilities = scan.Manifest?.Capabilities?.ToList() ?? new List<string>(),
+		});
+
+		if (!result.Success)
+		{
+			System.Windows.MessageBox.Show(this, I18n.TF("PluginsInstallFailed", result.Error),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Error);
+			return;
+		}
+
+		RefreshPluginManagerUi();
+		PluginHost.NotifyUser(I18n.T("PluginsMsgTitle"), I18n.TF("PluginsInstalledNotify", result.PluginId));
+
+		System.Windows.MessageBox.Show(this, I18n.TF("PluginsInstalledDisabled", result.PluginId),
+			I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+	}
+
+	/// <summary>
+	/// 安装确认页的<b>唯一实现</b>，候选安装与手动选 .dll 都走这里。
+	/// <para>
+	/// 这里曾经是两份独立实现（候选一份、手动一份），只有候选那份接了 i18n ⇒
+	/// 同一个「确认安装插件」语义两条路，改一处漏一处。现在正文只在
+	/// <see cref="PluginInstallConfirmationText"/> 里写一遍，本方法只剩弹窗。
+	/// </para>
+	/// <para>
+	/// 正文之所以挪出去，是为了让它在无界面自检里能被逐语言驱动 —— 「切到英文后
+	/// 这一页还剩下多少中文」只有变成断言才守得住（自检 <c>[3e]</c>）。
+	/// </para>
+	/// </summary>
+	private bool ConfirmPluginInstall(PluginInstallConfirmation info) =>
+		System.Windows.MessageBox.Show(this, PluginInstallConfirmationText.Build(info),
+			I18n.T("PluginsConfirmTitle"), MessageBoxButton.OKCancel, MessageBoxImage.Warning) == MessageBoxResult.OK;
+
+	private void RescanPluginsButton_Click(object sender, RoutedEventArgs e)
+	{
+		int discovered = PluginHost.SyncFromDisk();
+
+		// 刷新界面时内部会重扫候选目录，这里跑完就能读到最新结果。
+		RefreshPluginManagerUi();
+
+		int installable = PluginHost.Candidates.Count(c => c.CanInstall);
+		string candidateHint = installable > 0
+			? I18n.TF("PluginsRescanCandidateHint", installable)
+			: "";
+
+		PluginHost.NotifyUser(I18n.T("PluginsMsgTitle"),
+			discovered > 0
+				? I18n.TF("PluginsRescanFound", discovered, candidateHint)
+				: I18n.TF("PluginsRescanNone", candidateHint));
+	}
+
+	private void OpenPluginsFolderButton_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			PluginPaths.EnsureDirectories();
+			System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+			{
+				FileName = PluginPaths.Root,
+				UseShellExecute = true,
+			});
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, I18n.TF("PluginsOpenDataFolderFailed", ex.Message),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	/// <summary>
+	/// 插件系统总开关。
+	/// <para>
+	/// 用 Click 而不是 Checked/Unchecked：给 <c>IsChecked</c> 赋值同样会触发
+	/// Checked/Unchecked，那样每次刷新页面都会把用户的配置再写一遍。
+	/// Click 只在真实交互时触发，天然规避这类误写。
+	/// </para>
+	/// </summary>
+	private async void PluginSystemEnabledCheckBox_Click(object sender, RoutedEventArgs e)
+	{
+		if (PluginSystemEnabledCheckBox == null) return;
+
+		bool desired = PluginSystemEnabledCheckBox.IsChecked == true;
+		int affected = PluginHost.GetRegisteredActions().Count;
+		PluginSystemEnabledCheckBox.IsEnabled = false;
+		try
+		{
+			await PluginHost.SetEnabledAsync(desired);
+		}
+		finally
+		{
+			PluginSystemEnabledCheckBox.IsEnabled = true;
+			RefreshPluginManagerUi();
+		}
+
+		if (!desired && affected > 0)
+		{
+			System.Windows.MessageBox.Show(this,
+				I18n.TF("PluginsDisabledNotice", affected),
+				I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+		}
+	}
+
+	private async void PluginRowEnabledCheckBox_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is not System.Windows.Controls.CheckBox { Tag: string pluginId } box ||
+			string.IsNullOrWhiteSpace(pluginId))
+		{
+			return;
+		}
+
+		bool desired = box.IsChecked == true;
+		if (!desired)
+		{
+			int affected = PluginImpactAnalyzer.CountAffectedActions(ConfigManager.CurrentConfig, pluginId);
+			if (affected > 0)
+			{
+				string pluginName = PluginHost.Find(pluginId)?.Entry.Name ?? pluginId;
+				MessageBoxResult choice = System.Windows.MessageBox.Show(this,
+					I18n.TF("PluginsConfirmDisable", pluginName, affected),
+					I18n.T("PluginsConfirmDisableTitle"), MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.Yes);
+				if (choice != MessageBoxResult.Yes)
+				{
+					box.IsChecked = true;
+					return;
+				}
+			}
+		}
+		box.IsEnabled = false;
+		try
+		{
+			if (desired)
+			{
+				if (!PluginHost.Enable(pluginId, out string enableError))
+				{
+					System.Windows.MessageBox.Show(this, I18n.TF("PluginsEnableFailed", pluginId, enableError),
+						I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+				}
+			}
+			else
+			{
+				PluginStopResult stop = await PluginHost.DisableAsync(
+					pluginId,
+					PluginStopReason.UserDisabled,
+					PluginHost.DefaultStopGracePeriod);
+
+				if (stop.Status == PluginStopStatus.Failed)
+				{
+					System.Windows.MessageBox.Show(this, I18n.TF("PluginsDisableFailed", pluginId, stop.Message),
+						I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+				}
+				else if (!stop.IsFullyStopped)
+				{
+					// stop.Message 由宿主生成（「插件「X」仍有 N 个调用未结束…」），
+					// 属宿主内部消息，不在本次接线范围内。
+					System.Windows.MessageBox.Show(this, stop.Message,
+						I18n.T("PluginsStoppingTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+				}
+			}
+		}
+		finally
+		{
+			box.IsEnabled = true;
+			RefreshPluginManagerUi();
+		}
+	}
+
+	private async void UninstallPluginButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is not System.Windows.Controls.Button { Tag: string pluginId } button ||
+			string.IsNullOrWhiteSpace(pluginId))
+		{
+			return;
+		}
+
+		MessageBoxResult choice = System.Windows.MessageBox.Show(this,
+			I18n.TF("PluginsConfirmUninstall", pluginId),
+			I18n.T("PluginsConfirmUninstallTitle"), MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+
+		if (choice != MessageBoxResult.Yes) return;
+
+		button.IsEnabled = false;
+		try
+		{
+			PluginUninstallResult result = await PluginHost.UninstallAsync(pluginId, removePluginData: true);
+			if (!result.Success)
+			{
+				System.Windows.MessageBox.Show(this, I18n.TF("PluginsUninstallFailed", result.Error),
+					I18n.T("PluginsMsgTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+			}
+		}
+		finally
+		{
+			button.IsEnabled = true;
+			RefreshPluginManagerUi();
+		}
+	}
+
+	private void UpdateFocusActionTypeItemsSource(string? currentTag = null, bool force = false)
+	{
+		if (FocusActionTypeComboBox == null) return;
+		bool isSimple = string.Equals(ConfigManager.CurrentConfig?.ConfigMode, "Simple", StringComparison.OrdinalIgnoreCase);
+		var allTypes = SlotViewModel.AggregatedActionTypes;
+		List<ActionTypeItem> targetList;
+		if (isSimple)
+		{
+			targetList = allTypes.Where(t =>
+				(t.Tag != "Command" && t.Tag != "WindowManager") ||
+				(currentTag != null && string.Equals(t.Tag, currentTag, StringComparison.OrdinalIgnoreCase))
+			).ToList();
+		}
+		else
+		{
+			targetList = allTypes;
+		}
+
+		if (!force && FocusActionTypeComboBox.ItemsSource is List<ActionTypeItem> currentList &&
+			currentList.Count == targetList.Count &&
+			currentList.Select(x => x.Tag).SequenceEqual(targetList.Select(x => x.Tag)))
+		{
+			return;
+		}
+
+		var prevSelectedTag = (FocusActionTypeComboBox.SelectedItem as ActionTypeItem)?.Tag ?? currentTag;
+		bool oldUpdating = _isUpdatingFocusUi;
+		try
+		{
+			_isUpdatingFocusUi = true;
+			FocusActionTypeComboBox.ItemsSource = null;
+			FocusActionTypeComboBox.ItemsSource = targetList;
+			if (prevSelectedTag != null)
+			{
+				// 插件动作的 Tag 现在固定是裸 "Plugin"，一定在列表里 ——
+				// 不再需要「引用失效时退回兜底项」的退化匹配（那是贡献点 ID 编码进 Tag 时代的产物）。
+				var match = targetList.FirstOrDefault(t => string.Equals(t.Tag, prevSelectedTag, StringComparison.OrdinalIgnoreCase));
+				if (match != null)
+				{
+					FocusActionTypeComboBox.SelectedItem = match;
+				}
+			}
+		}
+		finally
+		{
+			_isUpdatingFocusUi = oldUpdating;
+		}
+	}
+
+	private void FocusActionTypeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || _isUpdatingFocusUi || !_isUiInitialized || _isUiInitializing) return;
+		if (FocusActionTypeComboBox == null) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null && FocusActionTypeComboBox.SelectedValue is string newType)
+		{
+			if (newType == PluginActionBinding.TypeName)
+			{
+				// 只切类型，**刻意不清插件引用**：用户在内置类型与插件动作之间来回切换时，
+				// 已配好的插件动作不应被清掉（改选具体动作是子下拉的事）。
+				// 引用为空只表示「还没选过」，由子下拉的空状态去引导。
+				item.Type = PluginActionBinding.TypeName;
+				if (ActionNameDefaults.IsAutoFilled(item.Name))
+				{
+					item.Name = I18n.T("ActionTypePluginShort");
+				}
+			}
+			else if (newType == "WindowManager")
+			{
+				bool wasWindowType = item.Type == "Tile" || item.Type == "ToggleTopmost" || item.Type == "MoveMonitor" || item.Type == "WindowOpacity" || item.Type == "SwitchWindow";
+				if (!wasWindowType)
+				{
+					item.Type = "Tile";
+					item.Parameter = "2L";
+					if (ActionNameDefaults.IsAutoFilled(item.Name))
+					{
+						item.Name = "平铺: " + WindowTiler.LayoutDisplayName("2L");
+					}
+					if (string.IsNullOrEmpty(item.IconKey))
+					{
+						item.IconKey = "Tile";
+					}
+				}
+			}
+			else
+			{
+				// 从插件动作切回内置类型时，必须清掉插件引用，
+				// 否则会留下「内置类型 + 悬挂插件引用」的混合状态。
+				PluginActionBinding.Clear(item);
+				item.Type = newType;
+			}
+
+			if ((newType == "Folder" || newType == "OpenFolder") && string.IsNullOrEmpty(item.IconKey))
+			{
+				item.IconKey = "Folder";
+			}
+			else if ((newType == "WebUrl" || newType == "Url") && string.IsNullOrEmpty(item.IconKey))
+			{
+				item.IconKey = "Globe";
+			}
+			else if (newType == "Ocr" || newType == "ScreenOcr")
+			{
+				item.Type = "Ocr";
+				if (ActionNameDefaults.IsAutoFilled(item.Name))
+				{
+					item.Name = "截屏识字";
+				}
+				if (string.IsNullOrEmpty(item.IconKey))
+				{
+					item.IconKey = "Scan";
+				}
+			}
+			else if (newType == "ShellTool")
+			{
+				item.Type = "ShellTool";
+				if (string.IsNullOrEmpty(item.Parameter) || (!item.Parameter.Contains('.') && ShellActionPickerWindow.ShellTools?.Any(t => t.Id == item.Parameter) != true))
+				{
+					item.Parameter = "Windows.CopyAsPath";
+					item.Name = "复制文件/文件夹路径";
+					item.IconKey = "Copy";
+				}
+				else
+				{
+					var tool = ShellActionPickerWindow.ShellTools?.FirstOrDefault(t => t.Id == item.Parameter || string.Equals(t.Verb, item.Parameter, StringComparison.OrdinalIgnoreCase));
+					if (tool != null)
+					{
+						item.Name = tool.Name;
+						item.IconKey = tool.IconKey;
+					}
+				}
+			}
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusPickShellToolBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+
+		ShellActionPickerWindow picker = new ShellActionPickerWindow(item.Parameter);
+		picker.Owner = this;
+		if (picker.ShowDialog() == true && picker.SelectedTool != null)
+		{
+			var tool = picker.SelectedTool;
+			item.Type = "ShellTool";
+			item.Parameter = tool.Id;
+			item.Name = tool.Name;
+			item.IconKey = tool.IconKey;
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusWindowSubModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || _isUpdatingFocusUi || !_isUiInitialized || _isUiInitializing) return;
+		if (FocusWindowSubModeComboBox == null) return;
+		if (FocusWindowManagerPanel == null || FocusWindowManagerPanel.Visibility != Visibility.Visible) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		bool wasWindowType = item.Type == "Tile" || item.Type == "ToggleTopmost" || item.Type == "MoveMonitor" || item.Type == "WindowOpacity" || item.Type == "SwitchWindow";
+		if (!wasWindowType) return;
+
+		string subMode = (FocusWindowSubModeComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Tile";
+		switch (subMode)
+		{
+			case "Tile":
+				item.Type = "Tile";
+				string layout = FocusTileLayoutComboBox?.SelectedValue as string ?? "2L";
+				item.Parameter = layout;
+				item.Name = "平铺: " + WindowTiler.LayoutDisplayName(layout);
+				if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+				{
+					item.IconKey = "Tile";
+				}
+				break;
+			case "TileCycle":
+				item.Type = "Tile";
+				item.Parameter = WindowTiler.CycleParam;
+				item.Name = "循环切换平铺";
+				if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+				{
+					item.IconKey = "Tile";
+				}
+				break;
+			case "TileCycleBack":
+				item.Type = "Tile";
+				item.Parameter = WindowTiler.CycleBackParam;
+				item.Name = "反向循环平铺";
+				if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+				{
+					item.IconKey = "Tile";
+				}
+				break;
+			case "TileRestore":
+				item.Type = "Tile";
+				item.Parameter = WindowTiler.RestoreParam;
+				item.Name = I18n.T("TileRestoreAllLabel");
+				if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+				{
+					item.IconKey = "Tile";
+				}
+				break;
+			case "ToggleTopmost":
+				item.Type = "ToggleTopmost";
+				item.Parameter = "";
+				item.Name = I18n.T("ActionTypeTopmostShort");
+				if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+				{
+					item.IconKey = "Pin";
+				}
+				break;
+			case "MoveMonitor":
+				item.Type = "MoveMonitor";
+				item.Parameter = "";
+				item.Name = I18n.T("ActionTypeMoveMonitorShort");
+				if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+				{
+					item.IconKey = "Monitor";
+				}
+				break;
+			case "WindowOpacity":
+				item.Type = "WindowOpacity";
+				int op = (int)(FocusWindowOpacitySlider?.Value ?? 80);
+				item.Parameter = op.ToString();
+				item.Name = $"透明度: {op}%";
+				if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+				{
+					item.IconKey = "Eye";
+				}
+				break;
+			case "SwitchWindow":
+				item.Type = "SwitchWindow";
+				string nth = FocusWindowSwitchTextBox?.Text?.Trim() ?? "1";
+				item.Parameter = string.IsNullOrEmpty(nth) ? "1" : nth;
+				item.Name = $"切换应用 #{item.Parameter}";
+				if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+				{
+					item.IconKey = "Window";
+				}
+				break;
+		}
+
+		UpdateWindowSubModeVisibility(subMode);
+		if (FocusActionNameTextBox != null) FocusActionNameTextBox.Text = item.Name;
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void UpdateWindowSubModeVisibility(string subMode)
+	{
+		if (FocusWindowTileSubPanel != null) FocusWindowTileSubPanel.Visibility = subMode == "Tile" ? Visibility.Visible : Visibility.Collapsed;
+		if (FocusWindowCycleSubPanel != null) FocusWindowCycleSubPanel.Visibility = (subMode == "TileCycle" || subMode == "TileCycleBack") ? Visibility.Visible : Visibility.Collapsed;
+		if (FocusWindowRestoreSubPanel != null) FocusWindowRestoreSubPanel.Visibility = subMode == "TileRestore" ? Visibility.Visible : Visibility.Collapsed;
+		if (FocusWindowTopmostSubPanel != null) FocusWindowTopmostSubPanel.Visibility = subMode == "ToggleTopmost" ? Visibility.Visible : Visibility.Collapsed;
+		if (FocusWindowMoveMonitorSubPanel != null) FocusWindowMoveMonitorSubPanel.Visibility = subMode == "MoveMonitor" ? Visibility.Visible : Visibility.Collapsed;
+		if (FocusWindowOpacitySubPanel != null) FocusWindowOpacitySubPanel.Visibility = subMode == "WindowOpacity" ? Visibility.Visible : Visibility.Collapsed;
+		if (FocusWindowSwitchSubPanel != null) FocusWindowSwitchSubPanel.Visibility = subMode == "SwitchWindow" ? Visibility.Visible : Visibility.Collapsed;
+	}
+
+	private void FocusTileLayoutComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || _isUpdatingFocusUi || !_isUiInitialized || _isUiInitializing) return;
+		if (FocusTileLayoutComboBox == null) return;
+		if (FocusWindowManagerPanel == null || FocusWindowManagerPanel.Visibility != Visibility.Visible) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null || item.Type != "Tile") return;
+		if (FocusTileLayoutComboBox.SelectedValue is string layout && WindowTiler.IsValidLayout(layout))
+		{
+			item.Parameter = layout;
+			item.Name = "平铺: " + WindowTiler.LayoutDisplayName(layout);
+			if (FocusActionNameTextBox != null) FocusActionNameTextBox.Text = item.Name;
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	// 手势映射区与轮盘槽位区的平铺布局下拉为纯 TwoWay 绑定，只写内存；
+	// 必须在此补一次自动保存调度，否则布局修改要等下一次其他事件才被顺带落盘。
+	private void TileLayoutComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		ScheduleAutoSave();
+	}
+
+	private void ApplyFocusTileLayout(string layout)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		item.Type = "Tile";
+		item.Parameter = layout;
+		item.Name = "平铺: " + WindowTiler.LayoutDisplayName(layout);
+		if (string.IsNullOrEmpty(item.IconKey) && string.IsNullOrEmpty(item.InheritAppIconPath) && string.IsNullOrEmpty(item.CustomIconSvg))
+		{
+			item.IconKey = "Tile";
+		}
+		if (FocusTileLayoutComboBox != null) FocusTileLayoutComboBox.SelectedValue = layout;
+		if (FocusActionNameTextBox != null) FocusActionNameTextBox.Text = item.Name;
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusTilePreset_2L(object sender, RoutedEventArgs e) => ApplyFocusTileLayout("2L");
+	private void FocusTilePreset_2T(object sender, RoutedEventArgs e) => ApplyFocusTileLayout("2T");
+	private void FocusTilePreset_3L12(object sender, RoutedEventArgs e) => ApplyFocusTileLayout("3L12");
+	private void FocusTilePreset_4G(object sender, RoutedEventArgs e) => ApplyFocusTileLayout("4G");
+	private void FocusTilePreset_3R(object sender, RoutedEventArgs e) => ApplyFocusTileLayout("3R");
+
+	private void FocusPopulateTileSubActions_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		List<ActionItem> list = new List<ActionItem>();
+		foreach (string key in WindowTiler.LayoutKeys.Take(7))
+		{
+			list.Add(new ActionItem { Type = "Tile", Parameter = key, Name = WindowTiler.LayoutDisplayName(key), IconKey = "Tile" });
+		}
+		list.Add(new ActionItem { Type = "Tile", Parameter = WindowTiler.RestoreParam, Name = I18n.T("TileRestoreAllLabel"), IconKey = "Tile" });
+		item.SubActions = list;
+		RefreshFocusSubActionsChips();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusWindowOpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingFocusUi) return;
+		int val = (int)e.NewValue;
+		if (FocusWindowOpacityLabel != null) FocusWindowOpacityLabel.Text = val + "%";
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null && item.Type == "WindowOpacity")
+		{
+			item.Parameter = val.ToString();
+			item.Name = $"透明度: {val}%";
+			if (FocusActionNameTextBox != null) FocusActionNameTextBox.Text = item.Name;
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ApplyFocusOpacity(int opacity)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		item.Type = "WindowOpacity";
+		item.Parameter = opacity.ToString();
+		item.Name = $"透明度: {opacity}%";
+		item.IconKey = "Eye";
+		if (FocusWindowOpacitySlider != null) FocusWindowOpacitySlider.Value = opacity;
+		if (FocusWindowOpacityLabel != null) FocusWindowOpacityLabel.Text = opacity + "%";
+		if (FocusActionNameTextBox != null) FocusActionNameTextBox.Text = item.Name;
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusOpacityPreset_70(object sender, RoutedEventArgs e) => ApplyFocusOpacity(70);
+	private void FocusOpacityPreset_80(object sender, RoutedEventArgs e) => ApplyFocusOpacity(80);
+	private void FocusOpacityPreset_90(object sender, RoutedEventArgs e) => ApplyFocusOpacity(90);
+	private void FocusOpacityPreset_100(object sender, RoutedEventArgs e) => ApplyFocusOpacity(100);
+
+	private void FocusWindowSwitchTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null && item.Type == "SwitchWindow")
+		{
+			string nth = FocusWindowSwitchTextBox?.Text?.Trim() ?? "1";
+			item.Parameter = string.IsNullOrEmpty(nth) ? "1" : nth;
+			item.Name = $"切换应用 #{item.Parameter}";
+			if (FocusActionNameTextBox != null) FocusActionNameTextBox.Text = item.Name;
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ApplyFocusSwitchSlot(int slot)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		item.Type = "SwitchWindow";
+		item.Parameter = slot.ToString();
+		item.Name = $"切换应用 #{slot}";
+		item.IconKey = "Window";
+		if (FocusWindowSwitchTextBox != null) FocusWindowSwitchTextBox.Text = slot.ToString();
+		if (FocusActionNameTextBox != null) FocusActionNameTextBox.Text = item.Name;
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusSwitchPreset_1(object sender, RoutedEventArgs e) => ApplyFocusSwitchSlot(1);
+	private void FocusSwitchPreset_2(object sender, RoutedEventArgs e) => ApplyFocusSwitchSlot(2);
+	private void FocusSwitchPreset_3(object sender, RoutedEventArgs e) => ApplyFocusSwitchSlot(3);
+	private void FocusSwitchPreset_4(object sender, RoutedEventArgs e) => ApplyFocusSwitchSlot(4);
+
+	private void TileCaptureCurrentProcess_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			WindowPickerWindow picker = new WindowPickerWindow(WindowPickerMode.ProcessNameOnly)
+			{
+				Owner = this
+			};
+			if (picker.ShowDialog() == true && !string.IsNullOrEmpty(picker.SelectedProcessName))
+			{
+				string procLower = picker.SelectedProcessName.ToLowerInvariant();
+				if (!procLower.Equals("starpie", StringComparison.OrdinalIgnoreCase) &&
+					!procLower.Equals("winpiegestures", StringComparison.OrdinalIgnoreCase))
+				{
+					string current = TileExcludeProcessesTextBox?.Text?.Trim() ?? "";
+					var list = current.Split(new[] { ',', '，', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+						.Select(s => s.Trim().ToLowerInvariant())
+						.ToList();
+					if (!list.Contains(procLower))
+					{
+						list.Add(procLower);
+						if (TileExcludeProcessesTextBox != null)
+						{
+							TileExcludeProcessesTextBox.Text = string.Join(",", list);
+						}
+					}
+				}
+			}
+		}
+		catch { }
+	}
+
+	private void TileCyclePresetClassic_Click(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || _cycleItems == null)
+		{
+			return;
+		}
+		var classic = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "2L", "2T", "3L12", "4G" };
+		foreach (LayoutCycleItem item in _cycleItems)
+		{
+			item.IsChecked = classic.Contains(item.Key);
+		}
+		PersistTileCycleSelection();
+	}
+
+	private void FocusTestActionBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null)
+		{
+			ActionExecutor.Execute(item);
+		}
+	}
+
+	private void FocusHotkeyBuilder_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		HotkeyBuilderDialog dlg = new HotkeyBuilderDialog(item.Parameter ?? "")
+		{
+			Owner = this
+		};
+		if (dlg.ShowDialog() == true)
+		{
+			item.Parameter = dlg.ResultHotkey;
+			if (FocusHotkeyRecorder != null)
+			{
+				FocusHotkeyRecorder.HotkeyText = dlg.ResultHotkey;
+			}
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void StartExclusiveRecording()
+	{
+		if (App.MainKeyboardHook == null) return;
+		if (App.MainKeyboardHook.SuppressGlobalHotkeysForRecording) return;
+
+		App.MainKeyboardHook.StartExclusiveRecording();
+		UpdatePauseHotkeysButtonState(true);
+		if (FocusHotkeyRecorder != null)
+		{
+			FocusHotkeyRecorder.Focus();
+			FocusHotkeyRecorder.ShowExclusiveRecordingState("🔴 全局热键已暂停，请按下快捷键组合 (如 Win+D、Alt+Tab)...");
+		}
+		AppLogger.LogInfo("Activated exclusive hotkey recording mode (suppressing desktop and app hotkeys)");
+		try
+		{
+			App.ShowTrayBalloon(2000, "StarPie", "⏸️ 已暂时暂停桌面系统及其他软件全局快捷键，在此按下目标按键组合进行录入（按 Esc 取消）", System.Windows.Forms.ToolTipIcon.Info);
+		}
+		catch { }
+	}
+
+	private void TogglePauseHotkeysBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (App.MainKeyboardHook == null) return;
+
+		bool isSuppressing = App.MainKeyboardHook.SuppressGlobalHotkeysForRecording;
+		if (isSuppressing)
+		{
+			// 退出独占录制状态
+			CancelExclusiveRecordingIfActive();
+			try
+			{
+				App.ShowTrayBalloon(1000, "StarPie", "▶️ 已恢复全局热键与按键正常监听", System.Windows.Forms.ToolTipIcon.Info);
+			}
+			catch { }
+		}
+		else
+		{
+			// 开启独占录制：底层钩子阻断系统及其他软件全局热键，独占由 StarPie 录入
+			StartExclusiveRecording();
+		}
+	}
+
+	private void CancelExclusiveRecordingIfActive()
+	{
+		if (App.MainKeyboardHook != null && App.MainKeyboardHook.SuppressGlobalHotkeysForRecording)
+		{
+			App.MainKeyboardHook.CancelExclusiveRecording();
+			UpdatePauseHotkeysButtonState(false);
+			if (FocusHotkeyRecorder != null)
+			{
+				FocusHotkeyRecorder.IsRecording = false;
+				FocusHotkeyRecorder.HotkeyText = GetCurrentFocusActionItem()?.Parameter ?? "";
+			}
+		}
+	}
+
+	private void MainKeyboardHook_OnExclusiveRecordModifiersChanged(ModifierKeys modifiers)
+	{
+		Dispatcher.BeginInvoke(() =>
+		{
+			if (FocusHotkeyRecorder != null && App.MainKeyboardHook?.SuppressGlobalHotkeysForRecording == true)
+			{
+				List<string> list = new List<string>();
+				if (modifiers.HasFlag(ModifierKeys.Control)) list.Add("Ctrl");
+				if (modifiers.HasFlag(ModifierKeys.Shift)) list.Add("Shift");
+				if (modifiers.HasFlag(ModifierKeys.Alt)) list.Add("Alt");
+				if (modifiers.HasFlag(ModifierKeys.Windows)) list.Add("Win");
+				string text = list.Count > 0 ? $"🔴 {string.Join(" + ", list)} + ... (按Esc取消)" : "🔴 全局热键已暂停，请按下快捷键组合 (如 Win+D、Alt+Tab)...";
+				FocusHotkeyRecorder.ShowExclusiveRecordingState(text);
+			}
+		});
+	}
+
+	private void MainKeyboardHook_OnExclusiveRecordCompleted(string hotkeyStr)
+	{
+		Dispatcher.BeginInvoke(() =>
+		{
+			UpdatePauseHotkeysButtonState(false);
+			if (FocusHotkeyRecorder != null)
+			{
+				FocusHotkeyRecorder.SetRecordedHotkey(hotkeyStr);
+			}
+			var item = GetCurrentFocusActionItem();
+			if (item != null)
+			{
+				item.Parameter = hotkeyStr;
+				RefreshSlots();
+				RenderMappingsWheelPreview();
+				ScheduleAutoSave();
+			}
+			AppLogger.LogInfo($"Exclusive hotkey recorded successfully: {hotkeyStr}");
+			try
+			{
+				App.ShowTrayBalloon(1500, "StarPie", $"✅ 已录制快捷键: {hotkeyStr}（已恢复全局热键）", System.Windows.Forms.ToolTipIcon.Info);
+			}
+			catch { }
+		});
+	}
+
+	private void MainKeyboardHook_OnExclusiveRecordCancelled()
+	{
+		Dispatcher.BeginInvoke(() =>
+		{
+			CancelExclusiveRecordingIfActive();
+			try
+			{
+				App.ShowTrayBalloon(1000, "StarPie", "已取消快捷键录制，已恢复全局热键", System.Windows.Forms.ToolTipIcon.Info);
+			}
+			catch { }
+		});
+	}
+
+	private void FocusHotkeyRecorder_HotkeyChanged(object? sender, string newKey)
+	{
+		if (_isUpdatingUi) return;
+		var item = GetCurrentFocusActionItem();
+		if (item != null && item.Parameter != newKey)
+		{
+			item.Parameter = newKey ?? "";
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void UpdatePauseHotkeysButtonState(bool isSuppressing)
+	{
+		if (TogglePauseHotkeysBtn == null) return;
+		if (isSuppressing)
+		{
+			TogglePauseHotkeysBtn.Content = "🔴 正在独占录制 (已暂停全局热键)";
+			TogglePauseHotkeysBtn.ToolTip = "当前桌面系统及所有其他软件全局热键已被暂时暂停！在此按下任意按键组合（如 Win+D、Alt+Tab、截屏）均可直接录入，不会触发外部动作。点击即可恢复。";
+			TogglePauseHotkeysBtn.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(244, 63, 94)); // Rose red
+		}
+		else
+		{
+			TogglePauseHotkeysBtn.Content = "⏸️ 暂停全局热键";
+			TogglePauseHotkeysBtn.ToolTip = "暂停桌面系统及其他软件的所有全局快捷键，在此独占录入快捷键而不会触发系统（如 Win+D、Alt+Tab、截屏等）或其他软件";
+			TogglePauseHotkeysBtn.ClearValue(Button.ForegroundProperty);
+		}
+	}
+
+	private void FocusPickProgramFromLibrary_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		ProgramPickerWindow programPicker = new ProgramPickerWindow
+		{
+			Owner = this
+		};
+		if (programPicker.ShowDialog() == true && !string.IsNullOrEmpty(programPicker.SelectedPath))
+		{
+			item.Parameter = programPicker.SelectedPath;
+			FocusLaunchPathTextBox.Text = programPicker.SelectedPath;
+			item.InheritAppIconPath = programPicker.SelectedPath;
+			item.IconKey = "";
+			item.CustomIconSvg = "";
+			string autoName = !string.IsNullOrEmpty(programPicker.SelectedName) 
+				? programPicker.SelectedName 
+				: System.IO.Path.GetFileNameWithoutExtension(programPicker.SelectedPath);
+			item.Name = autoName;
+			FocusActionNameTextBox.Text = autoName;
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusCaptureRunningWindow_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		WindowPickerWindow picker = new WindowPickerWindow(WindowPickerMode.ExecutablePath)
+		{
+			Owner = this
+		};
+		if (picker.ShowDialog() == true && !string.IsNullOrEmpty(picker.SelectedPath))
+		{
+			item.Parameter = picker.SelectedPath;
+			FocusLaunchPathTextBox.Text = picker.SelectedPath;
+			item.InheritAppIconPath = picker.SelectedPath;
+			item.IconKey = "";
+			item.CustomIconSvg = "";
+			string autoName = !string.IsNullOrEmpty(picker.SelectedTitle)
+				? picker.SelectedTitle
+				: (!string.IsNullOrEmpty(picker.SelectedProcessName) ? picker.SelectedProcessName : System.IO.Path.GetFileNameWithoutExtension(picker.SelectedPath));
+			item.Name = autoName;
+			FocusActionNameTextBox.Text = autoName;
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusCaptureProcess_Click(object sender, RoutedEventArgs e) => FocusPickProgramFromLibrary_Click(sender, e);
+
+	private void FocusBrowseLaunchExe_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		Microsoft.Win32.OpenFileDialog dlg = new Microsoft.Win32.OpenFileDialog
+		{
+			Filter = "应用程序 (*.exe;*.lnk;*.bat;*.cmd)|*.exe;*.lnk;*.bat;*.cmd|所有文件 (*.*)|*.*",
+			Title = "选择要启动的应用程序或快捷方式"
+		};
+		if (dlg.ShowDialog(this) == true)
+		{
+			item.Parameter = dlg.FileName;
+			FocusLaunchPathTextBox.Text = dlg.FileName;
+			item.InheritAppIconPath = dlg.FileName;
+			item.IconKey = "";
+			item.CustomIconSvg = "";
+			string autoName = System.IO.Path.GetFileNameWithoutExtension(dlg.FileName);
+			item.Name = autoName;
+			FocusActionNameTextBox.Text = autoName;
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusLaunchPathTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null) { item.Parameter = FocusLaunchPathTextBox.Text; ScheduleAutoSave(); }
+	}
+
+	private void FocusLaunchArgsTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null) { item.Arguments = FocusLaunchArgsTextBox.Text; ScheduleAutoSave(); }
+	}
+
+	private void FocusWebUrlTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null) { item.Parameter = FocusWebUrlTextBox.Text; ScheduleAutoSave(); }
+	}
+
+	private void FocusWebBrowserComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null && FocusWebBrowserComboBox.SelectedItem is ComboBoxItem cbi)
+		{
+			item.BrowserChoice = cbi.Tag?.ToString() ?? "Default";
+			if (FocusCustomBrowserPathPanel != null)
+			{
+				FocusCustomBrowserPathPanel.Visibility = string.Equals(item.BrowserChoice, "Custom", StringComparison.OrdinalIgnoreCase) ? Visibility.Visible : Visibility.Collapsed;
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusCustomBrowserPathTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null) { item.BrowserPath = FocusCustomBrowserPathTextBox.Text; ScheduleAutoSave(); }
+	}
+
+	private void FocusBrowseCustomBrowser_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		Microsoft.Win32.OpenFileDialog dlg = new Microsoft.Win32.OpenFileDialog
+		{
+			Filter = "浏览器执行程序 (*.exe)|*.exe|所有文件 (*.*)|*.*",
+			Title = "选择自定义浏览器执行程序"
+		};
+		if (dlg.ShowDialog(this) == true)
+		{
+			item.BrowserPath = dlg.FileName;
+			FocusCustomBrowserPathTextBox.Text = dlg.FileName;
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ApplyUrlPreset_GitHub(object sender, RoutedEventArgs e) { SetFocusWebUrl("https://github.com", "GitHub"); }
+	private void ApplyUrlPreset_Bilibili(object sender, RoutedEventArgs e) { SetFocusWebUrl("https://www.bilibili.com", "哔哩哔哩"); }
+	private void ApplyUrlPreset_Bing(object sender, RoutedEventArgs e) { SetFocusWebUrl("https://www.bing.com", "Bing 搜索"); }
+	private void ApplyUrlPreset_Google(object sender, RoutedEventArgs e) { SetFocusWebUrl("https://www.google.com", "Google"); }
+
+	private void SetFocusWebUrl(string url, string name)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		item.Type = "WebUrl";
+		item.Parameter = url;
+		item.Name = name;
+		if (string.IsNullOrEmpty(item.IconKey)) item.IconKey = "Globe";
+		UpdateFocusEditorUi();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusFolderPathTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null) { item.Parameter = FocusFolderPathTextBox.Text; ScheduleAutoSave(); }
+	}
+
+	private void FocusBrowseFolder_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		using System.Windows.Forms.FolderBrowserDialog fbd = new System.Windows.Forms.FolderBrowserDialog
+		{
+			Description = "选择要打开的文件夹",
+			UseDescriptionForTitle = true,
+			ShowNewFolderButton = true
+		};
+		if (fbd.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+		{
+			item.Parameter = fbd.SelectedPath;
+			FocusFolderPathTextBox.Text = fbd.SelectedPath;
+			if (ActionNameDefaults.IsAutoFilled(item.Name))
+			{
+				string autoName = System.IO.Path.GetFileName(fbd.SelectedPath);
+				if (string.IsNullOrEmpty(autoName)) autoName = fbd.SelectedPath;
+				item.Name = autoName;
+				FocusActionNameTextBox.Text = autoName;
+			}
+			if (string.IsNullOrEmpty(item.IconKey))
+			{
+				item.IconKey = "Folder";
+				FocusIconLabel.Text = "Folder";
+				string folderSvg = IconHelper.GetSvgPathByKey("Folder");
+				FocusIconPath.Data = !string.IsNullOrEmpty(folderSvg) ? Geometry.Parse(folderSvg) : null;
+			}
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ApplyFolderPreset_ThisPC(object sender, RoutedEventArgs e) { SetFocusFolder("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "此电脑"); }
+	private void ApplyFolderPreset_RecycleBin(object sender, RoutedEventArgs e) { SetFocusFolder("::{645FF040-5081-101B-9F08-00AA002F954E}", "回收站"); }
+	private void ApplyFolderPreset_Desktop(object sender, RoutedEventArgs e) { SetFocusFolder(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "桌面"); }
+	private void ApplyFolderPreset_Downloads(object sender, RoutedEventArgs e) { SetFocusFolder(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"), "下载"); }
+	private void ApplyFolderPreset_Documents(object sender, RoutedEventArgs e) { SetFocusFolder(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "文档"); }
+
+	private void FocusLaunchStandardUserCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null)
+		{
+			item.RunAsStandardUser = (FocusLaunchStandardUserCheckBox.IsChecked == true);
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusTestOcr_Click(object sender, RoutedEventArgs e)
+	{
+		OcrManager.StartCaptureAndRecognize();
+	}
+
+	private void FocusOpenOcrSettings_Click(object sender, RoutedEventArgs e)
+	{
+		OcrSettingsDialog dlg = new OcrSettingsDialog();
+		dlg.Owner = this;
+		if (dlg.ShowDialog() == true)
+		{
+			UpdateFocusEditorUi();
+			UpdateOcrBadgeUi();
+		}
+	}
+
+	private void TestOcrSnippet_Click(object sender, RoutedEventArgs e)
+	{
+		OcrManager.StartCaptureAndRecognize();
+	}
+
+	private void FocusPickInheritProgram_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		ProgramPickerWindow picker = new ProgramPickerWindow();
+		picker.Owner = this;
+		if (picker.ShowDialog() == true && !string.IsNullOrEmpty(picker.SelectedPath))
+		{
+			item.InheritAppIconPath = picker.SelectedPath;
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusCaptureInheritWindow_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		WindowPickerWindow picker = new WindowPickerWindow();
+		picker.Owner = this;
+		if (picker.ShowDialog() == true && !string.IsNullOrEmpty(picker.SelectedPath))
+		{
+			item.InheritAppIconPath = picker.SelectedPath;
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusBrowseInheritIcon_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		Microsoft.Win32.OpenFileDialog ofd = new Microsoft.Win32.OpenFileDialog
+		{
+			Filter = "可提取图标程序与文件 (*.exe;*.ico;*.dll;*.lnk)|*.exe;*.ico;*.dll;*.lnk|所有文件 (*.*)|*.*",
+			Title = "选择要提取并继承图标的程序或文件"
+		};
+		if (ofd.ShowDialog() == true)
+		{
+			item.InheritAppIconPath = ofd.FileName;
+			UpdateFocusEditorUi();
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusClearInheritedIcon_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		item.InheritAppIconPath = "";
+		UpdateFocusEditorUi();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusInheritIconPathTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+	}
+
+	private void SetFocusFolder(string path, string name)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item == null) return;
+		item.Type = "Folder";
+		item.Parameter = path;
+		item.Name = name;
+		item.IconKey = "Folder";
+		UpdateFocusEditorUi();
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusCommandTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null) { item.Parameter = FocusCommandTextBox.Text; ScheduleAutoSave(); }
+	}
+
+	private void FocusCommandTerminalComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null && FocusCommandTerminalComboBox.SelectedValue is string terminal)
+		{
+			item.CommandTerminal = terminal;
+			ScheduleAutoSave();
+		}
+	}
+
+	private void FocusSwitchWindowTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		FocusWindowSwitchTextBox_TextChanged(sender, e);
+	}
+
+	private void FocusSystemPresetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingFocusUi) return;
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item != null && FocusSystemPresetComboBox.SelectedValue is string presetKey)
+		{
+			item.Parameter = presetKey;
+			SystemPresetItem? presetItem = SlotViewModel.SystemPresetList.FirstOrDefault(p => p.Key == presetKey);
+			if (presetItem != null)
+			{
+				if (ActionNameDefaults.IsAutoFilled(item.Name))
+				{
+					item.Name = presetItem.DefaultName;
+					FocusActionNameTextBox.Text = presetItem.DefaultName;
+				}
+				if (string.IsNullOrEmpty(item.IconKey))
+				{
+					item.IconKey = presetItem.DefaultIconKey;
+					FocusIconLabel.Text = presetItem.DefaultIconKey;
+					string sysSvg = IconHelper.GetSvgPathByKey(presetItem.DefaultIconKey);
+					FocusIconPath.Data = !string.IsNullOrEmpty(sysSvg) ? Geometry.Parse(sysSvg) : null;
+				}
+			}
+			RefreshSlots();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void MappingsTierSegmentRadio_Checked(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi) return;
+		if (MappingsTier1SegmentRadio?.IsChecked == true)
+		{
+			if (_selectedSubActionIndex.HasValue)
+			{
+				_selectedSubActionIndex = null;
+				UpdateFocusEditorUi();
+			}
+		}
+		else if (MappingsTier2SegmentRadio?.IsChecked == true)
+		{
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+			if (profile != null && _selectedSlotIndex >= 0 && _selectedSlotIndex < profile.Actions.Count)
+			{
+				var action = profile.Actions[_selectedSlotIndex];
+				if (action.SubActions != null && action.SubActions.Count > 0)
+				{
+					_selectedSubActionIndex = 0;
+				}
+				else
+				{
+					// 当前选中的主扇区尚无二级动作：绝不自动新增子扇区，保持未配置状态
+					_selectedSubActionIndex = null;
+				}
+				UpdateFocusEditorUi();
+			}
+		}
+		RenderMappingsWheelPreview();
+	}
+
+	private void RenderMappingsWheelPreview()
+	{
+		if (MappingsWheelPreviewCanvas == null || ConfigManager.CurrentConfig == null) return;
+		try
+		{
+			MappingsWheelPreviewCanvas.Children.Clear();
+			_mappingsSectorPaths.Clear();
+			_mappingsSubSectorPaths.Clear();
+			_mappingsSubSectorKeys.Clear();
+
+			WheelProfile profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles.FirstOrDefault() ?? new WheelProfile
+			{
+				SectorCount = 8,
+				Actions = new List<ActionItem>()
+			};
+
+			double centerX = 150.0;
+			double centerY = 150.0;
+			int sectorCount = profile.SectorCount > 0 ? profile.SectorCount : 8;
+			double sweepAngle = 360.0 / sectorCount;
+
+			double baseScaleRef = Math.Max(215.0, ConfigManager.CurrentConfig.WheelRadius * 1.55);
+			double scaleFactor = 135.0 / baseScaleRef;
+			double outerR = Math.Max(30.0, ConfigManager.CurrentConfig.WheelRadius * scaleFactor);
+			double innerR = Math.Max(15.0, ConfigManager.CurrentConfig.InnerRadius * scaleFactor);
+			double coreR = Math.Max(10.0, ConfigManager.CurrentConfig.CoreRadius * scaleFactor);
+			double gap = Math.Min(2.5, Math.Max(1.0, ConfigManager.CurrentConfig.SectorGap * scaleFactor));
+			double cornerRadius = Math.Min(3.5, Math.Max(0.0, ConfigManager.CurrentConfig.SectorCornerRadius * scaleFactor));
+
+			if (innerR >= outerR) innerR = outerR * 0.5;
+			if (coreR >= innerR) coreR = innerR * 0.8;
+
+			string uiStyle = ConfigManager.CurrentConfig.UiStyle ?? "ClassicRing";
+			string theme = ConfigManager.CurrentConfig.Theme ?? "System";
+			// 功能配置界面 (Tab 2) 统一强制采用经典同心圆弧样式 ("Original")，杜绝胶囊或异形带来的扇区变形与位置失真
+			string shape = "Original";
+
+			IRadialStyleRenderer renderer = StyleRendererFactory.CreateRenderer(uiStyle);
+			renderer.Initialize(theme, ConfigManager.CurrentConfig);
+
+			Brush defaultBrush = renderer.DefaultSectorBrush;
+			Brush borderBrush = renderer.SectorBorderBrush;
+			Brush textBrush = renderer.TextColorBrush;
+			Brush coreBgBrush = renderer.CoreBgBrush;
+			Brush coreBorderBrush = renderer.CoreBorderBrush;
+
+			// 1. Draw Center Core Circle
+			Grid coreGrid = new Grid
+			{
+				Width = coreR * 2.0,
+				Height = coreR * 2.0,
+				RenderTransformOrigin = new Point(0.5, 0.5),
+				Cursor = System.Windows.Input.Cursors.Hand,
+				IsHitTestVisible = false
+			};
+			bool isCenterSelected = (_selectedSlotIndex == -1);
+
+			Ellipse coreCircle = new Ellipse
+			{
+				Width = coreR * 2.0,
+				Height = coreR * 2.0,
+				Fill = isCenterSelected ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 245, 158, 11)) : coreBgBrush,
+				Stroke = isCenterSelected ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(245, 158, 11)) : coreBorderBrush,
+				StrokeThickness = isCenterSelected ? 2.6 : 1.5
+			};
+			if (isCenterSelected)
+			{
+				coreCircle.Effect = new DropShadowEffect
+				{
+					Color = System.Windows.Media.Color.FromRgb(245, 158, 11),
+					BlurRadius = 14.0,
+					ShadowDepth = 0.0,
+					Opacity = 0.95
+				};
+			}
+			coreGrid.Children.Add(coreCircle);
+
+			bool centerRendered = false;
+			ActionItem? centerItem = profile.GetEffectiveCenterAction();
+			Brush centerIconBrush = isCenterSelected ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(245, 158, 11)) : textBrush;
+			AppConfig? cfg = ConfigManager.CurrentConfig;
+			bool hasCustomPattern = IconHelper.HasCustomCenterPattern(cfg);
+
+			// 1. 若配置了自定义中心图案，绝对优先渲染自定义图案（贴图、自定义SVG、预设非Exit图案），支持缩放与偏移
+			if (hasCustomPattern && cfg != null)
+			{
+				string text2 = cfg.CoreIconType ?? "Exit";
+				bool isCustom = text2 == "Custom";
+				IconHelper.CustomIconItem? customIconItem = null;
+				if (isCustom && !string.IsNullOrEmpty(cfg.CoreCustomIconKey))
+				{
+					customIconItem = IconHelper.GetCustomIcons().FirstOrDefault(c => string.Equals(c.Key, cfg.CoreCustomIconKey, StringComparison.OrdinalIgnoreCase));
+				}
+				bool isCustomFileImg = customIconItem != null && !customIconItem.IsSvg && File.Exists(customIconItem.FilePath);
+				bool hasCustomImgPath = !string.IsNullOrEmpty(cfg.CoreCustomImagePath) && File.Exists(cfg.CoreCustomImagePath);
+				bool isImageMode = ((text2 == "Image") || isCustomFileImg) || (hasCustomImgPath && text2 != "Custom" && text2 != "Exit");
+				string? targetImgPath = isCustomFileImg ? customIconItem?.FilePath : (hasCustomImgPath ? cfg.CoreCustomImagePath : null);
+
+				double coreScale = (cfg.CoreIconScale > 0.0) ? cfg.CoreIconScale : 1.0;
+				double coreImageOffsetX = cfg.CoreImageOffsetX;
+				double coreImageOffsetY = cfg.CoreImageOffsetY;
+				TranslateTransform? renderTransform = (coreImageOffsetX != 0.0 || coreImageOffsetY != 0.0) ? new TranslateTransform(coreImageOffsetX, coreImageOffsetY) : null;
+
+				ImageSource? loadedImgSource = null;
+				if (isImageMode && !string.IsNullOrEmpty(targetImgPath))
+				{
+					loadedImgSource = IconHelper.GetCustomImageSource(targetImgPath);
+				}
+
+				if (loadedImgSource != null)
+				{
+					try
+					{
+						double imgDim = coreR * 1.85;
+						Ellipse imgEllipse = new Ellipse
+						{
+							Width = imgDim,
+							Height = imgDim,
+							HorizontalAlignment = HorizontalAlignment.Center,
+							VerticalAlignment = VerticalAlignment.Center,
+							IsHitTestVisible = false
+						};
+						ImageBrush imageBrush = new ImageBrush(loadedImgSource)
+						{
+							Stretch = ParseStretchMode(cfg.CoreCustomImageStretch),
+							AlignmentX = AlignmentX.Center,
+							AlignmentY = AlignmentY.Center
+						};
+						TransformGroup transformGroup = new TransformGroup();
+						if (Math.Abs(coreScale - 1.0) > 0.001)
+						{
+							transformGroup.Children.Add(new ScaleTransform(coreScale, coreScale, imgDim / 2.0, imgDim / 2.0));
+						}
+						if (Math.Abs(coreImageOffsetX) > 0.001 || Math.Abs(coreImageOffsetY) > 0.001)
+						{
+							transformGroup.Children.Add(new TranslateTransform(coreImageOffsetX, coreImageOffsetY));
+						}
+						if (transformGroup.Children.Count > 0)
+						{
+							imageBrush.Transform = transformGroup;
+						}
+						RenderOptions.SetBitmapScalingMode(imageBrush, BitmapScalingMode.HighQuality);
+						RenderOptions.SetEdgeMode(imgEllipse, EdgeMode.Unspecified);
+						imgEllipse.Fill = imageBrush;
+						coreGrid.Children.Add(imgEllipse);
+						centerRendered = true;
+					}
+					catch { }
+				}
+				else
+				{
+					Geometry? coreIconGeometry = IconHelper.GetCoreIconGeometry(text2, cfg.CoreCustomIconKey, cfg.CoreCustomIconSvg);
+					if (coreIconGeometry != null)
+					{
+						try
+						{
+							System.Windows.Shapes.Path coreIconPath = new System.Windows.Shapes.Path
+							{
+								Data = coreIconGeometry,
+								Fill = centerIconBrush,
+								Width = Math.Max(12.0, coreR * 0.75 * coreScale),
+								Height = Math.Max(12.0, coreR * 0.75 * coreScale),
+								RenderTransform = renderTransform,
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false
+							};
+							coreGrid.Children.Add(coreIconPath);
+							centerRendered = true;
+						}
+						catch { }
+					}
+				}
+			}
+
+			// 2. 若未配置自定义中心图案，但启用了中心核圆功能（profile.EnableCenterAction），展示动作功能图标（必须正中居中，无任何偏移与缩放污染）
+			if (!centerRendered && profile.EnableCenterAction && centerItem != null)
+			{
+				// 2.1 自定义 SVG
+				if (!string.IsNullOrEmpty(centerItem.CustomIconSvg))
+				{
+					try
+					{
+						System.Windows.Shapes.Path coreIconPath = new System.Windows.Shapes.Path
+						{
+							Data = Geometry.Parse(centerItem.CustomIconSvg),
+							Fill = centerIconBrush,
+							Width = Math.Max(12.0, coreR * 0.85),
+							Height = Math.Max(12.0, coreR * 0.85),
+							Stretch = Stretch.Uniform,
+							RenderTransform = null, // 确保正中居中，无偏移！
+							HorizontalAlignment = HorizontalAlignment.Center,
+							VerticalAlignment = VerticalAlignment.Center,
+							IsHitTestVisible = false
+						};
+						coreGrid.Children.Add(coreIconPath);
+						centerRendered = true;
+					}
+					catch { }
+				}
+
+				// 2.2 继承应用程序图标
+				if (!centerRendered && !string.IsNullOrEmpty(centerItem.InheritAppIconPath))
+				{
+					try
+					{
+						ImageSource? appIcon = IconHelper.GetIcon(centerItem.InheritAppIconPath);
+						if (appIcon != null)
+						{
+							System.Windows.Controls.Image appImg = new System.Windows.Controls.Image
+							{
+								Source = appIcon,
+								Width = Math.Max(14.0, coreR * 0.9),
+								Height = Math.Max(14.0, coreR * 0.9),
+								Stretch = Stretch.Uniform,
+								RenderTransform = null, // 确保正中居中，无偏移！
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false
+							};
+							RenderOptions.SetBitmapScalingMode(appImg, BitmapScalingMode.HighQuality);
+							coreGrid.Children.Add(appImg);
+							centerRendered = true;
+						}
+					}
+					catch { }
+				}
+
+				// 2.3 图标关键字 (custom: 或内置矢量)
+				if (!centerRendered && !string.IsNullOrEmpty(centerItem.IconKey))
+				{
+					if (centerItem.IconKey.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+					{
+						IconHelper.CustomIconItem? customIconItem = IconHelper.GetCustomIcons().FirstOrDefault(c => string.Equals(c.Key, centerItem.IconKey, StringComparison.OrdinalIgnoreCase));
+						if (customIconItem != null)
+						{
+							if (customIconItem.IsSvg && !string.IsNullOrEmpty(customIconItem.SvgData))
+							{
+								try
+								{
+									System.Windows.Shapes.Path coreIconPath = new System.Windows.Shapes.Path
+									{
+										Data = Geometry.Parse(customIconItem.SvgData),
+										Fill = centerIconBrush,
+										Width = Math.Max(12.0, coreR * 0.85),
+										Height = Math.Max(12.0, coreR * 0.85),
+										Stretch = Stretch.Uniform,
+										RenderTransform = null, // 确保正中居中，无偏移！
+										HorizontalAlignment = HorizontalAlignment.Center,
+										VerticalAlignment = VerticalAlignment.Center,
+										IsHitTestVisible = false
+									};
+									coreGrid.Children.Add(coreIconPath);
+									centerRendered = true;
+								}
+								catch { }
+							}
+							else if (File.Exists(customIconItem.FilePath))
+							{
+								try
+								{
+									ImageSource? customSrc = IconHelper.GetCustomImageSource(customIconItem.FilePath);
+									if (customSrc != null)
+									{
+										System.Windows.Controls.Image customImg = new System.Windows.Controls.Image
+										{
+											Source = customSrc,
+											Width = Math.Max(14.0, coreR * 0.9),
+											Height = Math.Max(14.0, coreR * 0.9),
+											Stretch = Stretch.Uniform,
+											RenderTransform = null, // 确保正中居中，无偏移！
+											HorizontalAlignment = HorizontalAlignment.Center,
+											VerticalAlignment = VerticalAlignment.Center,
+											IsHitTestVisible = false
+										};
+										RenderOptions.SetBitmapScalingMode(customImg, BitmapScalingMode.HighQuality);
+										coreGrid.Children.Add(customImg);
+										centerRendered = true;
+									}
+								}
+								catch { }
+							}
+						}
+					}
+					else
+					{
+						string centerSvg = IconHelper.GetSvgPathByKey(centerItem.IconKey);
+						if (!string.IsNullOrEmpty(centerSvg))
+						{
+							try
+							{
+								System.Windows.Shapes.Path coreIconPath = new System.Windows.Shapes.Path
+								{
+									Data = Geometry.Parse(centerSvg),
+									Fill = centerIconBrush,
+									Width = Math.Max(12.0, coreR * 0.85),
+									Height = Math.Max(12.0, coreR * 0.85),
+									Stretch = Stretch.Uniform,
+									RenderTransform = null, // 确保正中居中，无偏移！
+									HorizontalAlignment = HorizontalAlignment.Center,
+									VerticalAlignment = VerticalAlignment.Center,
+									IsHitTestVisible = false
+								};
+								coreGrid.Children.Add(coreIconPath);
+								centerRendered = true;
+							}
+							catch { }
+						}
+					}
+				}
+
+				// 2.4 启动目标应用程序原生提取图标
+				if (!centerRendered && string.Equals(centerItem.Type, "Launch", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(centerItem.Parameter))
+				{
+					try
+					{
+						ImageSource? appIcon = IconHelper.GetIcon(centerItem.Parameter);
+						if (appIcon != null)
+						{
+							System.Windows.Controls.Image appImg = new System.Windows.Controls.Image
+							{
+								Source = appIcon,
+								Width = Math.Max(14.0, coreR * 0.9),
+								Height = Math.Max(14.0, coreR * 0.9),
+								Stretch = Stretch.Uniform,
+								RenderTransform = null, // 确保正中居中，无偏移！
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false
+							};
+							RenderOptions.SetBitmapScalingMode(appImg, BitmapScalingMode.HighQuality);
+							coreGrid.Children.Add(appImg);
+							centerRendered = true;
+						}
+					}
+					catch { }
+				}
+
+				// 2.5 动作类型保底默认图标
+				if (!centerRendered && !string.IsNullOrEmpty(centerItem.Type))
+				{
+					string defaultKey = centerItem.Type switch
+					{
+						"WebUrl" or "Url" => "Explorer",
+						"Folder" or "OpenFolder" => "Folder",
+						"Launch" => "Terminal",
+						"Hotkey" => "Command",
+						"Command" => "Terminal",
+						"SwitchWindow" => "Tile",
+						"System" => "Settings",
+						_ => "Command"
+					};
+					string fallbackSvg = IconHelper.GetSvgPathByKey(defaultKey);
+					if (!string.IsNullOrEmpty(fallbackSvg))
+					{
+						try
+						{
+							System.Windows.Shapes.Path coreIconPath = new System.Windows.Shapes.Path
+							{
+								Data = Geometry.Parse(fallbackSvg),
+								Fill = centerIconBrush,
+								Width = Math.Max(12.0, coreR * 0.85),
+								Height = Math.Max(12.0, coreR * 0.85),
+								Stretch = Stretch.Uniform,
+								RenderTransform = null, // 确保正中居中，无偏移！
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false
+							};
+							coreGrid.Children.Add(coreIconPath);
+							centerRendered = true;
+						}
+						catch { }
+					}
+				}
+			}
+
+			// 3. 既无自定义图案又未配置动作，保底展示默认 Exit 图标或隐藏
+			if (!centerRendered)
+			{
+				bool showCore = cfg?.ShowCoreIcon ?? true;
+				if (showCore)
+				{
+					string centerIconKey = (!string.IsNullOrEmpty(cfg?.CoreCustomIconKey) ? cfg.CoreCustomIconKey : "Exit");
+					string centerSvg = IconHelper.GetSvgPathByKey(centerIconKey);
+					if (!string.IsNullOrEmpty(centerSvg))
+					{
+						try
+						{
+							System.Windows.Shapes.Path coreIconPath = new System.Windows.Shapes.Path
+							{
+								Data = Geometry.Parse(centerSvg),
+								Fill = centerIconBrush,
+								Width = Math.Max(12.0, coreR * 0.75),
+								Height = Math.Max(12.0, coreR * 0.75),
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false
+							};
+							coreGrid.Children.Add(coreIconPath);
+						}
+						catch { }
+					}
+				}
+			}
+
+			Canvas.SetLeft(coreGrid, centerX - coreR);
+			Canvas.SetTop(coreGrid, centerY - coreR);
+			Panel.SetZIndex(coreGrid, 10);
+			MappingsWheelPreviewCanvas.Children.Add(coreGrid);
+
+			// 2. Draw Sectors (Icon-Only, Clean Aesthetic Style matching Appearance tab)
+			string[] directions = ResolveDirectionNames(sectorCount);
+
+			bool isTier2Mode = (MappingsTier2SegmentRadio != null && MappingsTier2SegmentRadio.IsChecked == true);
+
+			for (int i = 0; i < sectorCount; i++)
+			{
+				int slotIdx = i;
+				double midAngle = (double)i * sweepAngle;
+				double startAngle = midAngle - sweepAngle / 2.0;
+				double endAngle = midAngle + sweepAngle / 2.0;
+				double rad = midAngle * (Math.PI / 180.0);
+				double midR = (innerR + outerR) / 2.0;
+				double contentX = centerX + Math.Cos(rad) * midR;
+				double contentY = centerY + Math.Sin(rad) * midR;
+
+				Geometry sectorGeo = IconHelper.CreateAdvancedSectorGeometry(centerX, centerY, startAngle, endAngle, innerR, outerR, shape, gap, cornerRadius);
+				bool isParentSlot = (_selectedSlotIndex == slotIdx);
+				bool isMultiSelected = (_selectedMultiSlots.Count > 1 && _selectedMultiSlots.Contains(slotIdx));
+				bool isSectorSelected = (isMultiSelected || (isParentSlot && _selectedSubActionIndex == null && _selectedMultiSlots.Count <= 1));
+				bool isParentOfSelectedSub = (isParentSlot && _selectedSubActionIndex != null && _selectedMultiSlots.Count <= 1);
+
+				System.Windows.Shapes.Path sectorPath = new System.Windows.Shapes.Path
+				{
+					Data = sectorGeo,
+					Fill = isSectorSelected 
+						? new SolidColorBrush(System.Windows.Media.Color.FromArgb(50, 56, 189, 248)) 
+						: (isParentOfSelectedSub 
+							? new SolidColorBrush(System.Windows.Media.Color.FromArgb(28, 168, 85, 247)) 
+							: defaultBrush),
+					Stroke = isSectorSelected 
+						? new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248)) 
+						: (isParentOfSelectedSub 
+							? new SolidColorBrush(System.Windows.Media.Color.FromArgb(180, 168, 85, 247)) 
+							: borderBrush),
+					StrokeThickness = isSectorSelected ? 2.4 : (isParentOfSelectedSub ? 1.8 : renderer.BorderThickness),
+					Tag = slotIdx,
+					Cursor = System.Windows.Input.Cursors.Hand,
+					IsHitTestVisible = false
+				};
+
+				if (isSectorSelected)
+				{
+					sectorPath.Effect = new DropShadowEffect
+					{
+						Color = System.Windows.Media.Color.FromRgb(56, 189, 248),
+						BlurRadius = 14.0,
+						ShadowDepth = 0.0,
+						Opacity = 0.95
+					};
+				}
+				else if (isParentOfSelectedSub)
+				{
+					sectorPath.Effect = new DropShadowEffect
+					{
+						Color = System.Windows.Media.Color.FromRgb(168, 85, 247),
+						BlurRadius = 10.0,
+						ShadowDepth = 0.0,
+						Opacity = 0.85
+					};
+				}
+
+				Panel.SetZIndex(sectorPath, 1);
+				MappingsWheelPreviewCanvas.Children.Add(sectorPath);
+				_mappingsSectorPaths.Add(sectorPath);
+
+				if (isMultiSelected)
+				{
+					int order = _selectedMultiSlots.IndexOf(slotIdx) + 1;
+					Border badge = new Border
+					{
+						Width = 19,
+						Height = 19,
+						CornerRadius = new CornerRadius(9.5),
+						Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(37, 99, 235)),
+						BorderBrush = System.Windows.Media.Brushes.White,
+						BorderThickness = new Thickness(1.5),
+						IsHitTestVisible = false,
+						Effect = new DropShadowEffect
+						{
+							Color = System.Windows.Media.Colors.Black,
+							BlurRadius = 6,
+							ShadowDepth = 1,
+							Opacity = 0.45
+						},
+						Child = new TextBlock
+						{
+							Text = order.ToString(),
+							FontSize = 10,
+							FontWeight = FontWeights.Bold,
+							Foreground = System.Windows.Media.Brushes.White,
+							HorizontalAlignment = HorizontalAlignment.Center,
+							VerticalAlignment = VerticalAlignment.Center
+						}
+					};
+					double badgeR = (innerR + outerR) / 2.0 + (outerR - innerR) * 0.28;
+					double badgeX = centerX + Math.Cos(rad) * badgeR;
+					double badgeY = centerY + Math.Sin(rad) * badgeR;
+					Canvas.SetLeft(badge, badgeX - 9.5);
+					Canvas.SetTop(badge, badgeY - 9.5);
+					Panel.SetZIndex(badge, 25);
+					MappingsWheelPreviewCanvas.Children.Add(badge);
+				}
+
+				ActionItem? action = profile.GetEffectiveAction(slotIdx);
+
+				Brush iconBrush = isSectorSelected ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248)) : textBrush;
+				if (action != null && !string.IsNullOrWhiteSpace(action.CustomTextColor) && !isSectorSelected)
+				{
+					iconBrush = CreateBrushFromHexSafe(action.CustomTextColor, textBrush);
+				}
+
+				double baseIconSize = (action != null && action.CustomIconSize.HasValue && action.CustomIconSize.Value > 0.0)
+					? action.CustomIconSize.Value
+					: ((ConfigManager.CurrentConfig.SectorIconSize > 0.0) ? ConfigManager.CurrentConfig.SectorIconSize : 20.0);
+				double sectorRatio = sectorCount switch { 4 => 1.25, 12 => 0.85, _ => 1.0 };
+				double iconSize = Math.Max(15.0, Math.Min(28.0, baseIconSize * 1.15 * sectorRatio * scaleFactor));
+
+				FrameworkElement? iconElement = null;
+
+				// 1. Explicit Custom SVG
+				if (!string.IsNullOrEmpty(action?.CustomIconSvg))
+				{
+					try
+					{
+						iconElement = new System.Windows.Shapes.Path
+						{
+							Data = Geometry.Parse(action.CustomIconSvg),
+							Fill = iconBrush,
+							Width = iconSize,
+							Height = iconSize,
+							Stretch = Stretch.Uniform,
+							HorizontalAlignment = HorizontalAlignment.Center,
+							VerticalAlignment = VerticalAlignment.Center,
+							IsHitTestVisible = false
+						};
+					}
+					catch { }
+				}
+
+				// 2. Inherit external app icon (highest priority for visual appearance decoupling)
+				if (iconElement == null && action != null && !string.IsNullOrEmpty(action.InheritAppIconPath))
+				{
+					try
+					{
+						ImageSource? appIcon = IconHelper.GetIcon(action.InheritAppIconPath);
+						if (appIcon != null)
+						{
+							iconElement = new System.Windows.Controls.Image
+							{
+								Source = appIcon,
+								Width = iconSize,
+								Height = iconSize,
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false
+							};
+						}
+					}
+					catch { }
+				}
+
+				// 3. Custom icon pack
+				if (iconElement == null && !string.IsNullOrEmpty(action?.IconKey) && action.IconKey.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+				{
+					IconHelper.CustomIconItem? customIconItem = IconHelper.GetCustomIcons().FirstOrDefault((IconHelper.CustomIconItem c) => string.Equals(c.Key, action.IconKey, StringComparison.OrdinalIgnoreCase));
+					if (customIconItem != null)
+					{
+						if (customIconItem.IsSvg)
+						{
+							try
+							{
+								iconElement = new System.Windows.Shapes.Path
+								{
+									Data = Geometry.Parse(customIconItem.SvgData),
+									Fill = iconBrush,
+									Width = iconSize,
+									Height = iconSize,
+									Stretch = Stretch.Uniform,
+									HorizontalAlignment = HorizontalAlignment.Center,
+									VerticalAlignment = VerticalAlignment.Center,
+									IsHitTestVisible = false
+								};
+							}
+							catch { }
+						}
+						else
+						{
+							try
+							{
+								ImageSource imgSource = IconHelper.GetCustomImageSource(customIconItem.FilePath);
+								if (imgSource != null)
+								{
+									iconElement = new System.Windows.Controls.Image
+									{
+										Source = imgSource,
+										Width = iconSize,
+										Height = iconSize,
+										Stretch = Stretch.Uniform,
+										HorizontalAlignment = HorizontalAlignment.Center,
+										VerticalAlignment = VerticalAlignment.Center,
+										IsHitTestVisible = false
+									};
+								}
+							}
+							catch { }
+						}
+					}
+				}
+
+				// 4. Built-in SVG by IconKey or Action.Type default
+				if (iconElement == null)
+				{
+					string iconSvg = "";
+					if (!string.IsNullOrEmpty(action?.IconKey))
+					{
+						iconSvg = IconHelper.GetSvgPathByKey(action.IconKey);
+					}
+					else if (action != null)
+					{
+						iconSvg = action.Type switch
+						{
+							"WebUrl" or "Url" => IconHelper.GetSvgPathByKey("Browser") ?? IconHelper.GetSvgPathByKey("ShowDesktop"),
+							"Folder" or "OpenFolder" => IconHelper.GetSvgPathByKey("Folder"),
+							"System" when !string.IsNullOrEmpty(action.Parameter) => IconHelper.GetSvgPathByKey(action.Parameter),
+							_ => ""
+						};
+					}
+
+					if (!string.IsNullOrEmpty(iconSvg))
+					{
+						try
+						{
+							iconElement = new System.Windows.Shapes.Path
+							{
+								Data = Geometry.Parse(iconSvg),
+								Fill = iconBrush,
+								Width = iconSize,
+								Height = iconSize,
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false
+							};
+						}
+						catch { }
+					}
+				}
+
+				// 5. Fallback: Launch / App target executable icon
+				if (iconElement == null && action != null && (action.Type == "Launch" || action.Type == "App") && !string.IsNullOrEmpty(action.Parameter) && File.Exists(action.Parameter))
+				{
+					try
+					{
+						ImageSource? appIcon = IconHelper.GetIcon(action.Parameter);
+						if (appIcon != null)
+						{
+							iconElement = new System.Windows.Controls.Image
+							{
+								Source = appIcon,
+								Width = iconSize,
+								Height = iconSize,
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false
+							};
+						}
+					}
+					catch { }
+				}
+
+				if (iconElement == null)
+				{
+					try
+					{
+						string fallbackKey = (slotIdx < directions.Length) ? directions[slotIdx] : "Settings";
+						string fallbackSvg = IconHelper.GetSvgPathByKey(fallbackKey);
+						if (string.IsNullOrEmpty(fallbackSvg)) fallbackSvg = IconHelper.GetSvgPathByKey("Settings");
+						iconElement = new System.Windows.Shapes.Path
+						{
+							Data = Geometry.Parse(fallbackSvg),
+							Fill = iconBrush,
+							Width = iconSize,
+							Height = iconSize,
+							Stretch = Stretch.Uniform,
+							HorizontalAlignment = HorizontalAlignment.Center,
+							VerticalAlignment = VerticalAlignment.Center,
+							IsHitTestVisible = false
+						};
+					}
+					catch { }
+				}
+
+				bool showText = ConfigManager.CurrentConfig?.MappingsCanvasShowText ?? false;
+
+				if (showText)
+				{
+					StackPanel comboPanel = new StackPanel
+					{
+						Orientation = System.Windows.Controls.Orientation.Vertical,
+						HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+						VerticalAlignment = VerticalAlignment.Center,
+						IsHitTestVisible = false
+					};
+
+					// 这个判空不能删：上面的兜底块是 try { iconElement = new Path { Data = Geometry.Parse(...) } }
+					// catch { } —— 空 catch 吞掉异常时 iconElement 依然是 null。CA1508 报「恒真」是误报。
+					if (iconElement != null)
+					{
+						if (action != null && action.IsInherited)
+						{
+							iconElement.Opacity = 0.55;
+						}
+						iconElement.Width = Math.Max(12.0, iconSize * 0.80);
+						iconElement.Height = Math.Max(12.0, iconSize * 0.80);
+						iconElement.Margin = new Thickness(0, 0, 0, 1.5);
+						comboPanel.Children.Add(iconElement);
+					}
+
+					string actionName = action?.Name;
+					if (string.IsNullOrWhiteSpace(actionName))
+					{
+						actionName = (slotIdx < directions.Length) ? directions[slotIdx] : $"扇区 {slotIdx + 1}";
+					}
+
+					Brush labelBrush = isSectorSelected ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248)) : textBrush;
+					if (action != null && !string.IsNullOrWhiteSpace(action.CustomTextColor) && !isSectorSelected)
+					{
+						labelBrush = CreateBrushFromHexSafe(action.CustomTextColor, textBrush);
+					}
+
+					double fontSize = (action != null && action.CustomFontSize.HasValue && action.CustomFontSize.Value > 0.0)
+						? Math.Max(7.5, Math.Min(11.5, action.CustomFontSize.Value * 0.82 * scaleFactor))
+						: Math.Max(8.0, Math.Min(10.5, 9.2 * scaleFactor));
+
+					TextBlock nameBlock = new TextBlock
+					{
+						Text = actionName,
+						FontSize = fontSize,
+						FontWeight = FontWeights.SemiBold,
+						Foreground = labelBrush,
+						HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+						TextAlignment = TextAlignment.Center,
+						TextTrimming = TextTrimming.CharacterEllipsis,
+						MaxWidth = Math.Max(42.0, (outerR - innerR) * 1.35),
+						Opacity = (action != null && action.IsInherited) ? 0.65 : 1.0
+					};
+					comboPanel.Children.Add(nameBlock);
+
+					comboPanel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+					double pw = comboPanel.DesiredSize.Width;
+					double ph = comboPanel.DesiredSize.Height;
+					Canvas.SetLeft(comboPanel, contentX - pw / 2.0);
+					Canvas.SetTop(comboPanel, contentY - ph / 2.0);
+					Panel.SetZIndex(comboPanel, 6);
+					MappingsWheelPreviewCanvas.Children.Add(comboPanel);
+				}
+				else
+				{
+					// 同上：兜底块的 catch 会吞异常，iconElement 仍可能为 null。
+					if (iconElement != null)
+					{
+						if (action != null && action.IsInherited)
+						{
+							iconElement.Opacity = 0.55;
+						}
+						Canvas.SetLeft(iconElement, contentX - iconSize / 2.0);
+						Canvas.SetTop(iconElement, contentY - iconSize / 2.0);
+						Panel.SetZIndex(iconElement, 5);
+						MappingsWheelPreviewCanvas.Children.Add(iconElement);
+					}
+				}
+
+				// 3. Draw SubActions (Icons only, NO TEXT!)
+				bool isFanMode = string.Equals(ConfigManager.CurrentConfig?.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+				bool shouldShowSub = !isFanMode ? true : (isTier2Mode || isParentSlot);
+
+				if (action?.SubActions != null && action.SubActions.Count > 0 && shouldShowSub)
+				{
+					// 功能配置界面 (Tab 2) 统一强制采用外圈同心子环布局，彻底杜绝蜂窝扇展开时的相互遮挡与混乱堆叠；显示数量严格匹配当前二级菜单样式上限（蜂窝扇最多3个，外圈子环最多4个）
+					int maxSubCount = isFanMode ? 3 : 4;
+					int subCount = Math.Min(maxSubCount, action.SubActions.Count);
+					double subSweep = sweepAngle / subCount;
+					double subInnerR = outerR + 4.0;
+					double subOuterR = subInnerR + 22.0;
+
+					for (int j = 0; j < subCount; j++)
+					{
+						int subIdx = j;
+						double subMidAngle = startAngle + (j + 0.5) * subSweep;
+						double subStart = startAngle + j * subSweep;
+						double subEnd = startAngle + (j + 1) * subSweep;
+						double subRad = subMidAngle * (Math.PI / 180.0);
+						double subMidR = (subInnerR + subOuterR) / 2.0;
+						double subContentX = centerX + Math.Cos(subRad) * subMidR;
+						double subContentY = centerY + Math.Sin(subRad) * subMidR;
+						Geometry subGeo = IconHelper.CreateAdvancedSectorGeometry(centerX, centerY, subStart, subEnd, subInnerR, subOuterR, "Original", 1.5, 3.0);
+
+						bool isSubSelected = (_selectedSlotIndex == slotIdx && _selectedSubActionIndex == subIdx);
+
+						System.Windows.Shapes.Path subPath = new System.Windows.Shapes.Path
+						{
+							Data = subGeo,
+							Fill = isSubSelected 
+								? new SolidColorBrush(System.Windows.Media.Color.FromArgb(60, 168, 85, 247)) 
+								: new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 168, 85, 247)),
+							Stroke = isSubSelected 
+								? new SolidColorBrush(System.Windows.Media.Color.FromRgb(168, 85, 247)) 
+								: new SolidColorBrush(System.Windows.Media.Color.FromArgb(120, 168, 85, 247)),
+							StrokeThickness = isSubSelected ? 2.2 : 1.0,
+							Cursor = System.Windows.Input.Cursors.Hand,
+							IsHitTestVisible = false
+						};
+
+						if (isSubSelected)
+						{
+							subPath.Effect = new DropShadowEffect
+							{
+								Color = System.Windows.Media.Color.FromRgb(168, 85, 247),
+								BlurRadius = 12.0,
+								ShadowDepth = 0.0,
+								Opacity = 0.95
+							};
+						}
+
+						Panel.SetZIndex(subPath, 2);
+						MappingsWheelPreviewCanvas.Children.Add(subPath);
+						_mappingsSubSectorPaths.Add(subPath);
+						_mappingsSubSectorKeys.Add(Tuple.Create(slotIdx, subIdx));
+
+						ActionItem subItem = action.SubActions[j];
+						string subIconKey = subItem.IconKey ?? "";
+						string subSvg = !string.IsNullOrEmpty(subItem.CustomIconSvg) ? subItem.CustomIconSvg : IconHelper.GetSvgPathByKey(subIconKey);
+						if (string.IsNullOrEmpty(subSvg))
+						{
+							subSvg = subItem.Type switch
+							{
+								"WebUrl" or "Url" => IconHelper.GetSvgPathByKey("Browser") ?? IconHelper.GetSvgPathByKey("ShowDesktop"),
+								"Folder" or "OpenFolder" => IconHelper.GetSvgPathByKey("Folder"),
+								"Ocr" or "ScreenOcr" => "M2,4C2,2.89 2.9,2 4,2H8V4H4V8H2V4M22,4V8H20V4H16V2H20C21.1,2 22,2.89 22,4M2,20V16H4V20H8V22H4C2.9,22 2,21.1 2,20M20,20H16V22H20C21.1,22 22,21.1 22,20V16H20V20M7,7H17V9H13V17H11V9H7V7Z",
+								"System" when !string.IsNullOrEmpty(subItem.Parameter) => IconHelper.GetSvgPathByKey(subItem.Parameter),
+								_ => ""
+							};
+						}
+
+						Brush subIconBrush = isSubSelected ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(168, 85, 247)) : textBrush;
+						double subIconSize = 11.0;
+
+						ImageSource? subImg = null;
+						if (!string.IsNullOrEmpty(subItem.InheritAppIconPath))
+						{
+							subImg = IconHelper.GetIcon(subItem.InheritAppIconPath);
+						}
+						else if (subItem.Type == "Launch" && !string.IsNullOrEmpty(subItem.Parameter))
+						{
+							subImg = IconHelper.GetIcon(subItem.Parameter);
+						}
+
+						if (subImg != null)
+						{
+							try
+							{
+								System.Windows.Controls.Image subImgElement = new System.Windows.Controls.Image
+								{
+									Source = subImg,
+									Width = subIconSize,
+									Height = subIconSize,
+									Stretch = Stretch.Uniform,
+									HorizontalAlignment = HorizontalAlignment.Center,
+									VerticalAlignment = VerticalAlignment.Center,
+									IsHitTestVisible = false
+								};
+								Canvas.SetLeft(subImgElement, subContentX - subIconSize / 2.0);
+								Canvas.SetTop(subImgElement, subContentY - subIconSize / 2.0);
+								Panel.SetZIndex(subImgElement, 6);
+								MappingsWheelPreviewCanvas.Children.Add(subImgElement);
+							}
+							catch { }
+						}
+						else if (!string.IsNullOrEmpty(subSvg))
+						{
+							try
+							{
+								System.Windows.Shapes.Path subIconPath = new System.Windows.Shapes.Path
+								{
+									Data = Geometry.Parse(subSvg),
+									Fill = subIconBrush,
+									Width = subIconSize,
+									Height = subIconSize,
+									Stretch = Stretch.Uniform,
+									HorizontalAlignment = HorizontalAlignment.Center,
+									VerticalAlignment = VerticalAlignment.Center,
+									IsHitTestVisible = false
+								};
+								Canvas.SetLeft(subIconPath, subContentX - subIconSize / 2.0);
+								Canvas.SetTop(subIconPath, subContentY - subIconSize / 2.0);
+								Panel.SetZIndex(subIconPath, 6);
+								MappingsWheelPreviewCanvas.Children.Add(subIconPath);
+							}
+							catch { }
+						}
+					}
+				}
+			}
+
+			if (MappingsCurrentEditIndicator != null)
+			{
+				if (_selectedMultiSlots.Count > 1)
+				{
+					MappingsCurrentEditIndicator.Text = string.Format(I18n.T("MappingsEditIndicatorBatch"), _selectedMultiSlots.Count);
+					MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248));
+				}
+				else if (_selectedSlotIndex == -1)
+				{
+					MappingsCurrentEditIndicator.Text = I18n.T("MappingsEditIndicatorCenter");
+					MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(245, 158, 11));
+				}
+				else if (_selectedSubActionIndex.HasValue)
+				{
+					ActionItem? parent = (profile.Actions != null && _selectedSlotIndex < profile.Actions.Count) ? profile.Actions[_selectedSlotIndex] : null;
+					string subName = (parent?.SubActions != null && _selectedSubActionIndex.Value < parent.SubActions.Count) ? parent.SubActions[_selectedSubActionIndex.Value].Name : "";
+					MappingsCurrentEditIndicator.Text = string.Format(I18n.T("MappingsEditIndicatorSub"), subName);
+					MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(168, 85, 247));
+				}
+				else
+				{
+					string dirName = (_selectedSlotIndex >= 0 && _selectedSlotIndex < directions.Length) ? directions[_selectedSlotIndex] : $"{_selectedSlotIndex + 1}";
+					MappingsCurrentEditIndicator.Text = string.Format(I18n.T("MappingsEditIndicatorPrimary"), _selectedSlotIndex + 1, dirName);
+					MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248));
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("RenderMappingsWheelPreview failed", ex);
+		}
+	}
+
+	private void MappingsPreviewViewport_MouseDown(object sender, MouseButtonEventArgs e)
+	{
+		if (e.OriginalSource is DependencyObject dep)
+		{
+			if (dep is Button || (dep is TextBlock tb && tb.Name == "MappingsZoomLabel"))
+			{
+				return;
+			}
+		}
+		if (e.ChangedButton == MouseButton.Left)
+		{
+			Point pos = e.GetPosition(MappingsWheelPreviewCanvas);
+			_mappingsDragStartPos = pos;
+			_dragSourceSlotIndex = -999;
+			_isDraggingSlot = false;
+
+			double dx = pos.X - 150.0;
+			double dy = pos.Y - 150.0;
+			double dist = Math.Sqrt(dx * dx + dy * dy);
+
+			double baseScaleRef = Math.Max(215.0, (ConfigManager.CurrentConfig?.WheelRadius ?? 100.0) * 1.55);
+			double scaleFactor = 135.0 / baseScaleRef;
+			double coreR = Math.Max(10.0, (ConfigManager.CurrentConfig?.CoreRadius ?? 25.0) * scaleFactor);
+			double outerR = Math.Max(30.0, (ConfigManager.CurrentConfig?.WheelRadius ?? 100.0) * scaleFactor);
+
+			if (dist <= coreR)
+			{
+				_dragSourceSlotIndex = -1;
+			}
+			else if (dist <= outerR + 4.0)
+			{
+				WheelProfile profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault() ?? new WheelProfile();
+				int sectorCount = profile.SectorCount > 0 ? profile.SectorCount : 8;
+				double angleDeg = Math.Atan2(dy, dx) * (180.0 / Math.PI);
+				if (angleDeg < 0) angleDeg += 360.0;
+				double sweep = 360.0 / sectorCount;
+				int slot = (int)Math.Floor((angleDeg + sweep / 2.0) / sweep) % sectorCount;
+				_dragSourceSlotIndex = slot;
+			}
+			else
+			{
+				bool isTier2Mode = (MappingsTier2SegmentRadio != null && MappingsTier2SegmentRadio.IsChecked == true);
+				WheelProfile profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault() ?? new WheelProfile();
+				int sectorCount = profile.SectorCount > 0 ? profile.SectorCount : 8;
+				double angleDeg = Math.Atan2(dy, dx) * (180.0 / Math.PI);
+				if (angleDeg < 0) angleDeg += 360.0;
+				double sweep = 360.0 / sectorCount;
+				int slot = (int)Math.Floor((angleDeg + sweep / 2.0) / sweep) % sectorCount;
+
+				bool isFanMode = string.Equals(ConfigManager.CurrentConfig?.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+				bool isSubVisible = !isFanMode || isTier2Mode || (_selectedSlotIndex == slot);
+				if (isSubVisible && dist <= outerR + 50.0)
+				{
+					ActionItem? effAction = profile.GetEffectiveAction(slot);
+					var targetSubs = (slot >= 0 && slot < profile.Actions.Count && profile.Actions[slot].SubActions != null && profile.Actions[slot].SubActions.Count > 0)
+						? profile.Actions[slot].SubActions
+						: effAction?.SubActions;
+
+					if (targetSubs != null && targetSubs.Count > 0)
+					{
+						int subCount = targetSubs.Count;
+						double slotStartAngle = (double)slot * sweep - sweep / 2.0;
+						double relAngle = angleDeg - slotStartAngle;
+						while (relAngle < 0) relAngle += 360.0;
+						while (relAngle >= 360.0) relAngle -= 360.0;
+						double subSweep = sweep / subCount;
+						int subIdx = (int)Math.Floor(relAngle / subSweep);
+						if (subIdx >= subCount) subIdx = subCount - 1;
+						if (subIdx >= 0)
+						{
+							_dragSourceSlotIndex = -100 - (slot * 100 + subIdx);
+						}
+					}
+				}
+			}
+
+			MappingsPreviewViewportContainer.CaptureMouse();
+		}
+		else if (e.ChangedButton == MouseButton.Right || e.ChangedButton == MouseButton.Middle)
+		{
+			_mappingsPanStartPoint = e.GetPosition(MappingsPreviewViewportContainer);
+			_mappingsPanStartTranslate = new Point(MappingsPreviewTranslateTransform.X, MappingsPreviewTranslateTransform.Y);
+			MappingsPreviewViewportContainer.CaptureMouse();
+		}
+	}
+
+	private void MappingsPreviewViewport_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+	{
+		if (_mappingsPanStartPoint.HasValue && MappingsPreviewViewportContainer.IsMouseCaptured && (e.RightButton == MouseButtonState.Pressed || e.MiddleButton == MouseButtonState.Pressed))
+		{
+			Point current = e.GetPosition(MappingsPreviewViewportContainer);
+			Vector delta = current - _mappingsPanStartPoint.Value;
+			MappingsPreviewTranslateTransform.X = _mappingsPanStartTranslate.X + delta.X;
+			MappingsPreviewTranslateTransform.Y = _mappingsPanStartTranslate.Y + delta.Y;
+			return;
+		}
+
+		if (_mappingsDragStartPos.HasValue && MappingsPreviewViewportContainer.IsMouseCaptured && e.LeftButton == MouseButtonState.Pressed && _dragSourceSlotIndex != -999)
+		{
+			Point currentPos = e.GetPosition(MappingsWheelPreviewCanvas);
+			double dragDist = (currentPos - _mappingsDragStartPos.Value).Length;
+			if (dragDist > 8.0 && !_isDraggingSlot)
+			{
+				_isDraggingSlot = true;
+			}
+
+			if (_isDraggingSlot)
+			{
+				MappingsPreviewViewportContainer.Cursor = System.Windows.Input.Cursors.Hand;
+				WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+				string srcName = "";
+				if (_dragSourceSlotIndex == -1)
+				{
+					srcName = profile?.CenterAction?.Name ?? "中心核圆";
+				}
+				else if (_dragSourceSlotIndex >= 0 && profile != null && _dragSourceSlotIndex < profile.Actions.Count)
+				{
+					srcName = profile.Actions[_dragSourceSlotIndex].Name ?? $"扇区 {_dragSourceSlotIndex + 1}";
+				}
+				else if (_dragSourceSlotIndex <= -100 && profile != null && profile.Actions != null)
+				{
+					int raw = -_dragSourceSlotIndex - 100;
+					int slot = raw / 100;
+					int subIdx = raw % 100;
+					if (slot >= 0 && slot < profile.Actions.Count)
+					{
+						ActionItem? eff = profile.GetEffectiveAction(slot);
+						var subs = (profile.Actions[slot].SubActions != null && subIdx < profile.Actions[slot].SubActions.Count)
+							? profile.Actions[slot].SubActions
+							: eff?.SubActions;
+						if (subs != null && subIdx < subs.Count)
+						{
+							srcName = subs[subIdx].Name ?? $"子动作 {subIdx + 1}";
+						}
+					}
+				}
+
+				if (MappingsCurrentEditIndicator != null && !string.IsNullOrEmpty(srcName))
+				{
+					string tip = (_dragSourceSlotIndex <= -100) 
+						? "释放到目标二级子扇区以对调子动作顺序..." 
+						: "释放到目标扇区以对调功能...";
+					MappingsCurrentEditIndicator.Text = $"🔄 正在拖拽 [{srcName}]，{tip}";
+					MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(245, 158, 11));
+				}
+			}
+		}
+	}
+
+	private void MappingsPreviewViewport_MouseUp(object sender, MouseButtonEventArgs e)
+	{
+		if (MappingsPreviewViewportContainer.IsMouseCaptured)
+		{
+			MappingsPreviewViewportContainer.ReleaseMouseCapture();
+			_mappingsPanStartPoint = null;
+		}
+
+		MappingsPreviewViewportContainer.Cursor = System.Windows.Input.Cursors.Arrow;
+
+		if (e.ChangedButton == MouseButton.Left && _mappingsDragStartPos.HasValue && _dragSourceSlotIndex != -999)
+		{
+			Point upPos = e.GetPosition(MappingsWheelPreviewCanvas);
+			double dragDist = (upPos - _mappingsDragStartPos.Value).Length;
+
+			if (_isDraggingSlot && dragDist > 10.0)
+			{
+				double dx = upPos.X - 150.0;
+				double dy = upPos.Y - 150.0;
+				double dist = Math.Sqrt(dx * dx + dy * dy);
+
+				double baseScaleRef = Math.Max(215.0, (ConfigManager.CurrentConfig?.WheelRadius ?? 100.0) * 1.55);
+				double scaleFactor = 135.0 / baseScaleRef;
+				double coreR = Math.Max(10.0, (ConfigManager.CurrentConfig?.CoreRadius ?? 25.0) * scaleFactor);
+				double outerR = Math.Max(30.0, (ConfigManager.CurrentConfig?.WheelRadius ?? 100.0) * scaleFactor);
+
+				WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+				if (profile != null && profile.Actions != null)
+				{
+					int sectorCount = profile.SectorCount > 0 ? profile.SectorCount : 8;
+					double angleDeg = Math.Atan2(dy, dx) * (180.0 / Math.PI);
+					if (angleDeg < 0) angleDeg += 360.0;
+					double sweep = 360.0 / sectorCount;
+
+					if (_dragSourceSlotIndex <= -100)
+					{
+						// === 二级子动作拖拽换位 ===
+						int raw = -_dragSourceSlotIndex - 100;
+						int srcSlot = raw / 100;
+						int srcSubIdx = raw % 100;
+
+						if (srcSlot >= 0 && srcSlot < profile.Actions.Count && 
+							profile.Actions[srcSlot].SubActions != null && 
+							srcSubIdx < profile.Actions[srcSlot].SubActions.Count)
+						{
+							int targetSlot = (int)Math.Floor((angleDeg + sweep / 2.0) / sweep) % sectorCount;
+							if (targetSlot >= 0 && targetSlot < profile.Actions.Count)
+							{
+								var srcList = profile.Actions[srcSlot].SubActions;
+								var tgtAction = profile.Actions[targetSlot];
+
+								if (tgtAction.SubActions != null && tgtAction.SubActions.Count > 0)
+								{
+									int tgtSubCount = tgtAction.SubActions.Count;
+									double slotStartAngle = (double)targetSlot * sweep - sweep / 2.0;
+									double relAngle = angleDeg - slotStartAngle;
+									while (relAngle < 0) relAngle += 360.0;
+									while (relAngle >= 360.0) relAngle -= 360.0;
+									double subSweep = sweep / tgtSubCount;
+									int targetSubIdx = (int)Math.Floor(relAngle / subSweep);
+									if (targetSubIdx >= tgtSubCount) targetSubIdx = tgtSubCount - 1;
+
+									if (targetSlot == srcSlot)
+									{
+										if (targetSubIdx != srcSubIdx)
+										{
+											ActionItem srcItem = srcList[srcSubIdx];
+											ActionItem tgtItem = srcList[targetSubIdx];
+											srcList[srcSubIdx] = tgtItem;
+											srcList[targetSubIdx] = srcItem;
+
+											SelectSubAction(srcSlot, targetSubIdx);
+											RefreshSlots();
+											RenderMappingsWheelPreview();
+											ScheduleAutoSave();
+
+											if (MappingsCurrentEditIndicator != null)
+											{
+												MappingsCurrentEditIndicator.Text = $"🎯 已对调二级动作顺序：[{srcItem.Name}] ↔ [{tgtItem.Name}]！";
+												MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+											}
+											return;
+										}
+									}
+									else
+									{
+										ActionItem srcItem = srcList[srcSubIdx];
+										ActionItem tgtItem = tgtAction.SubActions[targetSubIdx];
+										srcList[srcSubIdx] = tgtItem;
+										tgtAction.SubActions[targetSubIdx] = srcItem;
+
+										SelectSubAction(targetSlot, targetSubIdx);
+										RefreshSlots();
+										RenderMappingsWheelPreview();
+										ScheduleAutoSave();
+
+										if (MappingsCurrentEditIndicator != null)
+										{
+											MappingsCurrentEditIndicator.Text = $"🎯 已跨扇区对调二级动作：[{srcItem.Name}] ↔ [{tgtItem.Name}]！";
+											MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+										}
+										return;
+									}
+								}
+								else if (targetSlot != srcSlot)
+								{
+									ActionItem srcItem = srcList[srcSubIdx];
+									srcList.RemoveAt(srcSubIdx);
+									if (tgtAction.SubActions == null) tgtAction.SubActions = new List<ActionItem>();
+									tgtAction.SubActions.Add(srcItem);
+
+									SelectSubAction(targetSlot, tgtAction.SubActions.Count - 1);
+									RefreshSlots();
+									RenderMappingsWheelPreview();
+									ScheduleAutoSave();
+
+									if (MappingsCurrentEditIndicator != null)
+									{
+										MappingsCurrentEditIndicator.Text = $"🎯 已将二级动作 [{srcItem.Name}] 移动至目标扇区！";
+										MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+									}
+									return;
+								}
+							}
+						}
+
+						RenderMappingsWheelPreview();
+						return;
+					}
+					else if (_dragSourceSlotIndex >= -1)
+					{
+						// === 一级主扇区 / 中心核圆拖拽换位 ===
+						int targetSlot = -999;
+						if (dist <= coreR)
+						{
+							targetSlot = -1;
+						}
+						else if (dist <= outerR + 15.0)
+						{
+							targetSlot = (int)Math.Floor((angleDeg + sweep / 2.0) / sweep) % sectorCount;
+						}
+
+						if (targetSlot != -999 && targetSlot != _dragSourceSlotIndex)
+						{
+							bool linkSubActions = ConfigManager.CurrentConfig?.LinkSubActionsWhenDragging ?? true;
+							string srcName = "";
+							string tgtName = "";
+
+							if (_dragSourceSlotIndex == -1)
+							{
+								srcName = profile.CenterAction?.Name ?? "中心核圆";
+								tgtName = (targetSlot >= 0 && targetSlot < profile.Actions.Count) ? profile.Actions[targetSlot].Name : $"槽 {targetSlot + 1}";
+
+								var tgtSub = profile.Actions[targetSlot].SubActions;
+								ActionItem temp = profile.CenterAction ?? new ActionItem { Name = "StarPie控制台", Type = "System", Parameter = "OpenSettings", IconKey = "Settings" };
+								profile.CenterAction = profile.Actions[targetSlot];
+								profile.Actions[targetSlot] = temp;
+
+								if (!linkSubActions)
+								{
+									profile.Actions[targetSlot].SubActions = tgtSub;
+									if (profile.CenterAction != null) profile.CenterAction.SubActions = null;
+								}
+
+								SelectPrimarySlot(targetSlot);
+							}
+							else if (targetSlot == -1)
+							{
+								srcName = (_dragSourceSlotIndex >= 0 && _dragSourceSlotIndex < profile.Actions.Count) ? profile.Actions[_dragSourceSlotIndex].Name : $"槽 {_dragSourceSlotIndex + 1}";
+								tgtName = profile.CenterAction?.Name ?? "中心核圆";
+
+								var srcSub = profile.Actions[_dragSourceSlotIndex].SubActions;
+								ActionItem temp = profile.CenterAction ?? new ActionItem { Name = "StarPie控制台", Type = "System", Parameter = "OpenSettings", IconKey = "Settings" };
+								profile.CenterAction = profile.Actions[_dragSourceSlotIndex];
+								profile.Actions[_dragSourceSlotIndex] = temp;
+
+								if (!linkSubActions)
+								{
+									profile.Actions[_dragSourceSlotIndex].SubActions = srcSub;
+									if (profile.CenterAction != null) profile.CenterAction.SubActions = null;
+								}
+
+								SelectCenterCore();
+							}
+							else
+							{
+								srcName = (_dragSourceSlotIndex >= 0 && _dragSourceSlotIndex < profile.Actions.Count) ? profile.Actions[_dragSourceSlotIndex].Name : $"槽 {_dragSourceSlotIndex + 1}";
+								tgtName = (targetSlot >= 0 && targetSlot < profile.Actions.Count) ? profile.Actions[targetSlot].Name : $"槽 {targetSlot + 1}";
+
+								var srcSub = profile.Actions[_dragSourceSlotIndex].SubActions;
+								var tgtSub = profile.Actions[targetSlot].SubActions;
+
+								ActionItem temp = profile.Actions[_dragSourceSlotIndex];
+								profile.Actions[_dragSourceSlotIndex] = profile.Actions[targetSlot];
+								profile.Actions[targetSlot] = temp;
+
+								if (!linkSubActions)
+								{
+									profile.Actions[_dragSourceSlotIndex].SubActions = srcSub;
+									profile.Actions[targetSlot].SubActions = tgtSub;
+								}
+
+								SelectPrimarySlot(targetSlot);
+							}
+
+							RefreshSlots();
+							RenderMappingsWheelPreview();
+							ScheduleAutoSave();
+
+							if (MappingsCurrentEditIndicator != null)
+							{
+								string linkNote = (!linkSubActions) ? "（保持各自二级子菜单不变）" : "";
+								MappingsCurrentEditIndicator.Text = $"🎯 已将 [{srcName}] 与 [{tgtName}] 成功对调位置{linkNote}！";
+								MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+							}
+						}
+						else
+						{
+							RenderMappingsWheelPreview();
+						}
+					}
+				}
+			}
+			else
+			{
+				if (_dragSourceSlotIndex == -1)
+				{
+					_selectedMultiSlots.Clear();
+					ExitBatchModeUi();
+					SelectCenterCore();
+				}
+				else if (_dragSourceSlotIndex >= 0)
+				{
+					bool isCtrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+					if (isCtrl)
+					{
+						if (_selectedMultiSlots.Contains(_dragSourceSlotIndex))
+						{
+							_selectedMultiSlots.Remove(_dragSourceSlotIndex);
+						}
+						else
+						{
+							_selectedMultiSlots.Add(_dragSourceSlotIndex);
+						}
+
+						if (_selectedMultiSlots.Count == 0)
+						{
+							_selectedMultiSlots.Add(_dragSourceSlotIndex);
+							ExitBatchModeUi();
+							SelectPrimarySlot(_dragSourceSlotIndex);
+						}
+						else if (_selectedMultiSlots.Count == 1)
+						{
+							ExitBatchModeUi();
+							SelectPrimarySlot(_selectedMultiSlots[0]);
+						}
+						else
+						{
+							EnterBatchModeUi();
+						}
+					}
+					else
+					{
+						_selectedMultiSlots.Clear();
+						_selectedMultiSlots.Add(_dragSourceSlotIndex);
+						ExitBatchModeUi();
+						SelectPrimarySlot(_dragSourceSlotIndex);
+					}
+				}
+				else if (_dragSourceSlotIndex <= -100)
+				{
+					_selectedMultiSlots.Clear();
+					ExitBatchModeUi();
+					int raw = -_dragSourceSlotIndex - 100;
+					int slot = raw / 100;
+					int subIdx = raw % 100;
+					SelectSubAction(slot, subIdx);
+				}
+			}
+
+			_mappingsDragStartPos = null;
+			_dragSourceSlotIndex = -999;
+			_isDraggingSlot = false;
+			e.Handled = true;
+		}
+	}
+
+	private void MappingsPreviewViewport_MouseWheel(object sender, MouseWheelEventArgs e)
+	{
+		double delta = e.Delta > 0 ? 0.1 : -0.1;
+		double newScale = Math.Max(0.5, Math.Min(3.0, MappingsPreviewScaleTransform.ScaleX + delta));
+		MappingsPreviewScaleTransform.ScaleX = newScale;
+		MappingsPreviewScaleTransform.ScaleY = newScale;
+		MappingsZoomLabel.Text = $"{newScale * 100:0}%";
+		e.Handled = true;
+	}
+
+	private void MappingsZoomInBtn_Click(object sender, RoutedEventArgs e)
+	{
+		double newScale = Math.Min(3.0, MappingsPreviewScaleTransform.ScaleX + 0.15);
+		MappingsPreviewScaleTransform.ScaleX = newScale;
+		MappingsPreviewScaleTransform.ScaleY = newScale;
+		MappingsZoomLabel.Text = $"{newScale * 100:0}%";
+	}
+
+	private void MappingsZoomOutBtn_Click(object sender, RoutedEventArgs e)
+	{
+		double newScale = Math.Max(0.5, MappingsPreviewScaleTransform.ScaleX - 0.15);
+		MappingsPreviewScaleTransform.ScaleX = newScale;
+		MappingsPreviewScaleTransform.ScaleY = newScale;
+		MappingsZoomLabel.Text = $"{newScale * 100:0}%";
+	}
+
+	private void MappingsResetViewBtn_Click(object sender, RoutedEventArgs e)
+	{
+		MappingsPreviewScaleTransform.ScaleX = 1.0;
+		MappingsPreviewScaleTransform.ScaleY = 1.0;
+		MappingsPreviewTranslateTransform.X = 0;
+		MappingsPreviewTranslateTransform.Y = 0;
+		MappingsZoomLabel.Text = "100%";
+	}
+
+	private void MappingsZoomLabel_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+	{
+		MappingsResetViewBtn_Click(sender, e);
+	}
+
+	private void UpdateLinkSubActionsButtonUi()
+	{
+		if (MappingsLinkSubActionsBtn == null || ConfigManager.CurrentConfig == null) return;
+		bool isLinked = ConfigManager.CurrentConfig.LinkSubActionsWhenDragging;
+		if (MappingsLinkSubActionsIcon != null)
+		{
+			MappingsLinkSubActionsIcon.Text = isLinked ? "🔗" : "⛓️‍💥";
+		}
+		if (MappingsLinkSubActionsText != null)
+		{
+			MappingsLinkSubActionsText.Text = isLinked ? I18n.T("MappingsLinkSubActionsOn") : I18n.T("MappingsLinkSubActionsOff");
+			MappingsLinkSubActionsText.Foreground = (Brush)(TryFindResource(isLinked ? "AccentPrimaryBrush" : "TextSecondaryBrush") 
+				?? (isLinked ? Brushes.SkyBlue : Brushes.Gray));
+		}
+		MappingsLinkSubActionsBtn.Background = isLinked
+			? new SolidColorBrush(System.Windows.Media.Color.FromArgb(35, 56, 189, 248))
+			: (Brush)(TryFindResource("InputBackgroundBrush") ?? Brushes.Transparent);
+		MappingsLinkSubActionsBtn.BorderBrush = isLinked
+			? (Brush)(TryFindResource("AccentPrimaryBrush") ?? Brushes.SkyBlue)
+			: (Brush)(TryFindResource("CardBorderBrush") ?? Brushes.Gray);
+		MappingsLinkSubActionsBtn.ToolTip = isLinked
+			? "当前状态：【已开启链接】\n拖拽一级扇区时，将连同其绑定的二级子轮盘一起对调换位。\n点击可切换为关闭（解绑独立）。"
+			: "当前状态：【已关闭链接】\n拖拽一级扇区时，仅对调一级主功能，保留各方位现存的二级子菜单。\n点击可切换为开启（联动带走）。";
+	}
+
+	private void MappingsLinkSubActionsBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null) return;
+		ConfigManager.CurrentConfig.LinkSubActionsWhenDragging = !ConfigManager.CurrentConfig.LinkSubActionsWhenDragging;
+		UpdateLinkSubActionsButtonUi();
+		ScheduleAutoSave();
+		if (MappingsCurrentEditIndicator != null)
+		{
+			bool isLinked = ConfigManager.CurrentConfig.LinkSubActionsWhenDragging;
+			MappingsCurrentEditIndicator.Text = isLinked 
+				? "🔗 一二级联动已开启：拖拽一级扇区将连同其二级子轮盘一块换位" 
+				: "⛓️‍💥 一二级联动已解绑：拖拽一级扇区将仅对调主动作，原二级子轮盘保留在原方位";
+			MappingsCurrentEditIndicator.Foreground = isLinked 
+				? (Brush)FindResource("AccentPrimaryBrush") 
+				: (Brush)FindResource("TextSecondaryBrush");
+		}
+	}
+
+	private void UpdateMappingsShowTextBtnState()
+	{
+		if (MappingsShowTextToggleBtn == null || ConfigManager.CurrentConfig == null) return;
+		bool show = ConfigManager.CurrentConfig.MappingsCanvasShowText;
+		if (show)
+		{
+			MappingsShowTextToggleBtn.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 56, 189, 248));
+			MappingsShowTextToggleBtn.Foreground = (Brush)(TryFindResource("AccentPrimaryBrush") ?? Brushes.SkyBlue);
+			MappingsShowTextToggleBtn.Content = "🔤 图文 (开)";
+			MappingsShowTextToggleBtn.ToolTip = "当前状态：【图文复合展示 已开启】\n即使未配置自定义图标，也会在扇区中清晰呈现动作名称，拖拽对调一目了然。\n点击可切换为纯图标极简模式。";
+		}
+		else
+		{
+			MappingsShowTextToggleBtn.Background = Brushes.Transparent;
+			MappingsShowTextToggleBtn.Foreground = (Brush)(TryFindResource("TextSecondaryBrush") ?? Brushes.Gray);
+			MappingsShowTextToggleBtn.Content = "🔤 图文 (关)";
+			MappingsShowTextToggleBtn.ToolTip = "当前状态：【图文复合展示 已关闭】\n画布保持纯图标极简模式。\n点击可开启图文并茂复合呈现。";
+		}
+	}
+
+	private void MappingsShowTextToggleBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null) return;
+		ConfigManager.CurrentConfig.MappingsCanvasShowText = !ConfigManager.CurrentConfig.MappingsCanvasShowText;
+		UpdateMappingsShowTextBtnState();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void EnterBatchModeUi()
+	{
+		if (FocusSingleSlotPanel != null)
+		{
+			FocusSingleSlotPanel.Visibility = Visibility.Collapsed;
+		}
+		if (FocusBatchModePanel != null)
+		{
+			FocusBatchModePanel.Visibility = Visibility.Visible;
+		}
+		int count = _selectedMultiSlots.Count;
+		if (FocusBatchBadgeText != null)
+		{
+			FocusBatchBadgeText.Text = count > 0 ? $"{count}" : "多选";
+		}
+		if (FocusBatchTagText != null)
+		{
+			FocusBatchTagText.Text = string.Format(I18n.T("FocusBatchTagFormat"), count);
+		}
+		if (FocusBatchTitleText != null)
+		{
+			FocusBatchTitleText.Text = $"🎯 批量修改模式 ({count} 个扇区)";
+		}
+		if (FocusBatchSubtitleText != null)
+		{
+			string slotNames = string.Join(", ", _selectedMultiSlots.Select(s => (s + 1).ToString()));
+			FocusBatchSubtitleText.Text = $"当前选中扇区: [{slotNames}]；在此统一批量调整所有选中扇区的排版与外观";
+		}
+		if (MappingsCurrentEditIndicator != null)
+		{
+			MappingsCurrentEditIndicator.Text = string.Format(I18n.T("MappingsEditIndicatorBatch"), count);
+			MappingsCurrentEditIndicator.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248));
+		}
+		SyncBatchControlsFromFirstSelected();
+	}
+
+	private void ExitBatchModeUi()
+	{
+		if (FocusSingleSlotPanel != null)
+		{
+			FocusSingleSlotPanel.Visibility = Visibility.Visible;
+		}
+		if (FocusBatchModePanel != null)
+		{
+			FocusBatchModePanel.Visibility = Visibility.Collapsed;
+		}
+	}
+
+	private void SyncBatchControlsFromFirstSelected()
+	{
+		if (_selectedMultiSlots.Count == 0 || ConfigManager.CurrentConfig == null) return;
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+		if (profile?.Actions == null) return;
+		int firstSlot = _selectedMultiSlots[0];
+		if (firstSlot < 0 || firstSlot >= profile.Actions.Count) return;
+		ActionItem item = profile.Actions[firstSlot];
+
+		bool oldUpdating = _isUpdatingUi;
+		try
+		{
+			_isUpdatingUi = true;
+			double fSize = (item.CustomFontSize.HasValue && item.CustomFontSize.Value > 0.0)
+				? item.CustomFontSize.Value
+				: ((ConfigManager.CurrentConfig.SectorFontSize > 0.0) ? ConfigManager.CurrentConfig.SectorFontSize : 11.0);
+			if (BatchFontSizeSlider != null) BatchFontSizeSlider.Value = fSize;
+			if (BatchFontSizeLabel != null) BatchFontSizeLabel.Text = $"{fSize:0.0} px";
+
+			double iSize = (item.CustomIconSize.HasValue && item.CustomIconSize.Value > 0.0)
+				? item.CustomIconSize.Value
+				: ((ConfigManager.CurrentConfig.SectorIconSize > 0.0) ? ConfigManager.CurrentConfig.SectorIconSize : 20.0);
+			if (BatchIconSizeSlider != null) BatchIconSizeSlider.Value = iSize;
+			if (BatchIconSizeLabel != null) BatchIconSizeLabel.Text = $"{iSize:0} px";
+
+			string textColor = (!string.IsNullOrWhiteSpace(item.CustomTextColor))
+				? item.CustomTextColor
+				: (ConfigManager.CurrentConfig.CustomText ?? "#FFF8FAFC");
+			if (BatchTextColorTextBox != null) BatchTextColorTextBox.Text = textColor;
+			UpdateColorPreviewBorder(BatchTextColorPreview, textColor);
+
+			double offX = item.CustomTextOffsetX ?? ConfigManager.CurrentConfig.SectorTextOffsetX;
+			if (BatchTextOffsetXSlider != null) BatchTextOffsetXSlider.Value = offX;
+			if (BatchTextOffsetXLabel != null) BatchTextOffsetXLabel.Text = $"{offX:+0;-0;0} px";
+
+			double offY = item.CustomTextOffsetY ?? ConfigManager.CurrentConfig.SectorTextOffsetY;
+			if (BatchTextOffsetYSlider != null) BatchTextOffsetYSlider.Value = offY;
+			if (BatchTextOffsetYLabel != null) BatchTextOffsetYLabel.Text = $"{offY:+0;-0;0} px";
+		}
+		finally
+		{
+			_isUpdatingUi = oldUpdating;
+		}
+	}
+
+	private void ApplyBatchActionCustomization(Action<ActionItem> modifyAction)
+	{
+		if (_selectedMultiSlots.Count == 0 || ConfigManager.CurrentConfig == null) return;
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+		if (profile?.Actions == null) return;
+
+		foreach (int slot in _selectedMultiSlots)
+		{
+			if (slot >= 0 && slot < profile.Actions.Count)
+			{
+				ActionItem item = EnsureLocalPrimaryActionForEdit(profile, slot);
+				modifyAction(item);
+			}
+		}
+		RefreshSlots();
+		RefreshLayoutOptionsUi();
+		RenderLiveWheelPreview();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
+	}
+
+	private void FocusBatchExitBtn_Click(object sender, RoutedEventArgs e)
+	{
+		int keepSlot = _selectedMultiSlots.Count > 0 ? _selectedMultiSlots.Last() : 0;
+		_selectedMultiSlots.Clear();
+		_selectedMultiSlots.Add(keepSlot);
+		ExitBatchModeUi();
+		SelectPrimarySlot(keepSlot);
+		RefreshLayoutOptionsUi();
+		RenderLiveWheelPreview();
+		RenderMappingsWheelPreview();
+	}
+
+	private void BatchLayoutBothBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ApplyBatchActionCustomization(item => item.LayoutMode = "Both");
+	}
+
+	private void BatchLayoutIconOnlyBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ApplyBatchActionCustomization(item => item.LayoutMode = "IconOnly");
+	}
+
+	private void BatchLayoutTextOnlyBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ApplyBatchActionCustomization(item => item.LayoutMode = "TextOnly");
+	}
+
+	private void BatchLayoutInheritBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ApplyBatchActionCustomization(item => item.LayoutMode = "Inherit");
+	}
+
+	private void BatchFontSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		double val = e.NewValue;
+		if (BatchFontSizeLabel != null) BatchFontSizeLabel.Text = $"{val:0.0} px";
+		ApplyBatchActionCustomization(item => item.CustomFontSize = val);
+	}
+
+	private void BatchIconSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		double val = e.NewValue;
+		if (BatchIconSizeLabel != null) BatchIconSizeLabel.Text = $"{val:0} px";
+		ApplyBatchActionCustomization(item => item.CustomIconSize = val);
+	}
+
+	private void BatchTextColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (BatchTextColorTextBox == null || ConfigManager.CurrentConfig == null) return;
+		string hex = BatchTextColorTextBox.Text.Trim();
+		UpdateColorPreviewBorder(BatchTextColorPreview, hex);
+		if (_isUpdatingUi) return;
+		ApplyBatchActionCustomization(item => item.CustomTextColor = hex);
+	}
+
+	private void BatchTextOffsetSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		double offX = BatchTextOffsetXSlider?.Value ?? 0.0;
+		double offY = BatchTextOffsetYSlider?.Value ?? 0.0;
+		if (BatchTextOffsetXLabel != null) BatchTextOffsetXLabel.Text = $"{offX:+0;-0;0} px";
+		if (BatchTextOffsetYLabel != null) BatchTextOffsetYLabel.Text = $"{offY:+0;-0;0} px";
+		ApplyBatchActionCustomization(item =>
+		{
+			item.CustomTextOffsetX = offX;
+			item.CustomTextOffsetY = offY;
+		});
+	}
+
+	private void BatchResetCustomBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ApplyBatchActionCustomization(item =>
+		{
+			item.LayoutMode = "Inherit";
+			item.CustomTextColor = null;
+			item.CustomFontFamily = null;
+			item.CustomIconSize = null;
+			item.CustomFontSize = null;
+			item.CustomTextPlacement = "Inherit";
+			item.CustomTextOffsetX = null;
+			item.CustomTextOffsetY = null;
+		});
+		SyncBatchControlsFromFirstSelected();
+	}
+
+	#endregion
+
+	private void HookRawInputForSensorAndRecorder()
+	{
+		if (_resourcesReleased)
+		{
+			return;
+		}
+		if (!_rawMouseInputHookAttached && App.MainMouseHook != null)
+		{
+			App.MainMouseHook.OnRawMouseButtonEvent += MainMouseHook_OnRawMouseButtonEvent;
+			_rawMouseInputHookAttached = true;
+		}
+		if (!_rawKeyboardInputHookAttached && App.MainKeyboardHook != null)
+		{
+			App.MainKeyboardHook.OnRawKeyEvent += MainKeyboardHook_OnRawKeyEvent;
+			_rawKeyboardInputHookAttached = true;
+		}
+	}
+
+	private void MainMouseHook_OnRawMouseButtonEvent(object? sender, RawMouseEventArgs e)
+	{
+		if (_resourcesReleased || !e.IsButtonDown)
+		{
+			return;
+		}
+		// MouseHook 复用同一事件实例派发，严禁跨线程持有：先取出原始值再入 Dispatcher 队列
+		string mouseButton = e.MouseButton;
+		uint mouseData = e.MouseData;
+		((DispatcherObject)this).Dispatcher.BeginInvoke((Delegate)(Action)delegate
+		{
+			if (!_resourcesReleased)
+			{
+				ProcessRawMouseButton(mouseButton, mouseData);
+			}
+		}, Array.Empty<object>());
+	}
+
+	private void MainKeyboardHook_OnRawKeyEvent(object? sender, GlobalKeyEventArgs e)
+	{
+		if (_resourcesReleased)
+		{
+			return;
+		}
+		((DispatcherObject)this).Dispatcher.BeginInvoke((Delegate)(Action)delegate
+		{
+			if (!_resourcesReleased)
+			{
+				ProcessRawKeyEvent(e);
+			}
+		}, Array.Empty<object>());
+	}
+
+	private void UnhookRawInputForSensorAndRecorder()
+	{
+		if (_rawMouseInputHookAttached)
+		{
+			if (App.MainMouseHook != null)
+			{
+				App.MainMouseHook.OnRawMouseButtonEvent -= MainMouseHook_OnRawMouseButtonEvent;
+			}
+			_rawMouseInputHookAttached = false;
+		}
+		if (_rawKeyboardInputHookAttached)
+		{
+			if (App.MainKeyboardHook != null)
+			{
+				App.MainKeyboardHook.OnRawKeyEvent -= MainKeyboardHook_OnRawKeyEvent;
+			}
+			_rawKeyboardInputHookAttached = false;
+		}
+	}
+
+	private void UpdateTriggerBadgeDisplay()
+	{
+		if (ConfigManager.CurrentConfig != null)
+		{
+			TriggerConfig triggerConfig = ConfigManager.CurrentConfig.Trigger;
+			if (triggerConfig == null)
+			{
+				triggerConfig = new TriggerConfig();
+				ConfigManager.CurrentConfig.Trigger = triggerConfig;
+			}
+
+			// 核心保障：若配置中选择单键鼠标左键（无修饰键），自动保障长按呼出处于开启状态，使得长按呼出轮盘，单机保持原生点击
+			bool isLeftButton = string.Equals(triggerConfig.MouseButton, "LeftButton", StringComparison.OrdinalIgnoreCase) ||
+			                    string.Equals(ConfigManager.CurrentConfig.TriggerButton, "LeftButton", StringComparison.OrdinalIgnoreCase);
+			bool hasModifier = triggerConfig.RequireCtrl || triggerConfig.RequireShift || triggerConfig.RequireAlt || triggerConfig.RequireWin;
+			if (triggerConfig.TriggerType == "Mouse" && isLeftButton && !hasModifier)
+			{
+				if (!ConfigManager.CurrentConfig.LongPressTrigger)
+				{
+					ConfigManager.CurrentConfig.LongPressTrigger = true;
+					if (LongPressTriggerCheckBox != null)
+					{
+						LongPressTriggerCheckBox.IsChecked = true;
+					}
+					ScheduleAutoSave();
+				}
+			}
+
+			if (CurrentTriggerBadgeText != null)
+			{
+				string text = FormatTriggerDisplay(triggerConfig);
+				CurrentTriggerBadgeText.Text = text;
+			}
+		}
+	}
+
+	public static string FormatTriggerDisplay(TriggerConfig? trigger)
+	{
+		if (trigger == null)
+		{
+			return I18n.T("TriggerBtnRight");
+		}
+		string text = "";
+		if (trigger.RequireCtrl)
+		{
+			text += "Ctrl + ";
+		}
+		if (trigger.RequireShift)
+		{
+			text += "Shift + ";
+		}
+		if (trigger.RequireAlt)
+		{
+			text += "Alt + ";
+		}
+		if (trigger.RequireWin)
+		{
+			text += "Win + ";
+		}
+		if (trigger.TriggerType == "Keyboard")
+		{
+			string keyName = I18n.FormatKeyName(trigger.Key, trigger.VkCode);
+			if (string.IsNullOrEmpty(keyName) || trigger.Key == "None")
+			{
+				if (!string.IsNullOrEmpty(text))
+				{
+					return "⌨️ " + text.TrimEnd(' ', '+') + " " + I18n.T("TriggerHoldOrDrag");
+				}
+				return I18n.T("TriggerBtnRight");
+			}
+			return text + "⌨️ " + keyName + " " + I18n.T("TriggerHoldOrDrag");
+		}
+		string mouseText = trigger.MouseButton switch
+		{
+			"MiddleButton" => I18n.T("TriggerBtnMiddle"), 
+			"XButton1" => I18n.T("TriggerBtnX1"), 
+			"XButton2" => I18n.T("TriggerBtnX2"), 
+			"LeftButton" => I18n.T("TriggerBtnLeftOnly"), 
+			_ => I18n.T("TriggerBtnRight"), 
+		};
+		if (!string.IsNullOrEmpty(text))
+		{
+			return text + mouseText;
+		}
+		return mouseText;
+	}
+
+	private void RecordTriggerButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (!_isRecordingTrigger)
+		{
+			StartTriggerRecording();
+		}
+		else
+		{
+			StopTriggerRecording(saved: false);
+		}
+	}
+
+	private void StartTriggerRecording()
+	{
+		_isRecordingTrigger = true;
+		if (RecordTriggerButton != null)
+		{
+			RecordTriggerButton.Content = I18n.T("BtnRecordTriggerListening");
+			RecordTriggerButton.Background = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#EF4444"));
+		}
+		if (LiveSensorStatusText != null)
+		{
+			LiveSensorStatusText.Text = I18n.T("LiveSensorRecordingModeTip");
+		}
+		if (LiveSensorDot != null)
+		{
+			LiveSensorDot.Fill = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#EF4444"));
+		}
+	}
+
+	private void StopTriggerRecording(bool saved)
+	{
+		_isRecordingTrigger = false;
+		if (RecordTriggerButton != null)
+		{
+			RecordTriggerButton.Content = I18n.T("BtnRecordTrigger");
+			((DependencyObject)RecordTriggerButton).ClearValue(System.Windows.Controls.Control.BackgroundProperty);
+		}
+		if (LiveSensorStatusText != null)
+		{
+			if (saved)
+			{
+				bool isPureLeft = string.Equals(ConfigManager.CurrentConfig?.TriggerButton, "LeftButton", StringComparison.OrdinalIgnoreCase) &&
+				                  ConfigManager.CurrentConfig?.Trigger?.RequireCtrl != true &&
+				                  ConfigManager.CurrentConfig?.Trigger?.RequireShift != true &&
+				                  ConfigManager.CurrentConfig?.Trigger?.RequireAlt != true &&
+				                  ConfigManager.CurrentConfig?.Trigger?.RequireWin != true;
+				LiveSensorStatusText.Text = isPureLeft
+					? I18n.T("TriggerLeftButtonRecordedTip")
+					: I18n.T("LiveSensorSavedTip");
+			}
+			else
+			{
+				LiveSensorStatusText.Text = I18n.T("LiveSensorReadyTip");
+			}
+		}
+		if (LiveSensorDot != null)
+		{
+			LiveSensorDot.Fill = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981"));
+		}
+		UpdateTriggerBadgeDisplay();
+	}
+
+	private void ResetDefaultTriggerButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig != null)
+		{
+			var defaultTrigger = new TriggerConfig
+			{
+				TriggerType = "Mouse",
+				MouseButton = "RightButton"
+			};
+			defaultTrigger.DisplayText = FormatTriggerDisplay(defaultTrigger);
+			ConfigManager.CurrentConfig.Trigger = defaultTrigger;
+			ConfigManager.CurrentConfig.TriggerButton = "RightButton";
+			StopTriggerRecording(saved: true);
+			ScheduleAutoSave();
+			if (LiveSensorStatusText != null)
+			{
+				LiveSensorStatusText.Text = string.Format(I18n.T("LiveSensorResetDefaultFmt"), I18n.T("TriggerBtnRight"));
+			}
+		}
+	}
+
+	public void ProcessRawMouseButton(string mouseButton, uint mouseData = 0u)
+	{
+		if ((base.IsVisible || _isRecordingTrigger || _isRecordingProcessTrigger) && ConfigManager.CurrentConfig != null)
+		{
+			string mouseDisplayName = mouseButton switch
+			{
+				"MiddleButton" => I18n.T("TriggerBtnMiddle"), 
+				"XButton1" => I18n.T("TriggerBtnX1"), 
+				"XButton2" => I18n.T("TriggerBtnX2"), 
+				"LeftButton" => I18n.T("TriggerBtnLeftOnly"), 
+				_ => I18n.T("TriggerBtnRight"), 
+			};
+			ModifierKeys currentModifiers = KeyboardHook.GetCurrentModifiers();
+			string text2 = "";
+			if (((((int)currentModifiers & 2))) != 0)
+			{
+				text2 += "Ctrl + ";
+			}
+			if (((((int)currentModifiers & 4))) != 0)
+			{
+				text2 += "Shift + ";
+			}
+			if (((((int)currentModifiers & 1))) != 0)
+			{
+				text2 += "Alt + ";
+			}
+			if (((((int)currentModifiers & 8))) != 0)
+			{
+				text2 += "Win + ";
+			}
+			string fullInputDesc = text2 + mouseDisplayName;
+			if (LiveSensorStatusText != null && !_isRecordingProcessTrigger)
+			{
+				LiveSensorStatusText.Text = string.Format(I18n.T("LiveSensorMouseFmt"), fullInputDesc);
+			}
+			if (LiveSensorDot != null && !_isRecordingProcessTrigger)
+			{
+				LiveSensorDot.Fill = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981"));
+			}
+			if (ProcessLiveSensorStatusText != null && _isRecordingProcessTrigger)
+			{
+				ProcessLiveSensorStatusText.Text = string.Format(I18n.T("ProcessSensorMouseFmt"), fullInputDesc);
+			}
+			if (ProcessLiveSensorDot != null && _isRecordingProcessTrigger)
+			{
+				ProcessLiveSensorDot.Fill = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981"));
+			}
+			if (_isRecordingProcessTrigger && !string.IsNullOrWhiteSpace(_recordingProcessName))
+			{
+				var procTrigger = new TriggerConfig
+				{
+					TriggerType = "Mouse",
+					MouseButton = mouseButton,
+					RequireCtrl = (((((int)currentModifiers & 2))) > 0),
+					RequireShift = (((((int)currentModifiers & 4))) > 0),
+					RequireAlt = (((((int)currentModifiers & 1))) > 0),
+					RequireWin = (((((int)currentModifiers & 8))) > 0)
+				};
+				procTrigger.DisplayText = FormatTriggerDisplay(procTrigger);
+				ConfigManager.CurrentConfig.BlacklistTriggerOverrides ??= new Dictionary<string, TriggerConfig>(StringComparer.OrdinalIgnoreCase);
+				ConfigManager.CurrentConfig.BlacklistTriggerOverrides[_recordingProcessName] = procTrigger;
+				ScheduleAutoSave();
+				StopProcessTriggerRecording(saved: true);
+				return;
+			}
+			if (_isRecordingTrigger)
+			{
+				ConfigManager.CurrentConfig.Trigger = new TriggerConfig
+				{
+					TriggerType = "Mouse",
+					MouseButton = mouseButton,
+					RequireCtrl = (((((int)currentModifiers & 2))) > 0),
+					RequireShift = (((((int)currentModifiers & 4))) > 0),
+					RequireAlt = (((((int)currentModifiers & 1))) > 0),
+					RequireWin = (((((int)currentModifiers & 8))) > 0)
+				};
+				// 若录入的是单独鼠标左键（无修饰键），自动开启长按呼出，确保长按稳定唤醒轮盘，单机保持原生点击
+				if (mouseButton == "LeftButton" &&
+				    !ConfigManager.CurrentConfig.Trigger.RequireCtrl &&
+				    !ConfigManager.CurrentConfig.Trigger.RequireShift &&
+				    !ConfigManager.CurrentConfig.Trigger.RequireAlt &&
+				    !ConfigManager.CurrentConfig.Trigger.RequireWin)
+				{
+					ConfigManager.CurrentConfig.LongPressTrigger = true;
+					if (LongPressTriggerCheckBox != null)
+					{
+						LongPressTriggerCheckBox.IsChecked = true;
+					}
+				}
+				ConfigManager.CurrentConfig.Trigger.DisplayText = FormatTriggerDisplay(ConfigManager.CurrentConfig.Trigger);
+				ConfigManager.CurrentConfig.TriggerButton = mouseButton;
+				ScheduleAutoSave();
+				StopTriggerRecording(saved: true);
+			}
+		}
+	}
+
+	private void ProcessRawKeyEvent(GlobalKeyEventArgs e)
+	{
+		if ((int)e.Key == 0)
+		{
+			return;
+		}
+		if ((int)e.Key == 13 && _isRecordingProcessTrigger)
+		{
+			StopProcessTriggerRecording(saved: false);
+			return;
+		}
+		if ((int)e.Key == 13 && _isRecordingTrigger)
+		{
+			StopTriggerRecording(saved: false);
+			return;
+		}
+		string value = I18n.FormatKeyName(((object)e.Key/*cast due to constrained. prefix*/).ToString(), e.VkCode);
+		ModifierKeys modifiers = e.Modifiers;
+		string text = "";
+		if (((((int)modifiers & 2))) != 0 && (int)e.Key != 118 && (int)e.Key != 119)
+		{
+			text += "Ctrl + ";
+		}
+		if (((((int)modifiers & 4))) != 0 && (int)e.Key != 116 && (int)e.Key != 117)
+		{
+			text += "Shift + ";
+		}
+		if (((((int)modifiers & 1))) != 0 && (int)e.Key != 120 && (int)e.Key != 121)
+		{
+			text += "Alt + ";
+		}
+		if (((((int)modifiers & 8))) != 0 && (int)e.Key != 70 && (int)e.Key != 71)
+		{
+			text += "Win + ";
+		}
+		string keyInputDesc = $"{text}⌨️ {value}";
+		if (LiveSensorStatusText != null && !_isRecordingProcessTrigger)
+		{
+			LiveSensorStatusText.Text = string.Format(I18n.T("LiveSensorKeyboardFmt"), keyInputDesc, e.VkCode);
+		}
+		if (LiveSensorDot != null && !_isRecordingProcessTrigger)
+		{
+			LiveSensorDot.Fill = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981"));
+		}
+		if (ProcessLiveSensorStatusText != null && _isRecordingProcessTrigger)
+		{
+			ProcessLiveSensorStatusText.Text = string.Format(I18n.T("ProcessSensorKeyboardFmt"), keyInputDesc, e.VkCode);
+		}
+		if (ProcessLiveSensorDot != null && _isRecordingProcessTrigger)
+		{
+			ProcessLiveSensorDot.Fill = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981"));
+		}
+		if (_isRecordingProcessTrigger && !string.IsNullOrWhiteSpace(_recordingProcessName) && (int)e.Key != 118 && (int)e.Key != 119 && (int)e.Key != 116 && (int)e.Key != 117 && (int)e.Key != 120 && (int)e.Key != 121 && (int)e.Key != 70 && (int)e.Key != 71)
+		{
+			var procTrigger = new TriggerConfig
+			{
+				TriggerType = "Keyboard",
+				Key = ((object)e.Key/*cast due to constrained. prefix*/).ToString(),
+				VkCode = e.VkCode,
+				RequireCtrl = (((((int)modifiers & 2))) > 0),
+				RequireShift = (((((int)modifiers & 4))) > 0),
+				RequireAlt = (((((int)modifiers & 1))) > 0),
+				RequireWin = (((((int)modifiers & 8))) > 0)
+			};
+			procTrigger.DisplayText = FormatTriggerDisplay(procTrigger);
+			ConfigManager.CurrentConfig.BlacklistTriggerOverrides ??= new Dictionary<string, TriggerConfig>(StringComparer.OrdinalIgnoreCase);
+			ConfigManager.CurrentConfig.BlacklistTriggerOverrides[_recordingProcessName] = procTrigger;
+			ScheduleAutoSave();
+			StopProcessTriggerRecording(saved: true);
+			return;
+		}
+		if (_isRecordingTrigger && (int)e.Key != 118 && (int)e.Key != 119 && (int)e.Key != 116 && (int)e.Key != 117 && (int)e.Key != 120 && (int)e.Key != 121 && (int)e.Key != 70 && (int)e.Key != 71)
+		{
+			ConfigManager.CurrentConfig.Trigger = new TriggerConfig
+			{
+				TriggerType = "Keyboard",
+				Key = ((object)e.Key/*cast due to constrained. prefix*/).ToString(),
+				VkCode = e.VkCode,
+				RequireCtrl = (((((int)modifiers & 2))) > 0),
+				RequireShift = (((((int)modifiers & 4))) > 0),
+				RequireAlt = (((((int)modifiers & 1))) > 0),
+				RequireWin = (((((int)modifiers & 8))) > 0)
+			};
+			ConfigManager.CurrentConfig.Trigger.DisplayText = FormatTriggerDisplay(ConfigManager.CurrentConfig.Trigger);
+			ScheduleAutoSave();
+			StopTriggerRecording(saved: true);
+		}
+	}
+
+	private void ThresholdSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (ThresholdValueLabel != null)
+		{
+			ThresholdValueLabel.Text = $"{e.NewValue:0} px";
+		}
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.DragThreshold = e.NewValue;
+		ScheduleAutoSave();
+	}
+
+	private void MouseReleaseDebounceCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		bool enabled = MouseReleaseDebounceCheckBox?.IsChecked == true;
+		if (MouseReleaseDebouncePanel != null)
+		{
+			MouseReleaseDebouncePanel.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.EnableMouseReleaseDebounce = enabled;
+		ScheduleAutoSave();
+	}
+
+	private void MouseReleaseDebounceSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		int debounceMs = Math.Clamp((int)Math.Round(e.NewValue), 1, 100);
+		if (MouseReleaseDebounceValueLabel != null)
+		{
+			MouseReleaseDebounceValueLabel.Text = $"{debounceMs} ms";
+		}
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.MouseReleaseDebounceMs = debounceMs;
+		ScheduleAutoSave();
+	}
+
+	private void CoreDeadzoneSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (CoreDeadzoneValueLabel != null)
+		{
+			CoreDeadzoneValueLabel.Text = $"{e.NewValue:0} px";
+		}
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.CoreDeadzoneRadius = e.NewValue;
+		ScheduleAutoSave();
+	}
+
+	private void UiStyleComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && UiStyleComboBox != null && ConfigManager.CurrentConfig != null && UiStyleComboBox.SelectedItem is ComboBoxItem comboBoxItem)
+		{
+			ConfigManager.CurrentConfig.UiStyle = comboBoxItem.Tag?.ToString() ?? "ClassicRing";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+	}
+
+	private void Tier2Expander_ExpandedCollapsed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi) return;
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+	}
+
+	private void SubWheelUiStyleComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && SubWheelUiStyleComboBox != null && ConfigManager.CurrentConfig != null && SubWheelUiStyleComboBox.SelectedItem is ComboBoxItem { Tag: var tag })
+		{
+			string text = tag?.ToString() ?? "FollowPrimary";
+			ConfigManager.CurrentConfig.SubWheelUiStyle = text;
+			ConfigManager.CurrentConfig.UseIndependentSubWheelTheme = text != "FollowPrimary" || ConfigManager.CurrentConfig.SubWheelTheme != "FollowPrimary";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SubWheelThemeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || SubWheelThemeComboBox == null || ConfigManager.CurrentConfig == null || !(SubWheelThemeComboBox.SelectedItem is ComboBoxItem { Tag: var tag }))
+		{
+			return;
+		}
+		string text = tag?.ToString() ?? "FollowPrimary";
+		ConfigManager.CurrentConfig.SubWheelTheme = text;
+		if (text == "Custom" && SubCustomColorExpander != null)
+		{
+			SubCustomColorExpander.IsExpanded = true;
+		}
+		ConfigManager.CurrentConfig.UseIndependentSubWheelTheme = text != "FollowPrimary" || ConfigManager.CurrentConfig.SubWheelUiStyle != "FollowPrimary";
+		bool flag = text.StartsWith("CustomPreset_");
+		if (RenameSubCustomColorPresetButton != null)
+		{
+			RenameSubCustomColorPresetButton.Visibility = ((!flag) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (DeleteSubCustomColorPresetButton != null)
+		{
+			DeleteSubCustomColorPresetButton.Visibility = ((!flag) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (DeleteSubPresetInPanelButton != null)
+		{
+			DeleteSubPresetInPanelButton.Visibility = ((!flag) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (SaveSubPresetChangesButton != null)
+		{
+			SaveSubPresetChangesButton.Content = (flag ? I18n.T("SavePresetChangesButton") : I18n.T("SaveAsNewPresetButton"));
+		}
+		_isUpdatingUi = true;
+		if (flag)
+		{
+			string presetId = text.Substring("CustomPreset_".Length);
+			CustomColorPreset customColorPreset = ConfigManager.CurrentConfig.CustomColorPresets?.Find((CustomColorPreset p) => p.Id == presetId);
+			if (customColorPreset != null)
+			{
+				if (SubCustomSectorBgTextBox != null)
+				{
+					SubCustomSectorBgTextBox.Text = customColorPreset.SectorBg;
+				}
+				if (SubCustomSectorBorderTextBox != null)
+				{
+					SubCustomSectorBorderTextBox.Text = customColorPreset.SectorBorder;
+				}
+				if (SubCustomHighlightBgTextBox != null)
+				{
+					SubCustomHighlightBgTextBox.Text = customColorPreset.HighlightBg;
+				}
+				if (SubCustomHighlightBorderTextBox != null)
+				{
+					SubCustomHighlightBorderTextBox.Text = customColorPreset.HighlightBorder;
+				}
+				if (SubCustomTextTextBox != null)
+				{
+					SubCustomTextTextBox.Text = customColorPreset.TextColor;
+				}
+				ConfigManager.CurrentConfig.SubWheelCustomSectorBg = customColorPreset.SectorBg;
+				ConfigManager.CurrentConfig.SubWheelCustomSectorBorder = customColorPreset.SectorBorder;
+				ConfigManager.CurrentConfig.SubWheelCustomHighlightBg = customColorPreset.HighlightBg;
+				ConfigManager.CurrentConfig.SubWheelCustomHighlightBorder = customColorPreset.HighlightBorder;
+				ConfigManager.CurrentConfig.SubWheelCustomText = customColorPreset.TextColor;
+			}
+		}
+		else if (text != "FollowPrimary")
+		{
+			string text2 = ConfigManager.CurrentConfig.SubWheelUiStyle;
+			if (string.IsNullOrEmpty(text2) || text2 == "FollowPrimary")
+			{
+				text2 = ConfigManager.CurrentConfig.UiStyle ?? "ClassicRing";
+			}
+			IRadialStyleRenderer radialStyleRenderer = StyleRendererFactory.CreateRenderer(text2);
+			radialStyleRenderer.Initialize(text, ConfigManager.CurrentConfig);
+			if (radialStyleRenderer.DefaultSectorBrush is SolidColorBrush solidColorBrush && SubCustomSectorBgTextBox != null)
+			{
+				SubCustomSectorBgTextBox.Text = $"#{solidColorBrush.Color.A:X2}{solidColorBrush.Color.R:X2}{solidColorBrush.Color.G:X2}{solidColorBrush.Color.B:X2}";
+			}
+			if (radialStyleRenderer.SectorBorderBrush is SolidColorBrush solidColorBrush2 && SubCustomSectorBorderTextBox != null)
+			{
+				SubCustomSectorBorderTextBox.Text = $"#{solidColorBrush2.Color.A:X2}{solidColorBrush2.Color.R:X2}{solidColorBrush2.Color.G:X2}{solidColorBrush2.Color.B:X2}";
+			}
+			if (radialStyleRenderer.HighlightSectorBrush is SolidColorBrush solidColorBrush3 && SubCustomHighlightBgTextBox != null)
+			{
+				SubCustomHighlightBgTextBox.Text = $"#{solidColorBrush3.Color.A:X2}{solidColorBrush3.Color.R:X2}{solidColorBrush3.Color.G:X2}{solidColorBrush3.Color.B:X2}";
+			}
+			if (radialStyleRenderer.HighlightBorderBrush is SolidColorBrush solidColorBrush4 && SubCustomHighlightBorderTextBox != null)
+			{
+				SubCustomHighlightBorderTextBox.Text = $"#{solidColorBrush4.Color.A:X2}{solidColorBrush4.Color.R:X2}{solidColorBrush4.Color.G:X2}{solidColorBrush4.Color.B:X2}";
+			}
+			if (radialStyleRenderer.TextColorBrush is SolidColorBrush solidColorBrush5 && SubCustomTextTextBox != null)
+			{
+				SubCustomTextTextBox.Text = $"#{solidColorBrush5.Color.A:X2}{solidColorBrush5.Color.R:X2}{solidColorBrush5.Color.G:X2}{solidColorBrush5.Color.B:X2}";
+			}
+		}
+		_isUpdatingUi = false;
+		UpdateSubColorPreviews();
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void SubCustomColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			if (SubCustomSectorBgTextBox != null && !string.IsNullOrWhiteSpace(SubCustomSectorBgTextBox.Text))
+			{
+				ConfigManager.CurrentConfig.SubWheelCustomSectorBg = SubCustomSectorBgTextBox.Text.Trim();
+			}
+			if (SubCustomSectorBorderTextBox != null && !string.IsNullOrWhiteSpace(SubCustomSectorBorderTextBox.Text))
+			{
+				ConfigManager.CurrentConfig.SubWheelCustomSectorBorder = SubCustomSectorBorderTextBox.Text.Trim();
+			}
+			if (SubCustomHighlightBgTextBox != null && !string.IsNullOrWhiteSpace(SubCustomHighlightBgTextBox.Text))
+			{
+				ConfigManager.CurrentConfig.SubWheelCustomHighlightBg = SubCustomHighlightBgTextBox.Text.Trim();
+			}
+			if (SubCustomHighlightBorderTextBox != null && !string.IsNullOrWhiteSpace(SubCustomHighlightBorderTextBox.Text))
+			{
+				ConfigManager.CurrentConfig.SubWheelCustomHighlightBorder = SubCustomHighlightBorderTextBox.Text.Trim();
+			}
+			if (SubCustomTextTextBox != null && !string.IsNullOrWhiteSpace(SubCustomTextTextBox.Text))
+			{
+				ConfigManager.CurrentConfig.SubWheelCustomText = SubCustomTextTextBox.Text.Trim();
+			}
+			UpdateSubColorPreviews();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void PopulateSubCustomColorsIfEmpty()
+	{
+		if (SubCustomSectorBgTextBox != null)
+		{
+			if (string.IsNullOrWhiteSpace(SubCustomSectorBgTextBox.Text) && _previewSubDefaultBrush is SolidColorBrush solidColorBrush)
+			{
+				SubCustomSectorBgTextBox.Text = $"#{solidColorBrush.Color.A:X2}{solidColorBrush.Color.R:X2}{solidColorBrush.Color.G:X2}{solidColorBrush.Color.B:X2}";
+			}
+			if (string.IsNullOrWhiteSpace(SubCustomSectorBorderTextBox.Text) && _previewSubBorderBrush is SolidColorBrush solidColorBrush2)
+			{
+				SubCustomSectorBorderTextBox.Text = $"#{solidColorBrush2.Color.A:X2}{solidColorBrush2.Color.R:X2}{solidColorBrush2.Color.G:X2}{solidColorBrush2.Color.B:X2}";
+			}
+			if (string.IsNullOrWhiteSpace(SubCustomHighlightBgTextBox.Text) && _previewSubHighlightBrush is SolidColorBrush solidColorBrush3)
+			{
+				SubCustomHighlightBgTextBox.Text = $"#{solidColorBrush3.Color.A:X2}{solidColorBrush3.Color.R:X2}{solidColorBrush3.Color.G:X2}{solidColorBrush3.Color.B:X2}";
+			}
+			if (string.IsNullOrWhiteSpace(SubCustomHighlightBorderTextBox.Text) && _previewSubHighlightBorderBrush is SolidColorBrush solidColorBrush4)
+			{
+				SubCustomHighlightBorderTextBox.Text = $"#{solidColorBrush4.Color.A:X2}{solidColorBrush4.Color.R:X2}{solidColorBrush4.Color.G:X2}{solidColorBrush4.Color.B:X2}";
+			}
+			if (string.IsNullOrWhiteSpace(SubCustomTextTextBox.Text) && _previewSubTextBrush is SolidColorBrush solidColorBrush5)
+			{
+				SubCustomTextTextBox.Text = $"#{solidColorBrush5.Color.A:X2}{solidColorBrush5.Color.R:X2}{solidColorBrush5.Color.G:X2}{solidColorBrush5.Color.B:X2}";
+			}
+			UpdateSubColorPreviews();
+		}
+	}
+
+	private void UpdateSubColorPreviews()
+	{
+		if (SubCustomSectorBgPreview != null && SubCustomSectorBgTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomSectorBgPreview, SubCustomSectorBgTextBox.Text);
+		}
+		if (SubCustomSectorBorderPreview != null && SubCustomSectorBorderTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomSectorBorderPreview, SubCustomSectorBorderTextBox.Text);
+		}
+		if (SubCustomHighlightBgPreview != null && SubCustomHighlightBgTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomHighlightBgPreview, SubCustomHighlightBgTextBox.Text);
+		}
+		if (SubCustomHighlightBorderPreview != null && SubCustomHighlightBorderTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomHighlightBorderPreview, SubCustomHighlightBorderTextBox.Text);
+		}
+		if (SubCustomTextPreview != null && SubCustomTextTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomTextPreview, SubCustomTextTextBox.Text);
+		}
+	}
+
+	private void NewSubCustomColorPresetButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string defaultText = $"二级自定义配色 {DateTime.Now:MMdd-HHmm}";
+		InputDialog inputDialog = new InputDialog(I18n.T("NewCustomPresetTitle"), I18n.T("NewCustomPresetPrompt"), defaultText, (string input) => string.IsNullOrWhiteSpace(input) ? (IsValid: false, ErrorMessage: "配色方案名称不能为空！") : (IsValid: true, ErrorMessage: ""))
+		{
+			Owner = this
+		};
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string text = inputDialog.InputText.Trim();
+			if (ConfigManager.CurrentConfig.CustomColorPresets == null)
+			{
+				ConfigManager.CurrentConfig.CustomColorPresets = new List<CustomColorPreset>();
+			}
+			PopulateSubCustomColorsIfEmpty();
+			CustomColorPreset customColorPreset = new CustomColorPreset
+			{
+				Name = text,
+				SectorBg = ((!string.IsNullOrWhiteSpace(SubCustomSectorBgTextBox?.Text)) ? SubCustomSectorBgTextBox.Text.Trim() : "#EB18181B"),
+				SectorBorder = ((!string.IsNullOrWhiteSpace(SubCustomSectorBorderTextBox?.Text)) ? SubCustomSectorBorderTextBox.Text.Trim() : "#30FFFFFF"),
+				HighlightBg = ((!string.IsNullOrWhiteSpace(SubCustomHighlightBgTextBox?.Text)) ? SubCustomHighlightBgTextBox.Text.Trim() : "#FF2563EB"),
+				HighlightBorder = ((!string.IsNullOrWhiteSpace(SubCustomHighlightBorderTextBox?.Text)) ? SubCustomHighlightBorderTextBox.Text.Trim() : "#FF60A5FA"),
+				TextColor = ((!string.IsNullOrWhiteSpace(SubCustomTextTextBox?.Text)) ? SubCustomTextTextBox.Text.Trim() : "#FFF8FAFC")
+			};
+			ConfigManager.CurrentConfig.CustomColorPresets.Add(customColorPreset);
+			ConfigManager.CurrentConfig.SubWheelTheme = "CustomPreset_" + customColorPreset.Id;
+			ConfigManager.CurrentConfig.UseIndependentSubWheelTheme = true;
+			ConfigManager.SaveConfig();
+			ReloadThemePresets();
+			SetComboBoxSelectedValue(SubWheelThemeComboBox, "CustomPreset_" + customColorPreset.Id);
+			if (SubCustomColorExpander != null)
+			{
+				SubCustomColorExpander.IsExpanded = true;
+			}
+			SyncUiToConfigAndSave();
+			System.Windows.MessageBox.Show(this, "已成功创建二级自定义配色方案【" + text + "】！\n您可以在下方色彩微调面板中继续定制各项颜色。", "新建配色成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+	}
+
+	private void SaveSubPresetChangesButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string text = (SubWheelThemeComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? ConfigManager.CurrentConfig.SubWheelTheme ?? "";
+		if (text.StartsWith("CustomPreset_"))
+		{
+			string presetId = text.Substring("CustomPreset_".Length);
+			CustomColorPreset customColorPreset = ConfigManager.CurrentConfig.CustomColorPresets?.Find((CustomColorPreset p) => p.Id == presetId);
+			if (customColorPreset != null)
+			{
+				if (SubCustomSectorBgTextBox != null)
+				{
+					customColorPreset.SectorBg = SubCustomSectorBgTextBox.Text.Trim();
+				}
+				if (SubCustomSectorBorderTextBox != null)
+				{
+					customColorPreset.SectorBorder = SubCustomSectorBorderTextBox.Text.Trim();
+				}
+				if (SubCustomHighlightBgTextBox != null)
+				{
+					customColorPreset.HighlightBg = SubCustomHighlightBgTextBox.Text.Trim();
+				}
+				if (SubCustomHighlightBorderTextBox != null)
+				{
+					customColorPreset.HighlightBorder = SubCustomHighlightBorderTextBox.Text.Trim();
+				}
+				if (SubCustomTextTextBox != null)
+				{
+					customColorPreset.TextColor = SubCustomTextTextBox.Text.Trim();
+				}
+				ConfigManager.SaveConfig();
+				SyncUiToConfigAndSave();
+				Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+				if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+				{
+					RenderLiveWheelPreview();
+				}
+				System.Windows.MessageBox.Show(this, "已成功保存对配色预设【" + customColorPreset.Name + "】的修改！", "保存配色修改", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+				return;
+			}
+		}
+		SaveAsNewSubPresetButton_Click(sender, e);
+	}
+
+	private void SaveAsNewSubPresetButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string defaultText = $"二级自定义配色 {DateTime.Now:MMdd-HHmm}";
+		InputDialog inputDialog = new InputDialog("另存为新配色方案", "请输入新配色方案名称：", defaultText, (string input) => string.IsNullOrWhiteSpace(input) ? (IsValid: false, ErrorMessage: "配色方案名称不能为空！") : (IsValid: true, ErrorMessage: ""))
+		{
+			Owner = this
+		};
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string text = inputDialog.InputText.Trim();
+			if (ConfigManager.CurrentConfig.CustomColorPresets == null)
+			{
+				ConfigManager.CurrentConfig.CustomColorPresets = new List<CustomColorPreset>();
+			}
+			CustomColorPreset customColorPreset = new CustomColorPreset
+			{
+				Name = text,
+				SectorBg = ((!string.IsNullOrWhiteSpace(SubCustomSectorBgTextBox?.Text)) ? SubCustomSectorBgTextBox.Text.Trim() : "#EB18181B"),
+				SectorBorder = ((!string.IsNullOrWhiteSpace(SubCustomSectorBorderTextBox?.Text)) ? SubCustomSectorBorderTextBox.Text.Trim() : "#30FFFFFF"),
+				HighlightBg = ((!string.IsNullOrWhiteSpace(SubCustomHighlightBgTextBox?.Text)) ? SubCustomHighlightBgTextBox.Text.Trim() : "#FF2563EB"),
+				HighlightBorder = ((!string.IsNullOrWhiteSpace(SubCustomHighlightBorderTextBox?.Text)) ? SubCustomHighlightBorderTextBox.Text.Trim() : "#FF60A5FA"),
+				TextColor = ((!string.IsNullOrWhiteSpace(SubCustomTextTextBox?.Text)) ? SubCustomTextTextBox.Text.Trim() : "#FFF8FAFC")
+			};
+			ConfigManager.CurrentConfig.CustomColorPresets.Add(customColorPreset);
+			ConfigManager.CurrentConfig.SubWheelTheme = "CustomPreset_" + customColorPreset.Id;
+			ConfigManager.CurrentConfig.UseIndependentSubWheelTheme = true;
+			ConfigManager.SaveConfig();
+			ReloadThemePresets();
+			SetComboBoxSelectedValue(SubWheelThemeComboBox, "CustomPreset_" + customColorPreset.Id);
+			if (SubCustomColorExpander != null)
+			{
+				SubCustomColorExpander.IsExpanded = true;
+			}
+			SyncUiToConfigAndSave();
+			System.Windows.MessageBox.Show(this, "配色方案【" + text + "】已成功另存为独立预设！", "另存预设成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+	}
+
+	private void RenameSubCustomColorPresetButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string text = (SubWheelThemeComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? ConfigManager.CurrentConfig.SubWheelTheme ?? "";
+		if (!text.StartsWith("CustomPreset_"))
+		{
+			return;
+		}
+		string presetId = text.Substring("CustomPreset_".Length);
+		CustomColorPreset customColorPreset = ConfigManager.CurrentConfig.CustomColorPresets?.Find((CustomColorPreset p) => p.Id == presetId);
+		if (customColorPreset != null)
+		{
+			string name = customColorPreset.Name;
+			InputDialog inputDialog = new InputDialog(I18n.T("RenameCustomPresetTitle"), I18n.T("RenameCustomPresetPrompt") + "「" + name + "」", name, (string input) => string.IsNullOrWhiteSpace(input) ? (IsValid: false, ErrorMessage: "配色方案名称不能为空！") : (IsValid: true, ErrorMessage: ""))
+			{
+				Owner = this
+			};
+			if (inputDialog.ShowDialog() == true && !string.IsNullOrEmpty(inputDialog.InputText))
+			{
+				customColorPreset.Name = inputDialog.InputText.Trim();
+				ConfigManager.SaveConfig();
+				ReloadThemePresets();
+				SetComboBoxSelectedValue(SubWheelThemeComboBox, "CustomPreset_" + customColorPreset.Id);
+				SyncUiToConfigAndSave();
+			}
+		}
+	}
+
+	private void DeleteSubCustomColorPresetButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string text = (SubWheelThemeComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? ConfigManager.CurrentConfig.SubWheelTheme ?? "";
+		if (!text.StartsWith("CustomPreset_"))
+		{
+			return;
+		}
+		string presetId = text.Substring("CustomPreset_".Length);
+		CustomColorPreset customColorPreset = ConfigManager.CurrentConfig.CustomColorPresets?.Find((CustomColorPreset p) => p.Id == presetId);
+		if (customColorPreset != null && System.Windows.MessageBox.Show(this, "确定要删除自定义配色方案预设【" + customColorPreset.Name + "】吗？", "确认删除配色方案", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+		{
+			ConfigManager.CurrentConfig.CustomColorPresets?.Remove(customColorPreset);
+			if (ConfigManager.CurrentConfig.Theme == "CustomPreset_" + customColorPreset.Id)
+			{
+				ConfigManager.CurrentConfig.Theme = "System";
+			}
+			ConfigManager.CurrentConfig.SubWheelTheme = "FollowPrimary";
+			ConfigManager.SaveConfig();
+			ReloadThemePresets();
+			SetComboBoxSelectedValue(SubWheelThemeComboBox, "FollowPrimary");
+			if (RenameSubCustomColorPresetButton != null)
+			{
+				RenameSubCustomColorPresetButton.Visibility = Visibility.Collapsed;
+			}
+			if (DeleteSubCustomColorPresetButton != null)
+			{
+				DeleteSubCustomColorPresetButton.Visibility = Visibility.Collapsed;
+			}
+			if (DeleteSubPresetInPanelButton != null)
+			{
+				DeleteSubPresetInPanelButton.Visibility = Visibility.Collapsed;
+			}
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+			System.Windows.MessageBox.Show(this, "自定义配色方案【" + customColorPreset.Name + "】已成功删除！", "提示", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+	}
+
+	private void ResetSubThemeButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		_isUpdatingUi = true;
+		try
+		{
+			ConfigManager.CurrentConfig.SubWheelUiStyle = "FollowPrimary";
+			ConfigManager.CurrentConfig.SubWheelTheme = "FollowPrimary";
+			ConfigManager.CurrentConfig.UseIndependentSubWheelTheme = false;
+			ConfigManager.CurrentConfig.SubWheelCustomSectorBg = null;
+			ConfigManager.CurrentConfig.SubWheelCustomSectorBorder = null;
+			ConfigManager.CurrentConfig.SubWheelCustomHighlightBg = null;
+			ConfigManager.CurrentConfig.SubWheelCustomHighlightBorder = null;
+			ConfigManager.CurrentConfig.SubWheelCustomText = null;
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowPreset = "FollowPrimary";
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "";
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowRadius = 24.0;
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowOpacity = 0.85;
+			SetComboBoxSelectedValue(SubWheelUiStyleComboBox, "FollowPrimary");
+			SetComboBoxSelectedValue(SubWheelThemeComboBox, "FollowPrimary");
+			SetComboBoxSelectedValue(SubHighlightGlowPresetComboBox, "FollowPrimary");
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "";
+			}
+			if (SubHighlightGlowRadiusSlider != null)
+			{
+				SubHighlightGlowRadiusSlider.Value = 24.0;
+				if (SubHighlightGlowRadiusLabel != null)
+				{
+					SubHighlightGlowRadiusLabel.Text = "24 px";
+				}
+			}
+			if (SubHighlightGlowOpacitySlider != null)
+			{
+				SubHighlightGlowOpacitySlider.Value = 85.0;
+				if (SubHighlightGlowOpacityLabel != null)
+				{
+					SubHighlightGlowOpacityLabel.Text = "85%";
+				}
+			}
+			if (SubCustomHighlightGlowPanel != null)
+			{
+				SubCustomHighlightGlowPanel.Visibility = Visibility.Collapsed;
+			}
+			if (SubCustomSectorBgTextBox != null)
+			{
+				SubCustomSectorBgTextBox.Text = "";
+			}
+			if (SubCustomSectorBorderTextBox != null)
+			{
+				SubCustomSectorBorderTextBox.Text = "";
+			}
+			if (SubCustomHighlightBgTextBox != null)
+			{
+				SubCustomHighlightBgTextBox.Text = "";
+			}
+			if (SubCustomHighlightBorderTextBox != null)
+			{
+				SubCustomHighlightBorderTextBox.Text = "";
+			}
+			if (SubCustomTextTextBox != null)
+			{
+				SubCustomTextTextBox.Text = "";
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		UpdateSubColorPreviews();
+		RenderLiveWheelPreview();
+		SyncUiToConfigAndSave();
+		System.Windows.MessageBox.Show(this, "已重置二级轮盘为跟随一级主轮盘视觉风格与配色！", "重置成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+	}
+
+	private void ReloadThemePresets()
+	{
+		string value = ConfigManager.CurrentConfig?.Theme ?? (ThemeComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "System";
+		string value2 = ConfigManager.CurrentConfig?.SubWheelTheme ?? (SubWheelThemeComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "FollowPrimary";
+		if (ThemeComboBox != null)
+		{
+			List<ComboBoxItem> list = new List<ComboBoxItem>();
+			foreach (object item in (IEnumerable)ThemeComboBox.Items)
+			{
+				if (item is ComboBoxItem { Tag: not null } comboBoxItem && comboBoxItem.Tag.ToString().StartsWith("CustomPreset_"))
+				{
+					list.Add(comboBoxItem);
+				}
+			}
+			foreach (ComboBoxItem item2 in list)
+			{
+				ThemeComboBox.Items.Remove(item2);
+			}
+			int num = -1;
+			for (int i = 0; i < ThemeComboBox.Items.Count; i++)
+			{
+				if (ThemeComboBox.Items[i] is ComboBoxItem { Tag: var tag } && tag?.ToString() == "Custom")
+				{
+					num = i;
+					break;
+				}
+			}
+			if (ConfigManager.CurrentConfig?.CustomColorPresets != null)
+			{
+				foreach (CustomColorPreset customColorPreset in ConfigManager.CurrentConfig.CustomColorPresets)
+				{
+					ComboBoxItem comboBoxItem3 = new ComboBoxItem
+					{
+						Content = "\ud83c\udfa8 " + customColorPreset.Name + " " + I18n.T("CustomPresetSuffix"),
+						Tag = "CustomPreset_" + customColorPreset.Id
+					};
+					if (num >= 0)
+					{
+						ThemeComboBox.Items.Insert(num, comboBoxItem3);
+						num++;
+					}
+					else
+					{
+						ThemeComboBox.Items.Add(comboBoxItem3);
+					}
+				}
+			}
+			SetComboBoxSelectedValue(ThemeComboBox, value);
+		}
+		if (SubWheelThemeComboBox == null)
+		{
+			return;
+		}
+		List<ComboBoxItem> list2 = new List<ComboBoxItem>();
+		foreach (object item3 in (IEnumerable)SubWheelThemeComboBox.Items)
+		{
+			if (item3 is ComboBoxItem { Tag: not null } comboBoxItem4 && comboBoxItem4.Tag.ToString().StartsWith("CustomPreset_"))
+			{
+				list2.Add(comboBoxItem4);
+			}
+		}
+		foreach (ComboBoxItem item4 in list2)
+		{
+			SubWheelThemeComboBox.Items.Remove(item4);
+		}
+		if (ConfigManager.CurrentConfig?.CustomColorPresets != null)
+		{
+			foreach (CustomColorPreset customColorPreset2 in ConfigManager.CurrentConfig.CustomColorPresets)
+			{
+				ComboBoxItem newItem = new ComboBoxItem
+				{
+					Content = "\ud83c\udfa8 " + customColorPreset2.Name + " " + I18n.T("CustomPresetSuffix"),
+					Tag = "CustomPreset_" + customColorPreset2.Id
+				};
+				SubWheelThemeComboBox.Items.Add(newItem);
+			}
+		}
+		SetComboBoxSelectedValue(SubWheelThemeComboBox, value2);
+	}
+
+	private void ThemeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ThemeComboBox == null || ConfigManager.CurrentConfig == null || !(ThemeComboBox.SelectedItem is ComboBoxItem { Tag: var tag }))
+		{
+			return;
+		}
+		string text = tag?.ToString() ?? "System";
+		ConfigManager.CurrentConfig.Theme = text;
+		if (text == "Custom" && CustomColorExpander != null)
+		{
+			CustomColorExpander.IsExpanded = true;
+		}
+		bool flag = text.StartsWith("CustomPreset_");
+		if (RenameCustomColorPresetButton != null)
+		{
+			RenameCustomColorPresetButton.Visibility = ((!flag) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (DeleteCustomColorPresetButton != null)
+		{
+			DeleteCustomColorPresetButton.Visibility = ((!flag) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (DeletePresetInPanelButton != null)
+		{
+			DeletePresetInPanelButton.Visibility = ((!flag) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (SavePresetChangesButton != null)
+		{
+			SavePresetChangesButton.Content = (flag ? I18n.T("SavePresetChangesButton") : I18n.T("SaveAsNewPresetButton"));
+		}
+		_isUpdatingUi = true;
+		if (flag)
+		{
+			string presetId = text.Substring("CustomPreset_".Length);
+			CustomColorPreset customColorPreset = ConfigManager.CurrentConfig.CustomColorPresets?.Find((CustomColorPreset p) => p.Id == presetId);
+			if (customColorPreset != null)
+			{
+				CustomSectorBgTextBox.Text = customColorPreset.SectorBg;
+				CustomSectorBorderTextBox.Text = customColorPreset.SectorBorder;
+				CustomHighlightBgTextBox.Text = customColorPreset.HighlightBg;
+				CustomHighlightBorderTextBox.Text = customColorPreset.HighlightBorder;
+				CustomTextTextBox.Text = customColorPreset.TextColor;
+			}
+		}
+		else
+		{
+			IRadialStyleRenderer radialStyleRenderer = StyleRendererFactory.CreateRenderer(ConfigManager.CurrentConfig.UiStyle ?? "ClassicRing");
+			radialStyleRenderer.Initialize(text, ConfigManager.CurrentConfig);
+			if (radialStyleRenderer.DefaultSectorBrush is SolidColorBrush solidColorBrush)
+			{
+				CustomSectorBgTextBox.Text = $"#{solidColorBrush.Color.A:X2}{solidColorBrush.Color.R:X2}{solidColorBrush.Color.G:X2}{solidColorBrush.Color.B:X2}";
+			}
+			if (radialStyleRenderer.SectorBorderBrush is SolidColorBrush solidColorBrush2)
+			{
+				CustomSectorBorderTextBox.Text = $"#{solidColorBrush2.Color.A:X2}{solidColorBrush2.Color.R:X2}{solidColorBrush2.Color.G:X2}{solidColorBrush2.Color.B:X2}";
+			}
+			if (radialStyleRenderer.HighlightSectorBrush is SolidColorBrush solidColorBrush3)
+			{
+				CustomHighlightBgTextBox.Text = $"#{solidColorBrush3.Color.A:X2}{solidColorBrush3.Color.R:X2}{solidColorBrush3.Color.G:X2}{solidColorBrush3.Color.B:X2}";
+			}
+			if (radialStyleRenderer.HighlightBorderBrush is SolidColorBrush solidColorBrush4)
+			{
+				CustomHighlightBorderTextBox.Text = $"#{solidColorBrush4.Color.A:X2}{solidColorBrush4.Color.R:X2}{solidColorBrush4.Color.G:X2}{solidColorBrush4.Color.B:X2}";
+			}
+			if (radialStyleRenderer.TextColorBrush is SolidColorBrush solidColorBrush5)
+			{
+				CustomTextTextBox.Text = $"#{solidColorBrush5.Color.A:X2}{solidColorBrush5.Color.R:X2}{solidColorBrush5.Color.G:X2}{solidColorBrush5.Color.B:X2}";
+			}
+		}
+		_isUpdatingUi = false;
+		UpdateColorPreviews();
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	private void EnableSoundEffectsCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUiInitialized && !_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			bool enabled = EnableSoundEffectsCheckBox.IsChecked == true;
+			ConfigManager.CurrentConfig.EnableSoundEffects = enabled;
+			if (SoundEffectsDetailsPanel != null)
+			{
+				SoundEffectsDetailsPanel.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+			}
+			if (enabled)
+			{
+				SoundEffectManager.Initialize(ConfigManager.CurrentConfig.SoundTheme, ConfigManager.CurrentConfig.SoundVolume);
+				SoundEffectManager.PlayPreview(SoundType.SectorHover);
+			}
+			else
+			{
+				SoundEffectManager.Shutdown();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void SoundThemeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUiInitialized && !_isUpdatingUi && ConfigManager.CurrentConfig != null && SoundThemeComboBox?.SelectedItem is ComboBoxItem item)
+		{
+			string theme = item.Tag?.ToString() ?? "Mechanical";
+			ConfigManager.CurrentConfig.SoundTheme = theme;
+			bool isSimpleMode = string.Equals(ConfigManager.CurrentConfig.ConfigMode, "Simple", StringComparison.OrdinalIgnoreCase);
+			bool showCustomStudio = !isSimpleMode && string.Equals(theme, "Custom", StringComparison.OrdinalIgnoreCase);
+			if (CustomSoundStudioBorder != null)
+			{
+				CustomSoundStudioBorder.Visibility = showCustomStudio ? Visibility.Visible : Visibility.Collapsed;
+			}
+			if (showCustomStudio)
+			{
+				InitCustomSoundStudio();
+			}
+			if (ConfigManager.CurrentConfig.EnableSoundEffects)
+			{
+				SoundEffectManager.Initialize(theme, ConfigManager.CurrentConfig.SoundVolume);
+				SoundEffectManager.PlayPreview(SoundType.SectorHover);
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private long _lastVolumePreviewTick;
+
+	private void SoundVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SoundVolumeLabel != null)
+		{
+			SoundVolumeLabel.Text = $"{(int)Math.Round(e.NewValue)}%";
+		}
+		if (_isUiInitialized && !_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			double vol = Math.Clamp(e.NewValue / 100.0, 0.0, 1.0);
+			ConfigManager.CurrentConfig.SoundVolume = vol;
+			if (ConfigManager.CurrentConfig.EnableSoundEffects)
+			{
+				SoundEffectManager.Initialize(ConfigManager.CurrentConfig.SoundTheme, vol);
+
+				// 滑动音量时节流试听反馈（每 120ms 最多一次），给用户即时响度感知
+				long now = Environment.TickCount64;
+				if (now - _lastVolumePreviewTick >= 120L)
+				{
+					_lastVolumePreviewTick = now;
+					SoundEffectManager.PlayPreview(SoundType.SectorHover);
+				}
+			}
+
+			ScheduleAutoSave();
+		}
+	}
+
+	private async void SoundPreviewButton_Click(object sender, RoutedEventArgs e)
+	{
+		CheckAndDisplaySystemAudioState();
+		try
+		{
+			SoundEffectManager.PlayPreview(SoundType.WheelPopup);
+			await System.Threading.Tasks.Task.Delay(200);
+			SoundEffectManager.PlayPreview(SoundType.SectorHover);
+			await System.Threading.Tasks.Task.Delay(160);
+			SoundEffectManager.PlayPreview(SoundType.SubmenuExpand);
+			await System.Threading.Tasks.Task.Delay(200);
+			SoundEffectManager.PlayPreview(SoundType.ActionExecute);
+			await System.Threading.Tasks.Task.Delay(220);
+			SoundEffectManager.PlayPreview(SoundType.GestureCancel);
+		}
+		catch
+		{
+		}
+	}
+
+	private void SoundSubEvent_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUiInitialized && !_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			if (SoundOnPopupCheckBox != null) ConfigManager.CurrentConfig.SoundOnPopup = SoundOnPopupCheckBox.IsChecked == true;
+			if (SoundOnHoverCheckBox != null) ConfigManager.CurrentConfig.SoundOnHover = SoundOnHoverCheckBox.IsChecked == true;
+			if (SoundOnExpandCheckBox != null) ConfigManager.CurrentConfig.SoundOnExpand = SoundOnExpandCheckBox.IsChecked == true;
+			if (SoundOnExecuteCheckBox != null) ConfigManager.CurrentConfig.SoundOnExecute = SoundOnExecuteCheckBox.IsChecked == true;
+			if (SoundOnCancelCheckBox != null) ConfigManager.CurrentConfig.SoundOnCancel = SoundOnCancelCheckBox.IsChecked == true;
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CheckAndDisplaySystemAudioState()
+	{
+		try
+		{
+			bool isMuted = false;
+			SystemVolume.GetMute(out isMuted);
+			bool gotVol = SystemVolume.TryGetVolume(out float sysVol);
+			bool isSilent = isMuted || (gotVol && sysVol <= 0.005f);
+
+			if (SystemAudioWarningBorder != null)
+			{
+				SystemAudioWarningBorder.Visibility = isSilent ? Visibility.Visible : Visibility.Collapsed;
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	private void RestoreSystemAudioButton_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			SystemVolume.SetMute(false);
+			SystemVolume.SetVolume(0.5f);
+			if (SystemAudioWarningBorder != null)
+			{
+				SystemAudioWarningBorder.Visibility = Visibility.Collapsed;
+			}
+			SoundEffectManager.PlayPreview(SoundType.SectorHover);
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("Failed to restore system audio", ex);
+		}
+	}
+
+	#region 自定义交互音效调音台 UI Demo 支持 (Custom Sound Studio Demo)
+
+	private List<CustomSoundProfile>? _customSoundProfiles;
+	private CustomSoundProfile? _currentCustomSoundProfile;
+	private bool _isCustomSoundLoading = false;
+
+	private void InitCustomSoundStudio()
+	{
+		if (CustomSoundProfileComboBox == null) return;
+		if (ConfigManager.CurrentConfig?.CustomSoundProfiles != null && ConfigManager.CurrentConfig.CustomSoundProfiles.Count > 0)
+		{
+			_customSoundProfiles = ConfigManager.CurrentConfig.CustomSoundProfiles;
+		}
+		else
+		{
+			_customSoundProfiles = CustomSoundProfile.CreateDefaultDemoProfiles();
+			if (ConfigManager.CurrentConfig != null)
+			{
+				ConfigManager.CurrentConfig.CustomSoundProfiles = _customSoundProfiles;
+			}
+		}
+
+		_isCustomSoundLoading = true;
+		CustomSoundProfileComboBox.Items.Clear();
+		foreach (var p in _customSoundProfiles)
+		{
+			CustomSoundProfileComboBox.Items.Add(p.Name);
+		}
+
+		int selectedIdx = 0;
+		string activeId = ConfigManager.CurrentConfig?.ActiveCustomSoundProfileId ?? "";
+		if (!string.IsNullOrEmpty(activeId))
+		{
+			for (int i = 0; i < _customSoundProfiles.Count; i++)
+			{
+				if (_customSoundProfiles[i].Id == activeId)
+				{
+					selectedIdx = i;
+					break;
+				}
+			}
+		}
+
+		CustomSoundProfileComboBox.SelectedIndex = selectedIdx;
+		_isCustomSoundLoading = false;
+
+		SelectCustomSoundProfile(selectedIdx);
+	}
+
+	private void OpenCustomSoundConfigButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (CustomSoundStudioBorder == null) return;
+		bool isVisible = CustomSoundStudioBorder.Visibility == Visibility.Visible;
+		CustomSoundStudioBorder.Visibility = isVisible ? Visibility.Collapsed : Visibility.Visible;
+
+		if (!isVisible)
+		{
+			InitCustomSoundStudio();
+			// 同时若下拉框尚未切至自定义，友好引导或保持同步
+			if (SoundThemeComboBox != null && SoundThemeComboBox.SelectedItem is ComboBoxItem cbi && cbi.Tag?.ToString() != "Custom")
+			{
+				foreach (var item in SoundThemeComboBox.Items)
+				{
+					if (item is ComboBoxItem itemCbi && itemCbi.Tag?.ToString() == "Custom")
+					{
+						SoundThemeComboBox.SelectedItem = itemCbi;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	private void CustomSoundProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isCustomSoundLoading || CustomSoundProfileComboBox == null || CustomSoundProfileComboBox.SelectedIndex < 0) return;
+		SelectCustomSoundProfile(CustomSoundProfileComboBox.SelectedIndex);
+	}
+
+	private void SelectCustomSoundProfile(int index)
+	{
+		if (_customSoundProfiles == null || index < 0 || index >= _customSoundProfiles.Count) return;
+		_currentCustomSoundProfile = _customSoundProfiles[index];
+		if (ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.ActiveCustomSoundProfileId = _currentCustomSoundProfile.Id;
+			ScheduleAutoSave();
+			if (string.Equals(ConfigManager.CurrentConfig.SoundTheme, "Custom", StringComparison.OrdinalIgnoreCase))
+			{
+				SoundEffectManager.Initialize("Custom", ConfigManager.CurrentConfig.SoundVolume, force: true);
+			}
+		}
+		if (CustomSoundProfileDescLabel != null)
+		{
+			CustomSoundProfileDescLabel.Text = _currentCustomSoundProfile.Description;
+		}
+		if (CustomSoundDeleteProfileBtn != null)
+		{
+			CustomSoundDeleteProfileBtn.IsEnabled = !_currentCustomSoundProfile.IsBuiltIn && _customSoundProfiles.Count > 1;
+		}
+		RenderCustomSoundStudioEvents();
+	}
+
+	private void RenderCustomSoundStudioEvents()
+	{
+		if (CustomSoundEventsStackPanel == null || _currentCustomSoundProfile == null) return;
+		CustomSoundEventsStackPanel.Children.Clear();
+
+		foreach (var ev in _currentCustomSoundProfile.Events)
+		{
+			var card = CreateCustomSoundEventRow(ev);
+			CustomSoundEventsStackPanel.Children.Add(card);
+		}
+	}
+
+	private FrameworkElement CreateCustomSoundEventRow(SoundEventConfig ev)
+	{
+		var border = new Border
+		{
+			Background = (Brush)FindResource("CardBackgroundBrush"),
+			BorderBrush = (Brush)FindResource("CardBorderBrush"),
+			BorderThickness = new Thickness(1),
+			CornerRadius = new CornerRadius(8),
+			Padding = new Thickness(12, 9, 12, 9),
+			Margin = new Thickness(0, 0, 0, 8),
+			SnapsToDevicePixels = true
+		};
+
+		var mainGrid = new Grid();
+		mainGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
+		mainGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		mainGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(85) });
+
+		// Col 0: 事件标识
+		var infoStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+		var titleStack = new StackPanel { Orientation = Orientation.Horizontal };
+		titleStack.Children.Add(new TextBlock { Text = ev.EventIcon, FontSize = 13, Margin = new Thickness(0, 0, 5, 0) });
+		titleStack.Children.Add(new TextBlock
+		{
+			Text = ev.EventName,
+			FontSize = 12.5,
+			FontWeight = FontWeights.SemiBold,
+			Foreground = (Brush)FindResource("TextPrimaryBrush")
+		});
+		infoStack.Children.Add(titleStack);
+		infoStack.Children.Add(new TextBlock
+		{
+			Text = ev.EventDescription,
+			FontSize = 10,
+			Foreground = (Brush)FindResource("TextSecondaryBrush"),
+			TextWrapping = TextWrapping.Wrap,
+			Margin = new Thickness(0, 2, 0, 0)
+		});
+		Grid.SetColumn(infoStack, 0);
+		mainGrid.Children.Add(infoStack);
+
+		// Col 1: 参数微调
+		var controlsStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+
+		// 行 1: 音源类型与采样
+		var row1 = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+		row1.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140) });
+		row1.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+		var sourceCmb = new ComboBox
+		{
+			Height = 28,
+			Style = (Style)FindResource("FlatComboBoxStyle"),
+			Margin = new Thickness(0, 0, 8, 0)
+		};
+		sourceCmb.Items.Add(new ComboBoxItem { Content = "🎵 程序极微波形", Tag = SoundSourceType.ProceduralWave });
+		sourceCmb.Items.Add(new ComboBoxItem { Content = "📁 本地音频文件", Tag = SoundSourceType.CustomFile });
+		sourceCmb.Items.Add(new ComboBoxItem { Content = "📦 借用系统预设", Tag = SoundSourceType.BuiltInPreset });
+		sourceCmb.Items.Add(new ComboBoxItem { Content = "🔇 静音 (无声)", Tag = SoundSourceType.Mute });
+
+		sourceCmb.SelectedIndex = ev.SourceType switch
+		{
+			SoundSourceType.ProceduralWave => 0,
+			SoundSourceType.CustomFile => 1,
+			SoundSourceType.BuiltInPreset => 2,
+			SoundSourceType.Mute => 3,
+			_ => 0
+		};
+
+		Grid.SetColumn(sourceCmb, 0);
+		row1.Children.Add(sourceCmb);
+
+		var detailContainer = new ContentControl();
+		Grid.SetColumn(detailContainer, 1);
+		row1.Children.Add(detailContainer);
+
+		void UpdateDetailView()
+		{
+			if (sourceCmb.SelectedItem is not ComboBoxItem selectedItem) return;
+			var type = (SoundSourceType)selectedItem.Tag;
+			ev.SourceType = type;
+
+			if (type == SoundSourceType.ProceduralWave)
+			{
+				var waveCmb = new ComboBox { Height = 28, Style = (Style)FindResource("FlatComboBoxStyle") };
+				waveCmb.Items.Add(new ComboBoxItem { Content = "柔和正弦微波 (Sine 1200Hz)", Tag = "Sine1200" });
+				waveCmb.Items.Add(new ComboBoxItem { Content = "清脆方波微动 (Square 850Hz)", Tag = "Square850" });
+				waveCmb.Items.Add(new ComboBoxItem { Content = "超短脉冲响应 (Pulse 2.5ms)", Tag = "Pulse2ms" });
+				waveCmb.Items.Add(new ComboBoxItem { Content = "机械触点白噪 (Noise Snap)", Tag = "NoiseSnap" });
+				waveCmb.Items.Add(new ComboBoxItem { Content = "空灵水滴微音 (Bubble Water)", Tag = "BubbleWater" });
+
+				int match = 0;
+				for (int i = 0; i < waveCmb.Items.Count; i++)
+				{
+					if (waveCmb.Items[i] is ComboBoxItem cbi && (string)cbi.Tag == ev.WavePreset)
+					{
+						match = i;
+						break;
+					}
+				}
+				waveCmb.SelectedIndex = match;
+				waveCmb.SelectionChanged += (_, _) =>
+				{
+					if (waveCmb.SelectedItem is ComboBoxItem item)
+					{
+						ev.WavePreset = (string)item.Tag;
+						OnCustomSoundParamModified();
+					}
+				};
+				detailContainer.Content = waveCmb;
+			}
+			else if (type == SoundSourceType.BuiltInPreset)
+			{
+				var presetCmb = new ComboBox { Height = 28, Style = (Style)FindResource("FlatComboBoxStyle") };
+				presetCmb.Items.Add(new ComboBoxItem { Content = "⚙️ 机械手感轴体", Tag = "Mechanical" });
+				presetCmb.Items.Add(new ComboBoxItem { Content = "✨ 现代清脆数码", Tag = "Crisp" });
+				presetCmb.Items.Add(new ComboBoxItem { Content = "🫧 柔和水滴气泡", Tag = "Bubble" });
+				presetCmb.Items.Add(new ComboBoxItem { Content = "⚡ 极简超短脉冲", Tag = "Minimalist" });
+
+				int match = 0;
+				for (int i = 0; i < presetCmb.Items.Count; i++)
+				{
+					if (presetCmb.Items[i] is ComboBoxItem cbi && (string)cbi.Tag == ev.BuiltInTheme)
+					{
+						match = i;
+						break;
+					}
+				}
+				presetCmb.SelectedIndex = match;
+				presetCmb.SelectionChanged += (_, _) =>
+				{
+					if (presetCmb.SelectedItem is ComboBoxItem item)
+					{
+						ev.BuiltInTheme = (string)item.Tag;
+						OnCustomSoundParamModified();
+					}
+				};
+				detailContainer.Content = presetCmb;
+			}
+			else if (type == SoundSourceType.CustomFile)
+			{
+				var fileGrid = new Grid();
+				fileGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+				fileGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+
+				var pathBox = new TextBox
+				{
+					Height = 28,
+					Text = string.IsNullOrEmpty(ev.CustomFilePath) ? "未选择外部音频文件 (.wav / .mp3)" : ev.CustomFilePath,
+					IsReadOnly = true,
+					VerticalContentAlignment = VerticalAlignment.Center,
+					Margin = new Thickness(0, 0, 6, 0),
+					FontSize = 11.5
+				};
+				var browseBtn = new Button
+				{
+					Content = "📂 浏览...",
+					Height = 28,
+					Style = (Style)FindResource("ModernButtonStyle"),
+					Cursor = Cursors.Hand
+				};
+				browseBtn.Click += (_, _) =>
+				{
+					var ofd = new OpenFileDialog
+					{
+						Title = $"选择 {ev.EventName} 音频采样",
+						Filter = "音频文件 (*.wav;*.mp3)|*.wav;*.mp3|所有文件 (*.*)|*.*"
+					};
+					if (ofd.ShowDialog() == true)
+					{
+						ev.CustomFilePath = ofd.FileName;
+						pathBox.Text = ofd.FileName;
+						OnCustomSoundParamModified();
+					}
+				};
+
+				Grid.SetColumn(pathBox, 0);
+				Grid.SetColumn(browseBtn, 1);
+				fileGrid.Children.Add(pathBox);
+				fileGrid.Children.Add(browseBtn);
+				detailContainer.Content = fileGrid;
+			}
+			else
+			{
+				detailContainer.Content = new TextBlock
+				{
+					Text = "已静音：该手势事件将保持完全静音，不播放任何反馈。",
+					FontSize = 11,
+					Foreground = (Brush)FindResource("TextSecondaryBrush"),
+					VerticalAlignment = VerticalAlignment.Center
+				};
+			}
+		}
+
+		sourceCmb.SelectionChanged += (_, _) =>
+		{
+			UpdateDetailView();
+			OnCustomSoundParamModified();
+		};
+		UpdateDetailView();
+		controlsStack.Children.Add(row1);
+
+		// 行 2: 音高、时长、音量比例滑块
+		var row2 = new Grid();
+		row2.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		row2.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		row2.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+		// 音高
+		var pitchStack = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
+		var pitchHeader = new Grid();
+		pitchHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		pitchHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+		pitchHeader.Children.Add(new TextBlock { Text = "音高:", FontSize = 10.5, Foreground = (Brush)FindResource("TextSecondaryBrush") });
+		var pitchLabel = new TextBlock { Text = ev.PitchText, FontSize = 10.5, FontWeight = FontWeights.Bold, Foreground = (Brush)FindResource("AccentPrimaryBrush") };
+		Grid.SetColumn(pitchLabel, 1);
+		pitchHeader.Children.Add(pitchLabel);
+		var pitchSlider = new Slider { Minimum = -12, Maximum = 12, Value = ev.PitchSemitones, TickFrequency = 1, IsSnapToTickEnabled = true };
+		pitchSlider.ValueChanged += (_, e) =>
+		{
+			ev.PitchSemitones = (int)Math.Round(e.NewValue);
+			pitchLabel.Text = ev.PitchText;
+			OnCustomSoundParamModified();
+		};
+		pitchStack.Children.Add(pitchHeader);
+		pitchStack.Children.Add(pitchSlider);
+		Grid.SetColumn(pitchStack, 0);
+		row2.Children.Add(pitchStack);
+
+		// 时长
+		var durStack = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
+		var durHeader = new Grid();
+		durHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		durHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+		durHeader.Children.Add(new TextBlock { Text = "时长:", FontSize = 10.5, Foreground = (Brush)FindResource("TextSecondaryBrush") });
+		var durLabel = new TextBlock { Text = ev.DurationText, FontSize = 10.5, FontWeight = FontWeights.Bold, Foreground = (Brush)FindResource("AccentPrimaryBrush") };
+		Grid.SetColumn(durLabel, 1);
+		durHeader.Children.Add(durLabel);
+		var durSlider = new Slider { Minimum = 5, Maximum = 120, Value = ev.DurationMs, TickFrequency = 5, IsSnapToTickEnabled = true };
+		durSlider.ValueChanged += (_, e) =>
+		{
+			ev.DurationMs = (int)Math.Round(e.NewValue);
+			durLabel.Text = ev.DurationText;
+			OnCustomSoundParamModified();
+		};
+		durStack.Children.Add(durHeader);
+		durStack.Children.Add(durSlider);
+		Grid.SetColumn(durStack, 1);
+		row2.Children.Add(durStack);
+
+		// 音量
+		var volStack = new StackPanel();
+		var volHeader = new Grid();
+		volHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		volHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+		volHeader.Children.Add(new TextBlock { Text = "音量:", FontSize = 10.5, Foreground = (Brush)FindResource("TextSecondaryBrush") });
+		var volLabel = new TextBlock { Text = ev.RelativeVolumePercent, FontSize = 10.5, FontWeight = FontWeights.Bold, Foreground = (Brush)FindResource("AccentPrimaryBrush") };
+		Grid.SetColumn(volLabel, 1);
+		volHeader.Children.Add(volLabel);
+		var volSlider = new Slider { Minimum = 0, Maximum = 100, Value = ev.RelativeVolume * 100.0, TickFrequency = 5, IsSnapToTickEnabled = true };
+		volSlider.ValueChanged += (_, e) =>
+		{
+			ev.RelativeVolume = e.NewValue / 100.0;
+			volLabel.Text = ev.RelativeVolumePercent;
+			OnCustomSoundParamModified();
+		};
+		volStack.Children.Add(volHeader);
+		volStack.Children.Add(volSlider);
+		Grid.SetColumn(volStack, 2);
+		row2.Children.Add(volStack);
+
+		controlsStack.Children.Add(row2);
+		Grid.SetColumn(controlsStack, 1);
+		mainGrid.Children.Add(controlsStack);
+
+		// Col 2: 独立试听按钮
+		var auditionBtn = new Button
+		{
+			Content = "▶ 试听",
+			Height = 28,
+			Style = (Style)FindResource("ModernButtonStyle"),
+			VerticalAlignment = VerticalAlignment.Center,
+			HorizontalAlignment = HorizontalAlignment.Right,
+			Width = 72,
+			Cursor = Cursors.Hand,
+			ToolTip = $"即时播放 {ev.EventName} 的定制音效"
+		};
+		auditionBtn.Click += async (_, _) =>
+		{
+			auditionBtn.Content = "🔊 ...";
+			SoundEffectManager.PlayCustomEventPreview(ev);
+			await System.Threading.Tasks.Task.Delay(250);
+			auditionBtn.Content = "▶ 试听";
+		};
+		Grid.SetColumn(auditionBtn, 2);
+		mainGrid.Children.Add(auditionBtn);
+
+		border.Child = mainGrid;
+		return border;
+	}
+
+	private void OnCustomSoundParamModified()
+	{
+		if (_isCustomSoundLoading || _isUpdatingUi) return;
+		ScheduleAutoSave();
+		if (string.Equals(ConfigManager.CurrentConfig?.SoundTheme, "Custom", StringComparison.OrdinalIgnoreCase))
+		{
+			SoundEffectManager.Initialize("Custom", ConfigManager.CurrentConfig?.SoundVolume, force: true);
+		}
+	}
+
+	private void CustomSoundNewProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_customSoundProfiles == null) _customSoundProfiles = CustomSoundProfile.CreateDefaultDemoProfiles();
+		var newProf = new CustomSoundProfile
+		{
+			Id = Guid.NewGuid().ToString("N"),
+			Name = $"🎨 自定义方案 {_customSoundProfiles.Count + 1}",
+			Description = "用户新建的个性化音效微调方案。",
+			IsBuiltIn = false,
+			Events = new List<SoundEventConfig>
+			{
+				new() { EventType = SoundType.WheelPopup, SourceType = SoundSourceType.ProceduralWave, WavePreset = "Sine1200", PitchSemitones = 0, DurationMs = 25, RelativeVolume = 0.8 },
+				new() { EventType = SoundType.SectorHover, SourceType = SoundSourceType.ProceduralWave, WavePreset = "Square850", PitchSemitones = 2, DurationMs = 15, RelativeVolume = 0.7 },
+				new() { EventType = SoundType.SubmenuExpand, SourceType = SoundSourceType.ProceduralWave, WavePreset = "Pulse2ms", PitchSemitones = 4, DurationMs = 30, RelativeVolume = 0.85 },
+				new() { EventType = SoundType.ActionExecute, SourceType = SoundSourceType.ProceduralWave, WavePreset = "Sine1200", PitchSemitones = 6, DurationMs = 40, RelativeVolume = 0.95 },
+				new() { EventType = SoundType.GestureCancel, SourceType = SoundSourceType.ProceduralWave, WavePreset = "Sine1200", PitchSemitones = -4, DurationMs = 35, RelativeVolume = 0.5 }
+			}
+		};
+		_customSoundProfiles.Add(newProf);
+		_isCustomSoundLoading = true;
+		CustomSoundProfileComboBox.Items.Add(newProf.Name);
+		CustomSoundProfileComboBox.SelectedIndex = _customSoundProfiles.Count - 1;
+		_isCustomSoundLoading = false;
+		SelectCustomSoundProfile(_customSoundProfiles.Count - 1);
+		ScheduleAutoSave();
+		if (CustomSoundFlowStatusText != null)
+		{
+			CustomSoundFlowStatusText.Text = $"已新建方案: {newProf.Name}";
+		}
+	}
+
+	private void CustomSoundDeleteProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_currentCustomSoundProfile == null || _customSoundProfiles == null) return;
+		if (_customSoundProfiles.Count <= 1)
+		{
+			System.Windows.MessageBox.Show(this, "至少需要保留一个音效方案，无法删除最后一个方案。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+			return;
+		}
+		if (_currentCustomSoundProfile.IsBuiltIn)
+		{
+			System.Windows.MessageBox.Show(this, "系统内置预设方案受保护不可删除。如需自定义修改，可点击【➕ 新建】创建可编辑副本。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+			return;
+		}
+
+		var res = System.Windows.MessageBox.Show(
+			this,
+			$"确定要删除音效方案「{_currentCustomSoundProfile.Name}」吗？\n删除后无法撤销。",
+			"确认删除方案",
+			MessageBoxButton.YesNo,
+			MessageBoxImage.Question);
+
+		if (res == MessageBoxResult.Yes)
+		{
+			string deletedName = _currentCustomSoundProfile.Name;
+			int delIdx = _customSoundProfiles.IndexOf(_currentCustomSoundProfile);
+			_customSoundProfiles.Remove(_currentCustomSoundProfile);
+			int nextIdx = Math.Clamp(delIdx - 1, 0, _customSoundProfiles.Count - 1);
+
+			_isCustomSoundLoading = true;
+			CustomSoundProfileComboBox.Items.Clear();
+			foreach (var p in _customSoundProfiles)
+			{
+				CustomSoundProfileComboBox.Items.Add(p.Name);
+			}
+			CustomSoundProfileComboBox.SelectedIndex = nextIdx;
+			_isCustomSoundLoading = false;
+
+			SelectCustomSoundProfile(nextIdx);
+
+			ScheduleAutoSave();
+			if (CustomSoundFlowStatusText != null)
+			{
+				CustomSoundFlowStatusText.Text = $"🗑️ 已删除方案: {deletedName}";
+			}
+		}
+	}
+
+	private void CustomSoundImportProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		var ofd = new OpenFileDialog
+		{
+			Title = "导入 StarPie 音效方案",
+			Filter = "StarPie 音效方案 (*.starpie-sound;*.json)|*.starpie-sound;*.json|所有文件 (*.*)|*.*"
+		};
+		if (ofd.ShowDialog() == true)
+		{
+			try
+			{
+				string json = System.IO.File.ReadAllText(ofd.FileName);
+				var prof = System.Text.Json.JsonSerializer.Deserialize<CustomSoundProfile>(json);
+				if (prof != null && prof.Events != null && prof.Events.Count > 0)
+				{
+					prof.Id = Guid.NewGuid().ToString("N");
+					prof.IsBuiltIn = false;
+					if (string.IsNullOrWhiteSpace(prof.Name)) prof.Name = "导入方案";
+					_customSoundProfiles ??= new List<CustomSoundProfile>();
+					_customSoundProfiles.Add(prof);
+					_isCustomSoundLoading = true;
+					CustomSoundProfileComboBox.Items.Add(prof.Name);
+					CustomSoundProfileComboBox.SelectedIndex = _customSoundProfiles.Count - 1;
+					_isCustomSoundLoading = false;
+					SelectCustomSoundProfile(_customSoundProfiles.Count - 1);
+					ScheduleAutoSave();
+					if (CustomSoundFlowStatusText != null)
+					{
+						CustomSoundFlowStatusText.Text = $"✅ 成功导入方案: {prof.Name}";
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				System.Windows.MessageBox.Show(this, $"导入失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+			}
+		}
+	}
+
+	private void CustomSoundExportProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_currentCustomSoundProfile == null) return;
+		var sfd = new SaveFileDialog
+		{
+			Title = "导出当前音效方案",
+			Filter = "StarPie 音效方案 (*.starpie-sound)|*.starpie-sound|JSON 文件 (*.json)|*.json",
+			FileName = $"{_currentCustomSoundProfile.Name}.starpie-sound"
+		};
+		if (sfd.ShowDialog() == true)
+		{
+			try
+			{
+				string json = System.Text.Json.JsonSerializer.Serialize(_currentCustomSoundProfile, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+				System.IO.File.WriteAllText(sfd.FileName, json);
+				if (CustomSoundFlowStatusText != null)
+				{
+					CustomSoundFlowStatusText.Text = $"✅ 成功导出方案: {System.IO.Path.GetFileName(sfd.FileName)}";
+				}
+			}
+			catch (Exception ex)
+			{
+				System.Windows.MessageBox.Show(this, $"导出失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+			}
+		}
+	}
+
+	private void CustomSoundResetProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_currentCustomSoundProfile != null)
+		{
+			var defaults = CustomSoundProfile.CreateDefaultDemoProfiles();
+			var match = defaults.FirstOrDefault(d => d.Id == _currentCustomSoundProfile.Id);
+			if (match != null)
+			{
+				_currentCustomSoundProfile.Events.Clear();
+				foreach (var ev in match.Events)
+				{
+					_currentCustomSoundProfile.Events.Add(ev.Clone());
+				}
+				RenderCustomSoundStudioEvents();
+				ScheduleAutoSave();
+				if (string.Equals(ConfigManager.CurrentConfig?.SoundTheme, "Custom", StringComparison.OrdinalIgnoreCase))
+				{
+					SoundEffectManager.Initialize("Custom", ConfigManager.CurrentConfig?.SoundVolume, force: true);
+				}
+				if (CustomSoundFlowStatusText != null)
+				{
+					CustomSoundFlowStatusText.Text = "🔄 已恢复当前方案为预置默认值";
+				}
+			}
+			else if (CustomSoundFlowStatusText != null)
+			{
+				CustomSoundFlowStatusText.Text = "当前为自创方案，保留自定参数";
+			}
+		}
+	}
+
+	private void CustomSoundOpenEditorWindowBtn_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			var win = new CustomSoundEditorWindow(_currentCustomSoundProfile?.Id)
+			{
+				Owner = this
+			};
+			if (win.ShowDialog() == true)
+			{
+				InitCustomSoundStudio();
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("Failed to open CustomSoundEditorWindow", ex);
+		}
+	}
+
+	private async void CustomSoundPlayFlowButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (CustomSoundPlayFlowButton == null) return;
+		CustomSoundPlayFlowButton.IsEnabled = false;
+		try
+		{
+			var p = _currentCustomSoundProfile;
+			var evPopup = p?.Events.FirstOrDefault(x => x.EventType == SoundType.WheelPopup);
+			var evHover = p?.Events.FirstOrDefault(x => x.EventType == SoundType.SectorHover);
+			var evExpand = p?.Events.FirstOrDefault(x => x.EventType == SoundType.SubmenuExpand);
+			var evExec = p?.Events.FirstOrDefault(x => x.EventType == SoundType.ActionExecute);
+			var evCancel = p?.Events.FirstOrDefault(x => x.EventType == SoundType.GestureCancel);
+
+			if (CustomSoundFlowStatusText != null) CustomSoundFlowStatusText.Text = "🌟 正在唤出轮盘...";
+			if (evPopup != null) SoundEffectManager.PlayCustomEventPreview(evPopup);
+			await System.Threading.Tasks.Task.Delay(220);
+
+			if (CustomSoundFlowStatusText != null) CustomSoundFlowStatusText.Text = "🎯 正在划过扇区...";
+			if (evHover != null) SoundEffectManager.PlayCustomEventPreview(evHover);
+			await System.Threading.Tasks.Task.Delay(180);
+
+			if (CustomSoundFlowStatusText != null) CustomSoundFlowStatusText.Text = "🌿 正在展开二级级联...";
+			if (evExpand != null) SoundEffectManager.PlayCustomEventPreview(evExpand);
+			await System.Threading.Tasks.Task.Delay(220);
+
+			if (CustomSoundFlowStatusText != null) CustomSoundFlowStatusText.Text = "⚡ 正在确认触发动作...";
+			if (evExec != null) SoundEffectManager.PlayCustomEventPreview(evExec);
+			await System.Threading.Tasks.Task.Delay(240);
+
+			if (CustomSoundFlowStatusText != null) CustomSoundFlowStatusText.Text = "↩️ 正在顺势外甩脱离...";
+			if (evCancel != null) SoundEffectManager.PlayCustomEventPreview(evCancel);
+			await System.Threading.Tasks.Task.Delay(200);
+
+			if (CustomSoundFlowStatusText != null) CustomSoundFlowStatusText.Text = "✅ 完整交互手势音效流演示完毕";
+		}
+		catch
+		{
+			if (CustomSoundFlowStatusText != null) CustomSoundFlowStatusText.Text = "准备就绪";
+		}
+		finally
+		{
+			CustomSoundPlayFlowButton.IsEnabled = true;
+		}
+	}
+
+	#endregion
+
+	private void OuterEscapeCheckBox_Checked(object sender, RoutedEventArgs e)
+	{
+		if (_isUiInitialized && !_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.EnableOuterEscapeCancel = true;
+			if (OuterEscapeDistancePanel != null)
+			{
+				OuterEscapeDistancePanel.Visibility = Visibility.Visible;
+			}
+			UpdateCancelActionAvailability();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void OuterEscapeCheckBox_Unchecked(object sender, RoutedEventArgs e)
+	{
+		if (_isUiInitialized && !_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.EnableOuterEscapeCancel = false;
+			if (OuterEscapeDistancePanel != null)
+			{
+				OuterEscapeDistancePanel.Visibility = Visibility.Collapsed;
+			}
+			UpdateCancelActionAvailability();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	/// <summary>「外甩取消时执行的动作」依赖顺势外甩取消主开关：主开关关闭时整块禁用。</summary>
+	private void UpdateCancelActionAvailability()
+	{
+		bool master = ConfigManager.CurrentConfig?.EnableOuterEscapeCancel == true;
+		bool isEnabled = ConfigManager.CurrentConfig?.EnableCancelAction == true;
+		if (EnableCancelActionCheckBox != null)
+		{
+			EnableCancelActionCheckBox.IsEnabled = master;
+		}
+		if (CancelActionEditorHost != null)
+		{
+			CancelActionEditorHost.IsEnabled = master;
+			CancelActionEditorHost.Visibility = (master && isEnabled) ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (TestCancelActionButton != null)
+		{
+			TestCancelActionButton.IsEnabled = master;
+			TestCancelActionButton.Visibility = (master && isEnabled) ? Visibility.Visible : Visibility.Collapsed;
+		}
+	}
+
+	private void OuterEscapeDistanceSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			double num = Math.Round(e.NewValue);
+			ConfigManager.CurrentConfig.OuterEscapeDistance = num;
+			if (OuterEscapeDistanceLabel != null)
+			{
+				OuterEscapeDistanceLabel.Text = $"{num:0} px";
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void AnimSpeedRadio_Checked(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		System.Windows.Controls.RadioButton animSpeedElegantRadio = AnimSpeedElegantRadio;
+		if (animSpeedElegantRadio != null && animSpeedElegantRadio.IsChecked == true)
+		{
+			ConfigManager.CurrentConfig.AnimationSpeed = "Elegant";
+			ConfigManager.CurrentConfig.CustomAnimationDurationMs = 130.0;
+			if (AnimSpeedSlider != null)
+			{
+				AnimSpeedSlider.Value = 130.0;
+			}
+		}
+		else
+		{
+			System.Windows.Controls.RadioButton animSpeedFastRadio = AnimSpeedFastRadio;
+			if (animSpeedFastRadio != null && animSpeedFastRadio.IsChecked == true)
+			{
+				ConfigManager.CurrentConfig.AnimationSpeed = "Fast";
+				ConfigManager.CurrentConfig.CustomAnimationDurationMs = 35.0;
+				if (AnimSpeedSlider != null)
+				{
+					AnimSpeedSlider.Value = 35.0;
+				}
+			}
+			else
+			{
+				System.Windows.Controls.RadioButton animSpeedCustomRadio = AnimSpeedCustomRadio;
+				if (animSpeedCustomRadio != null && animSpeedCustomRadio.IsChecked == true)
+				{
+					ConfigManager.CurrentConfig.AnimationSpeed = "Custom";
+				}
+				else
+				{
+					ConfigManager.CurrentConfig.AnimationSpeed = "Balanced";
+					ConfigManager.CurrentConfig.CustomAnimationDurationMs = 80.0;
+					if (AnimSpeedSlider != null)
+					{
+						AnimSpeedSlider.Value = 80.0;
+					}
+				}
+			}
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	private void AnimSpeedSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (AnimSpeedSliderLabel == null || ConfigManager.CurrentConfig == null || _isUpdatingUi)
+		{
+			return;
+		}
+		double num = Math.Round(e.NewValue);
+		ConfigManager.CurrentConfig.CustomAnimationDurationMs = num;
+		AnimSpeedSliderLabel.Text = $"{num:0} ms";
+		if (Math.Abs(num - 130.0) < 1.0)
+		{
+			ConfigManager.CurrentConfig.AnimationSpeed = "Elegant";
+			if (AnimSpeedElegantRadio != null)
+			{
+				AnimSpeedElegantRadio.IsChecked = true;
+			}
+		}
+		else if (Math.Abs(num - 80.0) < 1.0)
+		{
+			ConfigManager.CurrentConfig.AnimationSpeed = "Balanced";
+			if (AnimSpeedBalancedRadio != null)
+			{
+				AnimSpeedBalancedRadio.IsChecked = true;
+			}
+		}
+		else if (Math.Abs(num - 35.0) < 1.0)
+		{
+			ConfigManager.CurrentConfig.AnimationSpeed = "Fast";
+			if (AnimSpeedFastRadio != null)
+			{
+				AnimSpeedFastRadio.IsChecked = true;
+			}
+		}
+		else
+		{
+			ConfigManager.CurrentConfig.AnimationSpeed = "Custom";
+			if (AnimSpeedCustomRadio != null)
+			{
+				AnimSpeedCustomRadio.IsChecked = true;
+			}
+		}
+		ScheduleAutoSave();
+	}
+
+	private void NewCustomColorPresetButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string defaultText = $"自定义配色 {DateTime.Now:MMdd-HHmm}";
+		InputDialog inputDialog = new InputDialog(I18n.T("NewCustomPresetTitle"), I18n.T("NewCustomPresetPrompt"), defaultText, (string input) => string.IsNullOrWhiteSpace(input) ? (IsValid: false, ErrorMessage: "配色方案名称不能为空！") : (IsValid: true, ErrorMessage: ""))
+		{
+			Owner = this
+		};
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string text = inputDialog.InputText.Trim();
+			if (ConfigManager.CurrentConfig.CustomColorPresets == null)
+			{
+				ConfigManager.CurrentConfig.CustomColorPresets = new List<CustomColorPreset>();
+			}
+			PopulateCustomColorsIfEmpty();
+			CustomColorPreset customColorPreset = new CustomColorPreset
+			{
+				Name = text,
+				SectorBg = ((!string.IsNullOrWhiteSpace(CustomSectorBgTextBox.Text)) ? CustomSectorBgTextBox.Text.Trim() : "#EB18181B"),
+				SectorBorder = ((!string.IsNullOrWhiteSpace(CustomSectorBorderTextBox.Text)) ? CustomSectorBorderTextBox.Text.Trim() : "#30FFFFFF"),
+				HighlightBg = ((!string.IsNullOrWhiteSpace(CustomHighlightBgTextBox.Text)) ? CustomHighlightBgTextBox.Text.Trim() : "#FF2563EB"),
+				HighlightBorder = ((!string.IsNullOrWhiteSpace(CustomHighlightBorderTextBox.Text)) ? CustomHighlightBorderTextBox.Text.Trim() : "#FF60A5FA"),
+				TextColor = ((!string.IsNullOrWhiteSpace(CustomTextTextBox.Text)) ? CustomTextTextBox.Text.Trim() : "#FFF8FAFC")
+			};
+			ConfigManager.CurrentConfig.CustomColorPresets.Add(customColorPreset);
+			ConfigManager.CurrentConfig.Theme = "CustomPreset_" + customColorPreset.Id;
+			ConfigManager.SaveConfig();
+			ReloadThemePresets();
+			SetComboBoxSelectedValue(ThemeComboBox, "CustomPreset_" + customColorPreset.Id);
+			if (CustomColorExpander != null)
+			{
+				CustomColorExpander.IsExpanded = true;
+			}
+			SyncUiToConfigAndSave();
+			System.Windows.MessageBox.Show(this, "已成功创建自定义配色方案【" + text + "】！\n您可以在下方色彩微调面板中继续定制各项颜色。", "新建配色成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+	}
+
+	private void SavePresetChangesButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string text = (ThemeComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? ConfigManager.CurrentConfig.Theme;
+		if (text.StartsWith("CustomPreset_"))
+		{
+			string presetId = text.Substring("CustomPreset_".Length);
+			CustomColorPreset customColorPreset = ConfigManager.CurrentConfig.CustomColorPresets?.Find((CustomColorPreset p) => p.Id == presetId);
+			if (customColorPreset != null)
+			{
+				customColorPreset.SectorBg = CustomSectorBgTextBox.Text.Trim();
+				customColorPreset.SectorBorder = CustomSectorBorderTextBox.Text.Trim();
+				customColorPreset.HighlightBg = CustomHighlightBgTextBox.Text.Trim();
+				customColorPreset.HighlightBorder = CustomHighlightBorderTextBox.Text.Trim();
+				customColorPreset.TextColor = CustomTextTextBox.Text.Trim();
+				ConfigManager.SaveConfig();
+				SyncUiToConfigAndSave();
+				Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+				if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+				{
+					RenderLiveWheelPreview();
+				}
+				System.Windows.MessageBox.Show(this, "已成功保存对配色预设【" + customColorPreset.Name + "】的修改！", "保存配色修改", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+				return;
+			}
+		}
+		SaveAsNewPresetButton_Click(sender, e);
+	}
+
+	private void SaveAsNewPresetButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string defaultText = $"自定义配色 {DateTime.Now:MMdd-HHmm}";
+		InputDialog inputDialog = new InputDialog("另存为新配色方案", "请输入新配色方案名称：", defaultText, (string input) => string.IsNullOrWhiteSpace(input) ? (IsValid: false, ErrorMessage: "配色方案名称不能为空！") : (IsValid: true, ErrorMessage: ""))
+		{
+			Owner = this
+		};
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string text = inputDialog.InputText.Trim();
+			if (ConfigManager.CurrentConfig.CustomColorPresets == null)
+			{
+				ConfigManager.CurrentConfig.CustomColorPresets = new List<CustomColorPreset>();
+			}
+			CustomColorPreset customColorPreset = new CustomColorPreset
+			{
+				Name = text,
+				SectorBg = ((!string.IsNullOrWhiteSpace(CustomSectorBgTextBox.Text)) ? CustomSectorBgTextBox.Text.Trim() : "#EB18181B"),
+				SectorBorder = ((!string.IsNullOrWhiteSpace(CustomSectorBorderTextBox.Text)) ? CustomSectorBorderTextBox.Text.Trim() : "#30FFFFFF"),
+				HighlightBg = ((!string.IsNullOrWhiteSpace(CustomHighlightBgTextBox.Text)) ? CustomHighlightBgTextBox.Text.Trim() : "#FF2563EB"),
+				HighlightBorder = ((!string.IsNullOrWhiteSpace(CustomHighlightBorderTextBox.Text)) ? CustomHighlightBorderTextBox.Text.Trim() : "#FF60A5FA"),
+				TextColor = ((!string.IsNullOrWhiteSpace(CustomTextTextBox.Text)) ? CustomTextTextBox.Text.Trim() : "#FFF8FAFC")
+			};
+			ConfigManager.CurrentConfig.CustomColorPresets.Add(customColorPreset);
+			ConfigManager.CurrentConfig.Theme = "CustomPreset_" + customColorPreset.Id;
+			ConfigManager.SaveConfig();
+			ReloadThemePresets();
+			SetComboBoxSelectedValue(ThemeComboBox, "CustomPreset_" + customColorPreset.Id);
+			if (CustomColorExpander != null)
+			{
+				CustomColorExpander.IsExpanded = true;
+			}
+			SyncUiToConfigAndSave();
+			System.Windows.MessageBox.Show(this, "配色方案【" + text + "】已成功另存为独立预设！", "另存预设成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+	}
+
+	private void RenameCustomColorPresetButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string text = (ThemeComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? ConfigManager.CurrentConfig.Theme;
+		if (!text.StartsWith("CustomPreset_"))
+		{
+			return;
+		}
+		string presetId = text.Substring("CustomPreset_".Length);
+		CustomColorPreset customColorPreset = ConfigManager.CurrentConfig.CustomColorPresets?.Find((CustomColorPreset p) => p.Id == presetId);
+		if (customColorPreset != null)
+		{
+			string name = customColorPreset.Name;
+			InputDialog inputDialog = new InputDialog(I18n.T("RenameCustomPresetTitle"), I18n.T("RenameCustomPresetPrompt") + "「" + name + "」", name, (string input) => string.IsNullOrWhiteSpace(input) ? (IsValid: false, ErrorMessage: "配色方案名称不能为空！") : (IsValid: true, ErrorMessage: ""))
+			{
+				Owner = this
+			};
+			if (inputDialog.ShowDialog() == true && !string.IsNullOrEmpty(inputDialog.InputText))
+			{
+				customColorPreset.Name = inputDialog.InputText.Trim();
+				ConfigManager.SaveConfig();
+				ReloadThemePresets();
+				SetComboBoxSelectedValue(ThemeComboBox, "CustomPreset_" + customColorPreset.Id);
+				SyncUiToConfigAndSave();
+			}
+		}
+	}
+
+	private void DeleteCustomColorPresetButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string text = (ThemeComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? ConfigManager.CurrentConfig.Theme;
+		if (!text.StartsWith("CustomPreset_"))
+		{
+			return;
+		}
+		string presetId = text.Substring("CustomPreset_".Length);
+		CustomColorPreset customColorPreset = ConfigManager.CurrentConfig.CustomColorPresets?.Find((CustomColorPreset p) => p.Id == presetId);
+		if (customColorPreset != null && System.Windows.MessageBox.Show(this, "确定要删除自定义配色方案预设【" + customColorPreset.Name + "】吗？", "确认删除配色方案", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+		{
+			ConfigManager.CurrentConfig.CustomColorPresets?.Remove(customColorPreset);
+			ConfigManager.CurrentConfig.Theme = "System";
+			ConfigManager.SaveConfig();
+			ReloadThemePresets();
+			SetComboBoxSelectedValue(ThemeComboBox, "System");
+			if (RenameCustomColorPresetButton != null)
+			{
+				RenameCustomColorPresetButton.Visibility = Visibility.Collapsed;
+			}
+			if (DeleteCustomColorPresetButton != null)
+			{
+				DeleteCustomColorPresetButton.Visibility = Visibility.Collapsed;
+			}
+			if (DeletePresetInPanelButton != null)
+			{
+				DeletePresetInPanelButton.Visibility = Visibility.Collapsed;
+			}
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+			System.Windows.MessageBox.Show(this, "自定义配色方案【" + customColorPreset.Name + "】已成功删除！", "提示", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+	}
+
+	private void WheelRadiusSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || WheelRadiusLabel == null)
+		{
+			return;
+		}
+		double num = Math.Round(e.NewValue);
+		WheelRadiusLabel.Text = num.ToString("0");
+		ConfigManager.CurrentConfig.WheelRadius = num;
+		_isUpdatingUi = true;
+		try
+		{
+			double num2 = Math.Max(25.0, num - 18.0);
+			if (InnerRadiusSlider != null)
+			{
+				InnerRadiusSlider.Maximum = num2;
+				if (InnerRadiusSlider.Value > num2)
+				{
+					InnerRadiusSlider.Value = num2;
+					InnerRadiusLabel.Text = num2.ToString("0");
+					ConfigManager.CurrentConfig.InnerRadius = num2;
+				}
+			}
+			double num3 = Math.Max(20.0, InnerRadiusSlider?.Value ?? ConfigManager.CurrentConfig.InnerRadius);
+			if (CoreRadiusSlider != null)
+			{
+				CoreRadiusSlider.Maximum = num3;
+				if (CoreRadiusSlider.Value > num3)
+				{
+					CoreRadiusSlider.Value = num3;
+					CoreRadiusLabel.Text = num3.ToString("0");
+					ConfigManager.CurrentConfig.CoreRadius = num3;
+				}
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void InnerRadiusSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || InnerRadiusLabel == null)
+		{
+			return;
+		}
+		double num = Math.Round(e.NewValue);
+		InnerRadiusLabel.Text = num.ToString("0");
+		ConfigManager.CurrentConfig.InnerRadius = num;
+		_isUpdatingUi = true;
+		try
+		{
+			if (WheelRadiusSlider != null && num + 18.0 > WheelRadiusSlider.Value)
+			{
+				double num2 = Math.Min(WheelRadiusSlider.Maximum, num + 18.0);
+				WheelRadiusSlider.Value = num2;
+				WheelRadiusLabel.Text = num2.ToString("0");
+				ConfigManager.CurrentConfig.WheelRadius = num2;
+			}
+			if (CoreRadiusSlider != null)
+			{
+				CoreRadiusSlider.Maximum = num;
+				if (CoreRadiusSlider.Value > num)
+				{
+					CoreRadiusSlider.Value = num;
+					CoreRadiusLabel.Text = num.ToString("0");
+					ConfigManager.CurrentConfig.CoreRadius = num;
+				}
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void CoreRadiusSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || CoreRadiusLabel == null)
+		{
+			return;
+		}
+		double num = Math.Round(e.NewValue);
+		CoreRadiusLabel.Text = num.ToString("0");
+		ConfigManager.CurrentConfig.CoreRadius = num;
+		_isUpdatingUi = true;
+		try
+		{
+			if (InnerRadiusSlider != null && num > InnerRadiusSlider.Value)
+			{
+				double num2 = Math.Min(InnerRadiusSlider.Maximum, num);
+				InnerRadiusSlider.Value = num2;
+				InnerRadiusLabel.Text = num2.ToString("0");
+				ConfigManager.CurrentConfig.InnerRadius = num2;
+				if (WheelRadiusSlider != null && num2 + 18.0 > WheelRadiusSlider.Value)
+				{
+					double num3 = Math.Min(WheelRadiusSlider.Maximum, num2 + 18.0);
+					WheelRadiusSlider.Value = num3;
+					WheelRadiusLabel.Text = num3.ToString("0");
+					ConfigManager.CurrentConfig.WheelRadius = num3;
+				}
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void SectorGapSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SectorGapLabel == null || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		SectorGapLabel.Text = $"{e.NewValue:0} px";
+		ConfigManager.CurrentConfig.SectorGap = e.NewValue;
+		if (!_isUpdatingUi)
+		{
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+		ScheduleAutoSave();
+	}
+
+	private void SectorCornerRadiusSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SectorCornerRadiusLabel == null || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		SectorCornerRadiusLabel.Text = $"{e.NewValue:0} px";
+		ConfigManager.CurrentConfig.SectorCornerRadius = e.NewValue;
+		if (!_isUpdatingUi)
+		{
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+		ScheduleAutoSave();
+	}
+
+	private void ShapeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && ShapeComboBox != null && ConfigManager.CurrentConfig != null && ShapeComboBox.SelectedItem is ComboBoxItem comboBoxItem)
+		{
+			ConfigManager.CurrentConfig.Shape = comboBoxItem.Tag?.ToString() ?? "Original";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void LayoutTargetRadio_Checked(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi)
+		{
+			return;
+		}
+		if (LayoutTargetSlotRadio != null && LayoutTargetSlotRadio.IsChecked == true)
+		{
+			if (_selectedLayoutSlotIndex < 0)
+			{
+				_selectedLayoutSlotIndex = 0;
+			}
+		}
+		else
+		{
+			_selectedLayoutSlotIndex = -1;
+		}
+		RefreshLayoutOptionsUi();
+		RenderLiveWheelPreview();
+	}
+
+	private void PopulateLayoutModeComboBox(bool includeInherit)
+	{
+		if (IconLayoutModeComboBox == null)
+		{
+			return;
+		}
+		IconLayoutModeComboBox.Items.Clear();
+		if (includeInherit)
+		{
+			IconLayoutModeComboBox.Items.Add(new ComboBoxItem
+			{
+				Content = I18n.T("LayoutModeItemInherit"),
+				Tag = "Inherit"
+			});
+		}
+		IconLayoutModeComboBox.Items.Add(new ComboBoxItem
+		{
+			Content = I18n.T("LayoutModeItemBoth"),
+			Tag = "IconAndText"
+		});
+		IconLayoutModeComboBox.Items.Add(new ComboBoxItem
+		{
+			Content = I18n.T("LayoutModeItemIconOnly"),
+			Tag = "IconOnly"
+		});
+		IconLayoutModeComboBox.Items.Add(new ComboBoxItem
+		{
+			Content = I18n.T("LayoutModeItemTextOnly"),
+			Tag = "TextOnly"
+		});
+	}
+
+	private void RefreshLayoutOptionsUi()
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		bool oldUpdating = _isUpdatingUi;
+		try
+		{
+			_isUpdatingUi = true;
+			PopulateWheelFontFamilies();
+			PopulateCoreFontFamilies();
+			if (_selectedLayoutSlotIndex < 0)
+			{
+				if (LayoutTargetGlobalRadio != null)
+				{
+					LayoutTargetGlobalRadio.IsChecked = true;
+				}
+				if (SlotSelectionContainer != null)
+				{
+					SlotSelectionContainer.Visibility = Visibility.Collapsed;
+				}
+				PopulateLayoutModeComboBox(includeInherit: false);
+				SetComboBoxSelectedValue(IconLayoutModeComboBox, ConfigManager.CurrentConfig.IconLayoutMode ?? "IconAndText");
+				SetComboBoxSelectedValue(WheelFontFamilyComboBox, ConfigManager.CurrentConfig.WheelFontFamily ?? "Microsoft YaHei UI, Segoe UI");
+				if (SectorTextColorTextBox != null)
+				{
+					SectorTextColorTextBox.Text = ConfigManager.CurrentConfig.CustomText ?? "#FFF8FAFC";
+					UpdateColorPreviewBorder(SectorTextColorPreview, SectorTextColorTextBox.Text);
+				}
+				if (SectorIconSizeSlider != null)
+				{
+					double sz = ((ConfigManager.CurrentConfig.SectorIconSize > 0.0) ? ConfigManager.CurrentConfig.SectorIconSize : 20.0);
+					SectorIconSizeSlider.Value = sz;
+					if (SectorIconSizeLabel != null)
+					{
+						SectorIconSizeLabel.Text = $"{sz:0} px";
+					}
+				}
+				if (SectorFontSizeSlider != null)
+				{
+					double fsz = ((ConfigManager.CurrentConfig.SectorFontSize > 0.0) ? ConfigManager.CurrentConfig.SectorFontSize : 11.0);
+					SectorFontSizeSlider.Value = fsz;
+					if (SectorFontSizeLabel != null)
+					{
+						SectorFontSizeLabel.Text = $"{fsz:0.0} px";
+					}
+				}
+				if (SectorTextPlacementComboBox != null)
+				{
+					SetComboBoxSelectedValue(SectorTextPlacementComboBox, ConfigManager.CurrentConfig.SectorTextPlacement ?? "Below");
+				}
+				if (SectorTextOffsetXSlider != null)
+				{
+					SectorTextOffsetXSlider.Value = ConfigManager.CurrentConfig.SectorTextOffsetX;
+					if (SectorTextOffsetXLabel != null)
+					{
+						SectorTextOffsetXLabel.Text = $"{ConfigManager.CurrentConfig.SectorTextOffsetX:+0;-0;0} px";
+					}
+				}
+				if (SectorTextOffsetYSlider != null)
+				{
+					SectorTextOffsetYSlider.Value = ConfigManager.CurrentConfig.SectorTextOffsetY;
+					if (SectorTextOffsetYLabel != null)
+					{
+						SectorTextOffsetYLabel.Text = $"{ConfigManager.CurrentConfig.SectorTextOffsetY:+0;-0;0} px";
+					}
+				}
+			}
+			else
+			{
+				if (LayoutTargetSlotRadio != null)
+				{
+					LayoutTargetSlotRadio.IsChecked = true;
+				}
+				if (SlotSelectionContainer != null)
+				{
+					SlotSelectionContainer.Visibility = Visibility.Visible;
+				}
+				WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles.FirstOrDefault();
+				ActionItem? action = GetCurrentEditingAction();
+
+				if (CurrentTargetSlotLabel != null)
+				{
+					if (_selectedMultiSlots.Count > 1)
+					{
+						string slotNames = string.Join(", ", _selectedMultiSlots.Select(s => (s + 1).ToString()));
+						CurrentTargetSlotLabel.Text = string.Format(I18n.T("CustomizingBatchFormat") ?? "🎯 批量修改模式 (已多选 {0} 个扇区: {1})", _selectedMultiSlots.Count, slotNames);
+						if (ClickSectorHintText != null)
+						{
+							ClickSectorHintText.Text = I18n.T("BatchLayoutHint") ?? "💡 按住 Ctrl 点击可继续增减选择；下方选项将统一批量应用至全部选中扇区";
+						}
+						if (ResetSlotLayoutButton != null)
+						{
+							ResetSlotLayoutButton.Content = I18n.T("BtnResetSlotLayoutBatch") ?? "🔄 批量恢复继承全局";
+						}
+					}
+					else
+					{
+						string tierName = (_selectedLayoutTier == 2) ? (I18n.T("Tier2SubWheel") ?? "二级级联轮盘") : (I18n.T("Tier1MainWheel") ?? "一级主轮盘");
+						string slotDirName = GetDirectionDisplayName(_selectedLayoutSlotIndex, profile?.SectorCount ?? 8);
+						string actName = action?.Name ?? (I18n.T("ActionNotConfigured") ?? "未设置动作");
+						if (_selectedLayoutTier == 2 && _selectedLayoutSubSlotIndex >= 0)
+						{
+							CurrentTargetSlotLabel.Text = string.Format(I18n.T("CustomizingSubSlotFormat") ?? "📍 正在定制: {0} [{1}] -> 子项 {2}: {3}", tierName, slotDirName, _selectedLayoutSubSlotIndex + 1, actName);
+						}
+						else
+						{
+							CurrentTargetSlotLabel.Text = string.Format(I18n.T("CustomizingSlotFormat") ?? "📍 正在定制: {0} - 扇区 {1} [{2}]: {3}", tierName, _selectedLayoutSlotIndex + 1, slotDirName, actName);
+						}
+						if (ClickSectorHintText != null)
+						{
+							ClickSectorHintText.Text = I18n.T("ClickSectorHint");
+						}
+						if (ResetSlotLayoutButton != null)
+						{
+							ResetSlotLayoutButton.Content = I18n.T("ResetSlotLayout") ?? "🔄 恢复继承全局";
+						}
+					}
+				}
+
+				PopulateLayoutModeComboBox(includeInherit: true);
+				string currentMode = ((action != null && !string.IsNullOrWhiteSpace(action.LayoutMode)) ? action.LayoutMode : "Inherit");
+				SetComboBoxSelectedValue(IconLayoutModeComboBox, currentMode);
+				string currentFont = ((action != null && !string.IsNullOrWhiteSpace(action.CustomFontFamily)) ? action.CustomFontFamily : (ConfigManager.CurrentConfig.WheelFontFamily ?? "Microsoft YaHei UI, Segoe UI"));
+				SetComboBoxSelectedValue(WheelFontFamilyComboBox, currentFont);
+				if (SectorTextColorTextBox != null)
+				{
+					SectorTextColorTextBox.Text = ((action != null && !string.IsNullOrWhiteSpace(action.CustomTextColor)) ? action.CustomTextColor : (ConfigManager.CurrentConfig.CustomText ?? "#FFF8FAFC"));
+					UpdateColorPreviewBorder(SectorTextColorPreview, SectorTextColorTextBox.Text);
+				}
+				if (SectorIconSizeSlider != null)
+				{
+					double sz = ((action != null && action.CustomIconSize.HasValue && action.CustomIconSize.Value > 0.0) ? action.CustomIconSize.Value : ((ConfigManager.CurrentConfig.SectorIconSize > 0.0) ? ConfigManager.CurrentConfig.SectorIconSize : 20.0));
+					SectorIconSizeSlider.Value = sz;
+					if (SectorIconSizeLabel != null)
+					{
+						SectorIconSizeLabel.Text = $"{sz:0} px";
+					}
+				}
+				if (SectorFontSizeSlider != null)
+				{
+					double fsz = ((action != null && action.CustomFontSize.HasValue && action.CustomFontSize.Value > 0.0) ? action.CustomFontSize.Value : ((ConfigManager.CurrentConfig.SectorFontSize > 0.0) ? ConfigManager.CurrentConfig.SectorFontSize : 11.0));
+					SectorFontSizeSlider.Value = fsz;
+					if (SectorFontSizeLabel != null)
+					{
+						SectorFontSizeLabel.Text = $"{fsz:0.0} px";
+					}
+				}
+				if (SectorTextPlacementComboBox != null)
+				{
+					string placement = (!string.IsNullOrWhiteSpace(action?.CustomTextPlacement)) ? action.CustomTextPlacement : (ConfigManager.CurrentConfig.SectorTextPlacement ?? "Below");
+					SetComboBoxSelectedValue(SectorTextPlacementComboBox, placement);
+				}
+				if (SectorTextOffsetXSlider != null)
+				{
+					double offX = (action != null && action.CustomTextOffsetX.HasValue) ? action.CustomTextOffsetX.Value : ConfigManager.CurrentConfig.SectorTextOffsetX;
+					SectorTextOffsetXSlider.Value = offX;
+					if (SectorTextOffsetXLabel != null)
+					{
+						SectorTextOffsetXLabel.Text = $"{offX:+0;-0;0} px";
+					}
+				}
+				if (SectorTextOffsetYSlider != null)
+				{
+					double offY = (action != null && action.CustomTextOffsetY.HasValue) ? action.CustomTextOffsetY.Value : ConfigManager.CurrentConfig.SectorTextOffsetY;
+					SectorTextOffsetYSlider.Value = offY;
+					if (SectorTextOffsetYLabel != null)
+					{
+						SectorTextOffsetYLabel.Text = $"{offY:+0;-0;0} px";
+					}
+				}
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = oldUpdating;
+		}
+	}
+
+	public void OnPreviewSectorClicked(int sectorIndex)
+	{
+		bool isCtrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+		if (isCtrl)
+		{
+			if (_selectedMultiSlots.Contains(sectorIndex))
+			{
+				_selectedMultiSlots.Remove(sectorIndex);
+			}
+			else
+			{
+				_selectedMultiSlots.Add(sectorIndex);
+			}
+			if (_selectedMultiSlots.Count == 0)
+			{
+				_selectedLayoutSlotIndex = sectorIndex;
+				_selectedMultiSlots.Add(sectorIndex);
+			}
+			else
+			{
+				_selectedLayoutSlotIndex = _selectedMultiSlots.Last();
+			}
+		}
+		else
+		{
+			_selectedMultiSlots.Clear();
+			_selectedMultiSlots.Add(sectorIndex);
+			_selectedLayoutSlotIndex = sectorIndex;
+		}
+
+		_selectedLayoutTier = 1;
+		_selectedLayoutSubSlotIndex = -1;
+		if (LayoutTargetSlotRadio != null)
+		{
+			LayoutTargetSlotRadio.IsChecked = true;
+		}
+		RefreshLayoutOptionsUi();
+		RenderLiveWheelPreview();
+		RenderMappingsWheelPreview();
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		UpdatePreviewCoreSelection(_selectedLayoutSlotIndex, -1, profile);
+	}
+
+	public void OnPreviewSubSectorClicked(int parentIndex, int subIndex)
+	{
+		_selectedMultiSlots.Clear();
+		_selectedLayoutTier = 2;
+		_selectedLayoutSlotIndex = parentIndex;
+		_selectedLayoutSubSlotIndex = subIndex;
+		if (LayoutTargetSlotRadio != null)
+		{
+			LayoutTargetSlotRadio.IsChecked = true;
+		}
+		RefreshLayoutOptionsUi();
+		RenderLiveWheelPreview();
+		RenderMappingsWheelPreview();
+		WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+		UpdatePreviewCoreSelection(parentIndex, subIndex, profile);
+	}
+
+	private void ResetSlotLayoutButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedMultiSlots.Count > 1)
+		{
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles?.FirstOrDefault();
+			if (profile?.Actions != null)
+			{
+				foreach (int slot in _selectedMultiSlots)
+				{
+					if (slot >= 0 && slot < profile.Actions.Count)
+					{
+						ActionItem item = EnsureLocalPrimaryActionForEdit(profile, slot);
+						item.LayoutMode = "Inherit";
+						item.CustomTextColor = null;
+						item.CustomFontFamily = null;
+						item.CustomIconSize = null;
+						item.CustomFontSize = null;
+						item.CustomTextPlacement = "Inherit";
+						item.CustomTextOffsetX = null;
+						item.CustomTextOffsetY = null;
+					}
+				}
+				RefreshLayoutOptionsUi();
+				RenderLiveWheelPreview();
+				RenderMappingsWheelPreview();
+				ScheduleAutoSave();
+			}
+			return;
+		}
+
+		ActionItem? action = GetCurrentEditingAction();
+		if (action != null)
+		{
+			action.LayoutMode = "Inherit";
+			action.CustomTextColor = null;
+			action.CustomFontFamily = null;
+			action.CustomIconSize = null;
+			action.CustomFontSize = null;
+			action.CustomTextPlacement = "Inherit";
+			action.CustomTextOffsetX = null;
+			action.CustomTextOffsetY = null;
+			RefreshLayoutOptionsUi();
+			RenderLiveWheelPreview();
+			RenderMappingsWheelPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void IconLayoutModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (IconLayoutModeComboBox == null || ConfigManager.CurrentConfig == null || _isUpdatingUi || !(IconLayoutModeComboBox.SelectedItem is ComboBoxItem { Tag: var tag }))
+		{
+			return;
+		}
+		string text = tag?.ToString() ?? "IconAndText";
+		if (_selectedLayoutSlotIndex < 0)
+		{
+			ConfigManager.CurrentConfig.IconLayoutMode = text;
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+			if (profile?.Actions != null)
+			{
+				foreach (var act in profile.Actions)
+				{
+					if (act != null)
+					{
+						act.LayoutMode = "Inherit";
+						if (act.SubActions != null)
+						{
+							foreach (var subAct in act.SubActions)
+							{
+								if (subAct != null)
+								{
+									subAct.LayoutMode = "Inherit";
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		else
+		{
+			if (_selectedMultiSlots.Count > 1)
+			{
+				WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+				if (profile?.Actions != null)
+				{
+					foreach (int slot in _selectedMultiSlots)
+					{
+						if (slot >= 0 && slot < profile.Actions.Count)
+						{
+							ActionItem item = EnsureLocalPrimaryActionForEdit(profile, slot);
+							item.LayoutMode = text;
+						}
+					}
+				}
+			}
+			else
+			{
+				ActionItem? action = GetCurrentEditingAction();
+				if (action != null)
+				{
+					action.LayoutMode = text;
+				}
+			}
+		}
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private static List<(string, string)> GetStandardFontFamilies()
+	{
+		return new List<(string, string)>
+		{
+			(I18n.T("FontSystemDefault"), "Microsoft YaHei UI, Segoe UI"),
+			(I18n.T("FontMicrosoftYaHei"), "Microsoft YaHei UI"),
+			(I18n.T("FontSegoeUI"), "Segoe UI"),
+			(I18n.T("FontHarmonyOS"), "HarmonyOS Sans SC"),
+			(I18n.T("FontPingFang"), "PingFang SC"),
+			(I18n.T("FontMiSans"), "MiSans"),
+			(I18n.T("FontSourceHanSans"), "Source Han Sans SC"),
+			(I18n.T("FontInter"), "Inter"),
+			(I18n.T("FontArial"), "Arial"),
+			(I18n.T("FontSimHei"), "SimHei"),
+			(I18n.T("FontKaiTi"), "KaiTi"),
+			(I18n.T("FontFangSong"), "FangSong"),
+			(I18n.T("FontMonospace"), "Consolas, Cascadia Code"),
+			(I18n.T("FontJetBrainsMono"), "JetBrains Mono, Consolas")
+		};
+	}
+
+	private void PopulateWheelFontFamilies()
+	{
+		if (WheelFontFamilyComboBox == null)
+		{
+			return;
+		}
+		string currentTag = (WheelFontFamilyComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString()
+			?? ConfigManager.CurrentConfig?.WheelFontFamily
+			?? "Microsoft YaHei UI, Segoe UI";
+		WheelFontFamilyComboBox.Items.Clear();
+		List<(string, string)> obj = GetStandardFontFamilies();
+		HashSet<string> hashSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var item2 in obj)
+		{
+			WheelFontFamilyComboBox.Items.Add(new ComboBoxItem
+			{
+				Content = item2.Item1,
+				Tag = item2.Item2,
+				FontFamily = new System.Windows.Media.FontFamily(item2.Item2)
+			});
+			hashSet.Add(item2.Item2);
+			string item = item2.Item2.Split(',')[0].Trim();
+			hashSet.Add(item);
+		}
+		WheelFontFamilyComboBox.Items.Add(new Separator());
+		try
+		{
+			foreach (System.Windows.Media.FontFamily item3 in Fonts.SystemFontFamilies.OrderBy<System.Windows.Media.FontFamily, string>((System.Windows.Media.FontFamily f) => GetFontDisplayName(f), StringComparer.CurrentCultureIgnoreCase).ToList())
+			{
+				string source = item3.Source;
+				if (!string.IsNullOrWhiteSpace(source) && !hashSet.Contains(source))
+				{
+					string fontDisplayName = GetFontDisplayName(item3);
+					string content = (string.Equals(fontDisplayName, source, StringComparison.OrdinalIgnoreCase) ? ("\ud83d\udd24 " + fontDisplayName) : $"\ud83d\udd24 {fontDisplayName} ({source})");
+					WheelFontFamilyComboBox.Items.Add(new ComboBoxItem
+					{
+						Content = content,
+						Tag = source,
+						FontFamily = item3
+					});
+					hashSet.Add(source);
+				}
+			}
+		}
+		catch
+		{
+		}
+		SetComboBoxSelectedValue(WheelFontFamilyComboBox, currentTag);
+	}
+
+	private void PopulateCoreFontFamilies()
+	{
+		if (CoreFontFamilyComboBox == null)
+		{
+			return;
+		}
+		string currentTag = (CoreFontFamilyComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString()
+			?? ConfigManager.CurrentConfig?.CoreFontFamily
+			?? "Microsoft YaHei UI, Segoe UI";
+		CoreFontFamilyComboBox.Items.Clear();
+		List<(string, string)> obj = GetStandardFontFamilies();
+		HashSet<string> hashSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var item2 in obj)
+		{
+			CoreFontFamilyComboBox.Items.Add(new ComboBoxItem
+			{
+				Content = item2.Item1,
+				Tag = item2.Item2,
+				FontFamily = new System.Windows.Media.FontFamily(item2.Item2)
+			});
+			hashSet.Add(item2.Item2);
+			string item = item2.Item2.Split(',')[0].Trim();
+			hashSet.Add(item);
+		}
+		CoreFontFamilyComboBox.Items.Add(new Separator());
+		try
+		{
+			foreach (System.Windows.Media.FontFamily item3 in Fonts.SystemFontFamilies.OrderBy<System.Windows.Media.FontFamily, string>((System.Windows.Media.FontFamily f) => GetFontDisplayName(f), StringComparer.CurrentCultureIgnoreCase).ToList())
+			{
+				string source = item3.Source;
+				if (!string.IsNullOrWhiteSpace(source) && !hashSet.Contains(source))
+				{
+					string fontDisplayName = GetFontDisplayName(item3);
+					string content = (string.Equals(fontDisplayName, source, StringComparison.OrdinalIgnoreCase) ? ("\ud83d\udd24 " + fontDisplayName) : $"\ud83d\udd24 {fontDisplayName} ({source})");
+					CoreFontFamilyComboBox.Items.Add(new ComboBoxItem
+					{
+						Content = content,
+						Tag = source,
+						FontFamily = item3
+					});
+					hashSet.Add(source);
+				}
+			}
+		}
+		catch
+		{
+		}
+		SetComboBoxSelectedValue(CoreFontFamilyComboBox, currentTag);
+	}
+
+	private static string GetFontDisplayName(System.Windows.Media.FontFamily font)
+	{
+		try
+		{
+			XmlLanguage language = XmlLanguage.GetLanguage(CultureInfo.CurrentUICulture.IetfLanguageTag);
+			if (font.FamilyNames.ContainsKey(language))
+			{
+				return font.FamilyNames[language];
+			}
+			XmlLanguage language2 = XmlLanguage.GetLanguage("en-US");
+			if (font.FamilyNames.ContainsKey(language2))
+			{
+				return font.FamilyNames[language2];
+			}
+			return font.FamilyNames.Values.FirstOrDefault() ?? font.Source;
+		}
+		catch
+		{
+			return font.Source;
+		}
+	}
+
+	private void WheelFontFamilyComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || WheelFontFamilyComboBox == null || ConfigManager.CurrentConfig == null || WheelFontFamilyComboBox.SelectedItem is not ComboBoxItem { Tag: var tag })
+		{
+			return;
+		}
+		string wheelFontFamily = tag?.ToString() ?? "Microsoft YaHei UI, Segoe UI";
+		if (_selectedLayoutSlotIndex < 0)
+		{
+			ConfigManager.CurrentConfig.WheelFontFamily = wheelFontFamily;
+		}
+		else
+		{
+			ActionItem? action = GetCurrentEditingAction();
+			if (action != null)
+			{
+				action.CustomFontFamily = wheelFontFamily;
+			}
+		}
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void CoreFontFamilyComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || CoreFontFamilyComboBox == null || ConfigManager.CurrentConfig == null || CoreFontFamilyComboBox.SelectedItem is not ComboBoxItem { Tag: var tag })
+		{
+			return;
+		}
+		string coreFontFamily = tag?.ToString() ?? "Microsoft YaHei UI, Segoe UI";
+		ConfigManager.CurrentConfig.CoreFontFamily = coreFontFamily;
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	private void SectorTextColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (SectorTextColorTextBox == null || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string hex = SectorTextColorTextBox.Text.Trim();
+		UpdateColorPreviewBorder(SectorTextColorPreview, hex);
+		if (_isUpdatingUi)
+		{
+			return;
+		}
+		if (_selectedMultiSlots.Count > 1)
+		{
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+			if (profile?.Actions != null)
+			{
+				foreach (int slot in _selectedMultiSlots)
+				{
+					if (slot >= 0 && slot < profile.Actions.Count)
+					{
+						ActionItem item = EnsureLocalPrimaryActionForEdit(profile, slot);
+						item.CustomTextColor = hex;
+					}
+				}
+			}
+		}
+		else if (_selectedLayoutSlotIndex < 0)
+		{
+			ConfigManager.CurrentConfig.CustomText = hex;
+			if (CustomTextTextBox != null && CustomTextTextBox.Text != hex)
+			{
+				CustomTextTextBox.Text = hex;
+			}
+		}
+		else
+		{
+			ActionItem? action = GetCurrentEditingAction();
+			if (action != null)
+			{
+				action.CustomTextColor = hex;
+			}
+		}
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void CoreTextColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (CoreTextColorTextBox == null || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string hex = CoreTextColorTextBox.Text.Trim();
+		UpdateColorPreviewBorder(CoreTextColorPreview, hex);
+		if (_isUpdatingUi)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.CoreTextColor = hex;
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void CoreTextColorAutoCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		bool auto = CoreTextColorAutoCheckBox != null && CoreTextColorAutoCheckBox.IsChecked == true;
+		ConfigManager.CurrentConfig.CoreTextColorAuto = auto;
+		if (CoreTextColorRowGrid != null)
+		{
+			CoreTextColorRowGrid.IsEnabled = !auto;
+		}
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void CoreFontSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (CoreFontSizeSlider != null && CoreFontSizeLabel != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			ConfigManager.CurrentConfig.CoreFontSize = e.NewValue;
+			CoreFontSizeLabel.Text = $"{e.NewValue:0.0} px";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ShowSelectedActionTextCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (CoreTextOptionsPanel != null && ShowSelectedActionTextCheckBox != null)
+		{
+			CoreTextOptionsPanel.Visibility = (ShowSelectedActionTextCheckBox.IsChecked == true) ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (ShowSelectedActionTextCheckBox == null || ConfigManager.CurrentConfig == null || _isUpdatingUi)
+		{
+			return;
+		}
+
+		ConfigManager.CurrentConfig.ShowSelectedActionText = ShowSelectedActionTextCheckBox.IsChecked == true;
+		if (AppearanceSettingsGrid != null && AppearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	private void SectorIconSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SectorIconSizeSlider != null && SectorIconSizeLabel != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double val = e.NewValue;
+			SectorIconSizeLabel.Text = $"{val:0} px";
+			if (_selectedMultiSlots.Count > 1)
+			{
+				WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+				if (profile?.Actions != null)
+				{
+					foreach (int slot in _selectedMultiSlots)
+					{
+						if (slot >= 0 && slot < profile.Actions.Count)
+						{
+							ActionItem item = EnsureLocalPrimaryActionForEdit(profile, slot);
+							item.CustomIconSize = val;
+						}
+					}
+				}
+			}
+			else if (_selectedLayoutSlotIndex < 0)
+			{
+				ConfigManager.CurrentConfig.SectorIconSize = val;
+			}
+			else
+			{
+				ActionItem? action = GetCurrentEditingAction();
+				if (action != null)
+				{
+					action.CustomIconSize = val;
+				}
+			}
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SectorFontSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SectorFontSizeSlider != null && SectorFontSizeLabel != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double val = e.NewValue;
+			SectorFontSizeLabel.Text = $"{val:0.0} px";
+			if (_selectedMultiSlots.Count > 1)
+			{
+				WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+				if (profile?.Actions != null)
+				{
+					foreach (int slot in _selectedMultiSlots)
+					{
+						if (slot >= 0 && slot < profile.Actions.Count)
+						{
+							ActionItem item = EnsureLocalPrimaryActionForEdit(profile, slot);
+							item.CustomFontSize = val;
+						}
+					}
+				}
+			}
+			else if (_selectedLayoutSlotIndex < 0)
+			{
+				ConfigManager.CurrentConfig.SectorFontSize = val;
+			}
+			else
+			{
+				ActionItem? action = GetCurrentEditingAction();
+				if (action != null)
+				{
+					action.CustomFontSize = val;
+				}
+			}
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SectorTextPlacementComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || SectorTextPlacementComboBox == null) return;
+		string placement = (SectorTextPlacementComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Below";
+		if (_selectedLayoutSlotIndex < 0)
+		{
+			ConfigManager.CurrentConfig.SectorTextPlacement = placement;
+		}
+		else
+		{
+			ActionItem? action = GetCurrentEditingAction();
+			if (action != null)
+			{
+				action.CustomTextPlacement = placement;
+			}
+		}
+		if (AppearanceSettingsGrid?.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void SectorTextOffsetSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		double offX = SectorTextOffsetXSlider?.Value ?? 0.0;
+		double offY = SectorTextOffsetYSlider?.Value ?? 0.0;
+		if (SectorTextOffsetXLabel != null)
+		{
+			SectorTextOffsetXLabel.Text = $"{offX:+0;-0;0} px";
+		}
+		if (SectorTextOffsetYLabel != null)
+		{
+			SectorTextOffsetYLabel.Text = $"{offY:+0;-0;0} px";
+		}
+		if (_selectedMultiSlots.Count > 1)
+		{
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+			if (profile?.Actions != null)
+			{
+				foreach (int slot in _selectedMultiSlots)
+				{
+					if (slot >= 0 && slot < profile.Actions.Count)
+					{
+						ActionItem item = EnsureLocalPrimaryActionForEdit(profile, slot);
+						item.CustomTextOffsetX = offX;
+						item.CustomTextOffsetY = offY;
+					}
+				}
+			}
+		}
+		else if (_selectedLayoutSlotIndex < 0)
+		{
+			ConfigManager.CurrentConfig.SectorTextOffsetX = offX;
+			ConfigManager.CurrentConfig.SectorTextOffsetY = offY;
+		}
+		else
+		{
+			ActionItem? action = GetCurrentEditingAction();
+			if (action != null)
+			{
+				action.CustomTextOffsetX = offX;
+				action.CustomTextOffsetY = offY;
+			}
+		}
+		if (AppearanceSettingsGrid?.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void ResetTextOffsetBtn_Click(object sender, RoutedEventArgs e)
+	{
+		_isUpdatingUi = true;
+		try
+		{
+			if (SectorTextPlacementComboBox != null)
+			{
+				SetComboBoxSelectedValue(SectorTextPlacementComboBox, "Below");
+			}
+			if (SectorTextOffsetXSlider != null)
+			{
+				SectorTextOffsetXSlider.Value = 0;
+			}
+			if (SectorTextOffsetYSlider != null)
+			{
+				SectorTextOffsetYSlider.Value = 0;
+			}
+			if (SectorTextOffsetXLabel != null) SectorTextOffsetXLabel.Text = "0 px";
+			if (SectorTextOffsetYLabel != null) SectorTextOffsetYLabel.Text = "0 px";
+
+			if (_selectedMultiSlots.Count > 1)
+			{
+				WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+				if (profile?.Actions != null)
+				{
+					foreach (int slot in _selectedMultiSlots)
+					{
+						if (slot >= 0 && slot < profile.Actions.Count)
+						{
+							ActionItem item = EnsureLocalPrimaryActionForEdit(profile, slot);
+							item.CustomTextPlacement = "Below";
+							item.CustomTextOffsetX = 0;
+							item.CustomTextOffsetY = 0;
+						}
+					}
+				}
+			}
+			else if (_selectedLayoutSlotIndex < 0)
+			{
+				ConfigManager.CurrentConfig.SectorTextPlacement = "Below";
+				ConfigManager.CurrentConfig.SectorTextOffsetX = 0;
+				ConfigManager.CurrentConfig.SectorTextOffsetY = 0;
+			}
+			else
+			{
+				ActionItem? action = GetCurrentEditingAction();
+				if (action != null)
+				{
+					action.CustomTextPlacement = null;
+					action.CustomTextOffsetX = null;
+					action.CustomTextOffsetY = null;
+				}
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		if (AppearanceSettingsGrid?.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void ShowLayerIndicatorCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (!_isUiInitialized || _isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		bool isChecked = ShowLayerIndicatorCheckBox?.IsChecked == true;
+		ConfigManager.CurrentConfig.ShowLayerIndicator = isChecked;
+		if (LayerIndicatorConfigPanel != null)
+		{
+			LayerIndicatorConfigPanel.Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed;
+		}
+		UpdateLayerIndicatorPreview();
+		ScheduleAutoSave();
+	}
+
+	private void LayerIndicatorStyleComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || LayerIndicatorStyleComboBox == null) return;
+		string style = (LayerIndicatorStyleComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Dark";
+		ConfigManager.CurrentConfig.LayerIndicatorStyle = style;
+
+		switch (style)
+		{
+			case "Dark":
+				ConfigManager.CurrentConfig.LayerIndicatorBg = "#E60F172A";
+				ConfigManager.CurrentConfig.LayerIndicatorBorder = "#38BDF8";
+				ConfigManager.CurrentConfig.LayerIndicatorTextColor = "#FFFFFF";
+				break;
+			case "Aurora":
+				ConfigManager.CurrentConfig.LayerIndicatorBg = "#E6082F49";
+				ConfigManager.CurrentConfig.LayerIndicatorBorder = "#22D3EE";
+				ConfigManager.CurrentConfig.LayerIndicatorTextColor = "#F0FDFA";
+				break;
+			case "Purple":
+				ConfigManager.CurrentConfig.LayerIndicatorBg = "#E62E1065";
+				ConfigManager.CurrentConfig.LayerIndicatorBorder = "#C084FC";
+				ConfigManager.CurrentConfig.LayerIndicatorTextColor = "#FAF5FF";
+				break;
+			case "Light":
+				ConfigManager.CurrentConfig.LayerIndicatorBg = "#E6F8FAFC";
+				ConfigManager.CurrentConfig.LayerIndicatorBorder = "#64748B";
+				ConfigManager.CurrentConfig.LayerIndicatorTextColor = "#0F172A";
+				break;
+			case "FollowTheme":
+				break;
+			case "Custom":
+				break;
+		}
+
+		_isUpdatingUi = true;
+		try
+		{
+			if (style != "Custom" && style != "FollowTheme")
+			{
+				if (LayerIndicatorBgTextBox != null) LayerIndicatorBgTextBox.Text = ConfigManager.CurrentConfig.LayerIndicatorBg;
+				if (LayerIndicatorBorderTextBox != null) LayerIndicatorBorderTextBox.Text = ConfigManager.CurrentConfig.LayerIndicatorBorder;
+				if (LayerIndicatorTextTextBox != null) LayerIndicatorTextTextBox.Text = ConfigManager.CurrentConfig.LayerIndicatorTextColor;
+				if (LayerIndicatorBgPreview != null) UpdateColorPreviewBorder(LayerIndicatorBgPreview, ConfigManager.CurrentConfig.LayerIndicatorBg);
+				if (LayerIndicatorBorderPreview != null) UpdateColorPreviewBorder(LayerIndicatorBorderPreview, ConfigManager.CurrentConfig.LayerIndicatorBorder);
+				if (LayerIndicatorTextPreview != null) UpdateColorPreviewBorder(LayerIndicatorTextPreview, ConfigManager.CurrentConfig.LayerIndicatorTextColor);
+			}
+			UpdateLayerIndicatorCustomPanelVisibility();
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+
+		UpdateLayerIndicatorPreview();
+		ScheduleAutoSave();
+	}
+
+	private void LayerIndicatorIconComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || LayerIndicatorIconComboBox == null) return;
+		string icon = (LayerIndicatorIconComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "🌟";
+		ConfigManager.CurrentConfig.LayerIndicatorIcon = icon;
+		UpdateLayerIndicatorPreview();
+		ScheduleAutoSave();
+	}
+
+	private void LayerIndicatorColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null) return;
+
+		string bgHex = LayerIndicatorBgTextBox?.Text.Trim() ?? "";
+		string borderHex = LayerIndicatorBorderTextBox?.Text.Trim() ?? "";
+		string textHex = LayerIndicatorTextTextBox?.Text.Trim() ?? "";
+
+		if (LayerIndicatorBgPreview != null) UpdateColorPreviewBorder(LayerIndicatorBgPreview, bgHex);
+		if (LayerIndicatorBorderPreview != null) UpdateColorPreviewBorder(LayerIndicatorBorderPreview, borderHex);
+		if (LayerIndicatorTextPreview != null) UpdateColorPreviewBorder(LayerIndicatorTextPreview, textHex);
+
+		if (_isUpdatingUi) return;
+
+		ConfigManager.CurrentConfig.LayerIndicatorBg = bgHex;
+		ConfigManager.CurrentConfig.LayerIndicatorBorder = borderHex;
+		ConfigManager.CurrentConfig.LayerIndicatorTextColor = textHex;
+
+		if (LayerIndicatorStyleComboBox != null && ConfigManager.CurrentConfig.LayerIndicatorStyle != "Custom" && ConfigManager.CurrentConfig.LayerIndicatorStyle != "FollowTheme")
+		{
+			ConfigManager.CurrentConfig.LayerIndicatorStyle = "Custom";
+			_isUpdatingUi = true;
+			try
+			{
+				SetComboBoxSelectedValue(LayerIndicatorStyleComboBox, "Custom");
+				UpdateLayerIndicatorCustomPanelVisibility();
+			}
+			finally
+			{
+				_isUpdatingUi = false;
+			}
+		}
+
+		UpdateLayerIndicatorPreview();
+		ScheduleAutoSave();
+	}
+
+	private void LayerIndicatorSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (ConfigManager.CurrentConfig == null) return;
+
+		if (sender == LayerIndicatorCornerRadiusSlider)
+		{
+			double val = LayerIndicatorCornerRadiusSlider.Value;
+			if (LayerIndicatorCornerRadiusLabel != null) LayerIndicatorCornerRadiusLabel.Text = $"{val:0} px";
+			if (!_isUpdatingUi) ConfigManager.CurrentConfig.LayerIndicatorCornerRadius = val;
+		}
+		else if (sender == LayerIndicatorFontSizeSlider)
+		{
+			double val = LayerIndicatorFontSizeSlider.Value;
+			if (LayerIndicatorFontSizeLabel != null) LayerIndicatorFontSizeLabel.Text = $"{val:0.0} px";
+			if (!_isUpdatingUi) ConfigManager.CurrentConfig.LayerIndicatorFontSize = val;
+		}
+		else if (sender == LayerIndicatorOffsetYSlider)
+		{
+			double val = LayerIndicatorOffsetYSlider.Value;
+			if (LayerIndicatorOffsetYLabel != null) LayerIndicatorOffsetYLabel.Text = $"{val:0} px";
+			if (!_isUpdatingUi) ConfigManager.CurrentConfig.LayerIndicatorOffsetY = val;
+		}
+		else if (sender == LayerIndicatorDurationSlider)
+		{
+			double val = LayerIndicatorDurationSlider.Value;
+			if (LayerIndicatorDurationLabel != null) LayerIndicatorDurationLabel.Text = $"{val / 1000.0:0.0} s";
+			if (!_isUpdatingUi) ConfigManager.CurrentConfig.LayerIndicatorDurationMs = val;
+		}
+
+		if (!_isUpdatingUi)
+		{
+			UpdateLayerIndicatorPreview();
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ResetLayerIndicatorButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null) return;
+
+		_isUpdatingUi = true;
+		try
+		{
+			ConfigManager.CurrentConfig.ShowLayerIndicator = true;
+			ConfigManager.CurrentConfig.LayerIndicatorStyle = "Dark";
+			ConfigManager.CurrentConfig.LayerIndicatorBg = "#E60F172A";
+			ConfigManager.CurrentConfig.LayerIndicatorBorder = "#38BDF8";
+			ConfigManager.CurrentConfig.LayerIndicatorTextColor = "#FFFFFF";
+			ConfigManager.CurrentConfig.LayerIndicatorIcon = "🌟";
+			ConfigManager.CurrentConfig.LayerIndicatorFontSize = 11.5;
+			ConfigManager.CurrentConfig.LayerIndicatorCornerRadius = 12.0;
+			ConfigManager.CurrentConfig.LayerIndicatorOffsetY = 10.0;
+			ConfigManager.CurrentConfig.LayerIndicatorDurationMs = 1200.0;
+
+			if (ShowLayerIndicatorCheckBox != null) ShowLayerIndicatorCheckBox.IsChecked = true;
+			if (LayerIndicatorConfigPanel != null) LayerIndicatorConfigPanel.Visibility = Visibility.Visible;
+			if (LayerIndicatorStyleComboBox != null) SetComboBoxSelectedValue(LayerIndicatorStyleComboBox, "Dark");
+			if (LayerIndicatorIconComboBox != null) SetComboBoxSelectedValue(LayerIndicatorIconComboBox, "🌟");
+			if (LayerIndicatorBgTextBox != null) LayerIndicatorBgTextBox.Text = "#E60F172A";
+			if (LayerIndicatorBorderTextBox != null) LayerIndicatorBorderTextBox.Text = "#38BDF8";
+			if (LayerIndicatorTextTextBox != null) LayerIndicatorTextTextBox.Text = "#FFFFFF";
+			if (LayerIndicatorBgPreview != null) UpdateColorPreviewBorder(LayerIndicatorBgPreview, "#E60F172A");
+			if (LayerIndicatorBorderPreview != null) UpdateColorPreviewBorder(LayerIndicatorBorderPreview, "#38BDF8");
+			if (LayerIndicatorTextPreview != null) UpdateColorPreviewBorder(LayerIndicatorTextPreview, "#FFFFFF");
+
+			if (LayerIndicatorCornerRadiusSlider != null) LayerIndicatorCornerRadiusSlider.Value = 12.0;
+			if (LayerIndicatorCornerRadiusLabel != null) LayerIndicatorCornerRadiusLabel.Text = "12 px";
+			if (LayerIndicatorFontSizeSlider != null) LayerIndicatorFontSizeSlider.Value = 11.5;
+			if (LayerIndicatorFontSizeLabel != null) LayerIndicatorFontSizeLabel.Text = "11.5 px";
+			if (LayerIndicatorOffsetYSlider != null) LayerIndicatorOffsetYSlider.Value = 10.0;
+			if (LayerIndicatorOffsetYLabel != null) LayerIndicatorOffsetYLabel.Text = "10 px";
+			if (LayerIndicatorDurationSlider != null) LayerIndicatorDurationSlider.Value = 1200.0;
+			if (LayerIndicatorDurationLabel != null) LayerIndicatorDurationLabel.Text = "1.2 s";
+
+			UpdateLayerIndicatorCustomPanelVisibility();
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+
+		UpdateLayerIndicatorPreview();
+		ScheduleAutoSave();
+	}
+
+	private void UpdateLayerIndicatorCustomPanelVisibility()
+	{
+		if (LayerIndicatorCustomColorBorder == null || ConfigManager.CurrentConfig == null) return;
+		string style = ConfigManager.CurrentConfig.LayerIndicatorStyle ?? "Dark";
+		LayerIndicatorCustomColorBorder.Visibility = string.Equals(style, "Custom", StringComparison.OrdinalIgnoreCase)
+			? Visibility.Visible
+			: Visibility.Collapsed;
+	}
+
+	private void UpdateLayerIndicatorPreview()
+	{
+		if (PreviewLayerIndicatorBadge == null || PreviewLayerIndicatorText == null || PreviewLayerIndicatorIcon == null)
+		{
+			return;
+		}
+
+		AppConfig? config = ConfigManager.CurrentConfig;
+		if (config == null) return;
+
+		if (!config.ShowLayerIndicator)
+		{
+			PreviewLayerIndicatorBadge.Visibility = Visibility.Collapsed;
+			return;
+		}
+
+		PreviewLayerIndicatorBadge.Visibility = Visibility.Visible;
+
+		double offsetY = Math.Max(0.0, config.LayerIndicatorOffsetY);
+		PreviewLayerIndicatorBadge.Margin = new Thickness(0, offsetY, 0, 0);
+
+		double cornerRadius = Math.Max(0.0, config.LayerIndicatorCornerRadius);
+		PreviewLayerIndicatorBadge.CornerRadius = new CornerRadius(cornerRadius);
+
+		double fontSize = Math.Max(8.0, config.LayerIndicatorFontSize);
+		PreviewLayerIndicatorText.FontSize = fontSize;
+		PreviewLayerIndicatorIcon.FontSize = fontSize + 0.5;
+
+		string iconStr = config.LayerIndicatorIcon;
+		if (string.Equals(iconStr, "None", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(iconStr))
+		{
+			PreviewLayerIndicatorIcon.Visibility = Visibility.Collapsed;
+		}
+		else
+		{
+			PreviewLayerIndicatorIcon.Text = iconStr;
+			PreviewLayerIndicatorIcon.Visibility = Visibility.Visible;
+		}
+
+		int totalLayers = 1;
+		if (_selectedProfile?.Layers != null && _selectedProfile.Layers.Count > 0)
+		{
+			totalLayers = _selectedProfile.Layers.Count;
+		}
+		else if (config.Profiles != null && config.Profiles.Count > 0 && config.Profiles[0].Layers != null && config.Profiles[0].Layers.Count > 0)
+		{
+			totalLayers = config.Profiles[0].Layers.Count;
+		}
+		int showLayer = Math.Min(2, Math.Max(1, totalLayers));
+		PreviewLayerIndicatorText.Text = string.Format(I18n.T("PreviewLayerFormat") ?? "第 {0} 层 ({0}/{1})", showLayer, Math.Max(2, totalLayers));
+
+		if (string.Equals(config.LayerIndicatorStyle, "FollowTheme", StringComparison.OrdinalIgnoreCase))
+		{
+			SolidColorBrush? themeBg = null;
+			SolidColorBrush? themeBorder = null;
+			SolidColorBrush? themeText = null;
+
+			if (TryParseSolidBrush(config.CustomSectorBg, out var parsedBg)) themeBg = parsedBg;
+			if (TryParseSolidBrush(config.CustomHighlightBorder, out var parsedBorder)) themeBorder = parsedBorder;
+			if (TryParseSolidBrush(config.CustomText, out var parsedText)) themeText = parsedText;
+
+			PreviewLayerIndicatorBadge.Background = themeBg ?? new SolidColorBrush(Color.FromArgb(230, 15, 23, 42));
+			PreviewLayerIndicatorBadge.BorderBrush = themeBorder ?? new SolidColorBrush(Color.FromRgb(56, 189, 248));
+			PreviewLayerIndicatorText.Foreground = themeText ?? Brushes.White;
+			PreviewLayerIndicatorIcon.Foreground = themeBorder ?? Brushes.White;
+		}
+		else
+		{
+			if (TryParseSolidBrush(config.LayerIndicatorBg, out var bgBrush))
+			{
+				PreviewLayerIndicatorBadge.Background = bgBrush;
+			}
+			else
+			{
+				PreviewLayerIndicatorBadge.Background = new SolidColorBrush(Color.FromArgb(230, 15, 23, 42));
+			}
+
+			if (TryParseSolidBrush(config.LayerIndicatorBorder, out var borderBrush))
+			{
+				PreviewLayerIndicatorBadge.BorderBrush = borderBrush;
+			}
+			else
+			{
+				PreviewLayerIndicatorBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248));
+			}
+
+			if (TryParseSolidBrush(config.LayerIndicatorTextColor, out var textBrush))
+			{
+				PreviewLayerIndicatorText.Foreground = textBrush;
+				PreviewLayerIndicatorIcon.Foreground = textBrush;
+			}
+			else
+			{
+				PreviewLayerIndicatorText.Foreground = Brushes.White;
+				PreviewLayerIndicatorIcon.Foreground = Brushes.White;
+			}
+		}
+	}
+
+	private static bool TryParseSolidBrush(string? hex, out SolidColorBrush brush)
+	{
+		brush = Brushes.Transparent;
+		if (string.IsNullOrWhiteSpace(hex)) return false;
+		try
+		{
+			object colorObj = ColorConverter.ConvertFromString(hex.Trim());
+			if (colorObj is Color c)
+			{
+				brush = new SolidColorBrush(c);
+				brush.Freeze();
+				return true;
+			}
+		}
+		catch
+		{
+		}
+		return false;
+	}
+
+	private void EdgeOverflowPolicyComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || EdgeOverflowPolicyComboBox == null) return;
+		string policy = (EdgeOverflowPolicyComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "ClampShift";
+		ConfigManager.CurrentConfig.EdgeOverflowPolicy = policy;
+		ScheduleAutoSave();
+	}
+
+	private void EnableEdgeCollisionAvoidanceCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (!_isUiInitialized || _isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		bool isChecked = EnableEdgeCollisionAvoidanceCheckBox?.IsChecked == true;
+		ConfigManager.CurrentConfig.EnableEdgeCollisionAvoidance = isChecked;
+		if (EdgeCollisionDetailsPanel != null)
+		{
+			EdgeCollisionDetailsPanel.Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed;
+		}
+		ScheduleAutoSave();
+	}
+
+	private void EdgeSafeMarginXSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		double val = EdgeSafeMarginXSlider?.Value ?? 16.0;
+		if (EdgeSafeMarginXValueText != null)
+		{
+			EdgeSafeMarginXValueText.Text = $"{val:0} px";
+		}
+		ConfigManager.CurrentConfig.EdgeSafeMarginX = val;
+		ConfigManager.CurrentConfig.EdgeSafeMargin = val;
+		ScheduleAutoSave();
+	}
+
+	private void EdgeSafeMarginYSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null) return;
+		double val = EdgeSafeMarginYSlider?.Value ?? 16.0;
+		if (EdgeSafeMarginYValueText != null)
+		{
+			EdgeSafeMarginYValueText.Text = $"{val:0} px";
+		}
+		ConfigManager.CurrentConfig.EdgeSafeMarginY = val;
+		ScheduleAutoSave();
+	}
+
+	private void ResetDimensionsButton_Click(object sender, RoutedEventArgs e)
+	{
+		_isUpdatingUi = true;
+		try
+		{
+			WheelRadiusSlider.Value = 133.0;
+			WheelRadiusLabel.Text = "133";
+			InnerRadiusSlider.Value = 70.0;
+			InnerRadiusLabel.Text = "70";
+			CoreRadiusSlider.Value = 36.0;
+			CoreRadiusLabel.Text = "36";
+			SectorGapSlider.Value = 4.0;
+			SectorGapLabel.Text = "4 px";
+			SectorCornerRadiusSlider.Value = 13.0;
+			SectorCornerRadiusLabel.Text = "13 px";
+			SectorIconSizeSlider.Value = 20.0;
+			SectorIconSizeLabel.Text = "20 px";
+			SectorFontSizeSlider.Value = 13.0;
+			SectorFontSizeLabel.Text = "13 px";
+			ConfigManager.CurrentConfig.WheelRadius = 133.0;
+			ConfigManager.CurrentConfig.InnerRadius = 70.0;
+			ConfigManager.CurrentConfig.CoreRadius = 36.0;
+			ConfigManager.CurrentConfig.SectorGap = 4.0;
+			ConfigManager.CurrentConfig.SectorCornerRadius = 13.0;
+			ConfigManager.CurrentConfig.SectorIconSize = 20.0;
+			ConfigManager.CurrentConfig.SectorFontSize = 13.0;
+			ConfigManager.CurrentConfig.SectorTextPlacement = "Below";
+			ConfigManager.CurrentConfig.SectorTextOffsetX = 0.0;
+			ConfigManager.CurrentConfig.SectorTextOffsetY = 0.0;
+			if (SectorTextPlacementComboBox != null) SetComboBoxSelectedValue(SectorTextPlacementComboBox, "Below");
+			if (SectorTextOffsetXSlider != null) SectorTextOffsetXSlider.Value = 0;
+			if (SectorTextOffsetYSlider != null) SectorTextOffsetYSlider.Value = 0;
+			if (SectorTextOffsetXLabel != null) SectorTextOffsetXLabel.Text = "0 px";
+			if (SectorTextOffsetYLabel != null) SectorTextOffsetYLabel.Text = "0 px";
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		RenderLiveWheelPreview();
+		SyncUiToConfigAndSave();
+	}
+
+	private void TierDimensionRadio_Checked(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi)
+		{
+			return;
+		}
+		bool isFan = string.Equals(ConfigManager.CurrentConfig?.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+		bool flag = isFan && (sender == Tier2ConfigSegmentRadio || (sender == null && ((Tier2ConfigSegmentRadio?.IsChecked == true))));
+		_selectedLayoutTier = flag ? 2 : 1;
+		if (!flag)
+		{
+			_selectedLayoutSubSlotIndex = -1;
+		}
+		else
+		{
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+			if (profile?.Actions != null)
+			{
+				bool currentHasSub = (_selectedLayoutSlotIndex >= 0 && _selectedLayoutSlotIndex < profile.Actions.Count && profile.Actions[_selectedLayoutSlotIndex]?.SubActions?.Count > 0);
+				if (!currentHasSub)
+				{
+					for (int k = 0; k < profile.Actions.Count; k++)
+					{
+						if (profile.Actions[k]?.SubActions?.Count > 0)
+						{
+							_selectedLayoutSlotIndex = k;
+							_selectedLayoutSubSlotIndex = 0;
+							currentHasSub = true;
+							break;
+						}
+					}
+				}
+				if (currentHasSub)
+				{
+					if (_selectedLayoutSubSlotIndex < 0 || _selectedLayoutSubSlotIndex >= (profile.Actions[_selectedLayoutSlotIndex]?.SubActions?.Count ?? 0))
+					{
+						_selectedLayoutSubSlotIndex = 0;
+					}
+				}
+			}
+		}
+		_isUpdatingUi = true;
+		try
+		{
+			if (Tier1ConfigSegmentRadio != null)
+			{
+				Tier1ConfigSegmentRadio.IsChecked = !flag;
+			}
+			if (Tier2ConfigSegmentRadio != null)
+			{
+				Tier2ConfigSegmentRadio.IsChecked = flag;
+			}
+			if (isFan)
+			{
+				if (Tier1DimensionsPanel != null)
+				{
+					Tier1DimensionsPanel.Visibility = (flag ? Visibility.Collapsed : Visibility.Visible);
+				}
+				if (Tier2DimensionsExpanderBorder != null)
+				{
+					Tier2DimensionsExpanderBorder.Visibility = ((!flag) ? Visibility.Collapsed : Visibility.Visible);
+					if (Tier2DimensionsExpander != null && flag)
+					{
+						Tier2DimensionsExpander.IsExpanded = true;
+					}
+				}
+				if (Tier1ThemePanel != null)
+				{
+					Tier1ThemePanel.Visibility = (flag ? Visibility.Collapsed : Visibility.Visible);
+				}
+				if (Tier2ThemeExpanderBorder != null)
+				{
+					Tier2ThemeExpanderBorder.Visibility = ((!flag) ? Visibility.Collapsed : Visibility.Visible);
+					if (Tier2ThemeExpander != null && flag)
+					{
+						Tier2ThemeExpander.IsExpanded = true;
+					}
+				}
+				if (VisualThemeCardTitleText != null)
+				{
+					VisualThemeCardTitleText.Text = (flag ? "轮盘视觉风格与色彩配置 (二级级联轮盘)" : "轮盘视觉风格与色彩配置 (一级主轮盘)");
+				}
+				if (DimensionsCardTitleText != null)
+				{
+					DimensionsCardTitleText.Text = (flag ? "几何形态与尺寸微调 (二级级联轮盘)" : "几何形态与尺寸微调 (一级主轮盘)");
+				}
+			}
+			else
+			{
+				// 外圈子环形态（!isFan）：所有扇区默认全部展开外圈子环，左侧同时提供主轮盘与二级子环微调折叠栏
+				if (Tier1DimensionsPanel != null)
+				{
+					Tier1DimensionsPanel.Visibility = Visibility.Visible;
+				}
+				if (Tier2DimensionsExpanderBorder != null)
+				{
+					Tier2DimensionsExpanderBorder.Visibility = Visibility.Visible;
+				}
+				if (Tier1ThemePanel != null)
+				{
+					Tier1ThemePanel.Visibility = Visibility.Visible;
+				}
+				if (Tier2ThemeExpanderBorder != null)
+				{
+					Tier2ThemeExpanderBorder.Visibility = Visibility.Visible;
+				}
+				if (VisualThemeCardTitleText != null)
+				{
+					VisualThemeCardTitleText.Text = "轮盘视觉风格与色彩配置";
+				}
+				if (DimensionsCardTitleText != null)
+				{
+					DimensionsCardTitleText.Text = "几何形态与尺寸微调";
+				}
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		RefreshLayoutOptionsUi();
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+	}
+
+	private void SubWheelOuterRadiusSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SubWheelOuterRadiusLabel != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double num = Math.Round(e.NewValue);
+			ConfigManager.CurrentConfig.SubWheelOuterRadius = num;
+			SubWheelOuterRadiusLabel.Text = $"{num:0} px";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SubWheelInnerGapSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SubWheelInnerGapLabel != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double num = Math.Round(e.NewValue);
+			ConfigManager.CurrentConfig.SubWheelInnerGap = num;
+			SubWheelInnerGapLabel.Text = $"{num:0} px";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SubWheelCornerRadiusSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SubWheelCornerRadiusLabel != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double num = Math.Round(e.NewValue);
+			ConfigManager.CurrentConfig.SubWheelCornerRadius = num;
+			SubWheelCornerRadiusLabel.Text = $"{num:0} px";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SubWheelIconSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SubWheelIconSizeLabel != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double num = Math.Round(e.NewValue);
+			ConfigManager.CurrentConfig.SubWheelIconSize = num;
+			SubWheelIconSizeLabel.Text = $"{num:0} px";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SubWheelFontSizeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SubWheelFontSizeLabel != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			ConfigManager.CurrentConfig.SubWheelFontSize = e.NewValue;
+			SubWheelFontSizeLabel.Text = $"{e.NewValue:0.0} px";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ResetSubDimensionsButton_Click(object sender, RoutedEventArgs e)
+	{
+		_isUpdatingUi = true;
+		try
+		{
+			if (SubWheelOuterRadiusSlider != null)
+			{
+				SubWheelOuterRadiusSlider.Value = 196.0;
+				SubWheelOuterRadiusLabel.Text = "196 px";
+			}
+			if (SubWheelInnerGapSlider != null)
+			{
+				SubWheelInnerGapSlider.Value = 7.0;
+				SubWheelInnerGapLabel.Text = "7 px";
+			}
+			if (SubWheelCornerRadiusSlider != null)
+			{
+				SubWheelCornerRadiusSlider.Value = 14.0;
+				SubWheelCornerRadiusLabel.Text = "14 px";
+			}
+			if (SubWheelIconSizeSlider != null)
+			{
+				SubWheelIconSizeSlider.Value = 16.0;
+				SubWheelIconSizeLabel.Text = "16 px";
+			}
+			if (SubWheelFontSizeSlider != null)
+			{
+				SubWheelFontSizeSlider.Value = 9.5;
+				SubWheelFontSizeLabel.Text = "9.5 px";
+			}
+			ConfigManager.CurrentConfig.SubWheelOuterRadius = 196.0;
+			ConfigManager.CurrentConfig.SubWheelInnerGap = 7.0;
+			ConfigManager.CurrentConfig.SubWheelCornerRadius = 14.0;
+			ConfigManager.CurrentConfig.SubWheelIconSize = 16.0;
+			ConfigManager.CurrentConfig.SubWheelFontSize = 9.5;
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+		RenderLiveWheelPreview();
+		SyncUiToConfigAndSave();
+	}
+
+	private void SubWheelTriggerDistanceSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (SubWheelTriggerDistanceValueText != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double num = Math.Round(e.NewValue);
+			ConfigManager.CurrentConfig.SubWheelTriggerDistance = num;
+			SubWheelTriggerDistanceValueText.Text = $"{num:0} px";
+			ScheduleAutoSave();
+		}
+	}
+
+	private void VolumeCancelRatioSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (VolumeCancelRatioValueText != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double num = ((e.NewValue >= 0.2) ? e.NewValue : 0.6);
+			ConfigManager.CurrentConfig.VolumeCancelHysteresisRatio = num;
+			VolumeCancelRatioValueText.Text = $"{num * 100.0:0}%";
+			ScheduleAutoSave();
+		}
+	}
+
+	private void VolumeFlickFarSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (VolumeFlickFarValueText != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double num = Math.Round(e.NewValue);
+			ConfigManager.CurrentConfig.VolumeFlickFarDistance = num;
+			VolumeFlickFarValueText.Text = $"{num:0} px";
+			ScheduleAutoSave();
+		}
+	}
+
+	private void VolumeFlickJumpSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (VolumeFlickJumpValueText != null && ConfigManager.CurrentConfig != null && !_isUpdatingUi)
+		{
+			double num = Math.Round(e.NewValue);
+			ConfigManager.CurrentConfig.VolumeFlickCancelDistance = num;
+			VolumeFlickJumpValueText.Text = $"{num:0} px";
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ShowCoreIconCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (CoreIconConfigPanel != null && ShowCoreIconCheckBox != null)
+		{
+			CoreIconConfigPanel.Visibility = (ShowCoreIconCheckBox.IsChecked == true) ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.ShowCoreIcon = ShowCoreIconCheckBox.IsChecked == true;
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CoreIconTypeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null && CoreIconTypeComboBox.SelectedItem is ComboBoxItem { Tag: var tag })
+		{
+			string coreIconType = tag?.ToString() ?? "Exit";
+			ConfigManager.CurrentConfig.CoreIconType = coreIconType;
+			UpdateCoreIconPreviewUI();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void PickCoreIconButton_Click(object sender, RoutedEventArgs e)
+	{
+		IconPickerWindow iconPickerWindow = new IconPickerWindow(ConfigManager.CurrentConfig.CoreCustomIconKey);
+		iconPickerWindow.Owner = this;
+		if (iconPickerWindow.ShowDialog() == true)
+		{
+			ConfigManager.CurrentConfig.CoreCustomIconKey = iconPickerWindow.SelectedIconKey ?? "";
+			UpdateCoreIconPreviewUI();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void UpdateCoreIconPreviewUI()
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		string text = ConfigManager.CurrentConfig.CoreIconType ?? "Exit";
+		if (CustomCoreIconPanel != null)
+		{
+			CustomCoreIconPanel.Visibility = ((!(text == "Custom")) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		if (CustomCoreImagePanel != null)
+		{
+			CustomCoreImagePanel.Visibility = ((!(text == "Image")) ? Visibility.Collapsed : Visibility.Visible);
+			if (text == "Image")
+			{
+				UpdateCoreImageThumbnail(ConfigManager.CurrentConfig.CoreCustomImagePath);
+			}
+		}
+		if (CustomCoreIconPreviewPath != null && CustomCoreIconNameLabel != null)
+		{
+			Geometry coreIconGeometry = IconHelper.GetCoreIconGeometry(text, ConfigManager.CurrentConfig.CoreCustomIconKey, ConfigManager.CurrentConfig.CoreCustomIconSvg);
+			CustomCoreIconPreviewPath.Data = coreIconGeometry;
+			if (!string.IsNullOrEmpty(ConfigManager.CurrentConfig.CoreCustomIconKey))
+			{
+				CustomCoreIconNameLabel.Text = ConfigManager.CurrentConfig.CoreCustomIconKey;
+			}
+			else if (!string.IsNullOrEmpty(ConfigManager.CurrentConfig.CoreCustomIconSvg))
+			{
+				CustomCoreIconNameLabel.Text = "自定义 SVG 图标";
+			}
+			else
+			{
+				CustomCoreIconNameLabel.Text = "默认五角星 (点击更换)";
+			}
+		}
+	}
+
+	private void UpdateCoreImageThumbnail(string? imagePath)
+	{
+		if (CoreImageThumbnail == null)
+		{
+			return;
+		}
+		if (!string.IsNullOrEmpty(imagePath))
+		{
+			if (File.Exists(imagePath))
+			{
+				try
+				{
+					BitmapImage bitmapImage = new BitmapImage();
+					bitmapImage.BeginInit();
+					bitmapImage.UriSource = new Uri(imagePath, UriKind.Absolute);
+					bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
+					bitmapImage.EndInit();
+					CoreImageThumbnail.Source = bitmapImage;
+					return;
+				}
+				catch
+				{
+				}
+			}
+			try
+			{
+				ImageSource? fallbackSource = IconHelper.GetCustomImageSource(imagePath);
+				if (fallbackSource != null)
+				{
+					CoreImageThumbnail.Source = fallbackSource;
+					return;
+				}
+			}
+			catch
+			{
+			}
+		}
+		CoreImageThumbnail.Source = null;
+	}
+
+	private void CoreImagePathTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || CoreImagePathTextBox == null)
+		{
+			return;
+		}
+		string text = CoreImagePathTextBox.Text.Trim();
+		ConfigManager.CurrentConfig.CoreCustomImagePath = text;
+		if (!string.IsNullOrEmpty(text))
+		{
+			ConfigManager.CurrentConfig.CoreIconType = "Image";
+			SetComboBoxSelectedValue(CoreIconTypeComboBox, "Image");
+		}
+		UpdateCoreIconPreviewUI();
+		UpdateCoreImageThumbnail(ConfigManager.CurrentConfig.CoreCustomImagePath);
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		ScheduleAutoSave();
+	}
+
+	private void BrowseCoreImageButton_Click(object sender, RoutedEventArgs e)
+	{
+		Microsoft.Win32.OpenFileDialog openFileDialog = new Microsoft.Win32.OpenFileDialog
+		{
+			Title = "选择中心核圆图案图片",
+			Filter = "图片文件 (*.png;*.jpg;*.jpeg;*.bmp;*.webp;*.ico;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.webp;*.ico;*.gif|所有文件 (*.*)|*.*",
+			CheckFileExists = true
+		};
+		if (openFileDialog.ShowDialog() == true)
+		{
+			string fileName = openFileDialog.FileName;
+			if (CoreImagePathTextBox != null)
+			{
+				CoreImagePathTextBox.Text = fileName;
+			}
+			ConfigManager.CurrentConfig.CoreCustomImagePath = fileName;
+			ConfigManager.CurrentConfig.CoreIconType = "Image";
+			ConfigManager.CurrentConfig.ShowCoreIcon = true;
+			SetComboBoxSelectedValue(CoreIconTypeComboBox, "Image");
+			if (ShowCoreIconCheckBox != null)
+			{
+				ShowCoreIconCheckBox.IsChecked = true;
+			}
+			UpdateCoreIconPreviewUI();
+			UpdateCoreImageThumbnail(fileName);
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void ClearCoreImageButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (CoreImagePathTextBox != null)
+		{
+			CoreImagePathTextBox.Text = "";
+		}
+		ConfigManager.CurrentConfig.CoreCustomImagePath = "";
+		UpdateCoreImageThumbnail("");
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	private void CoreIconScaleSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			if (CoreIconScaleLabel != null && CoreIconScaleSlider != null)
+			{
+				CoreIconScaleLabel.Text = $"{Math.Round(CoreIconScaleSlider.Value * 100.0)}%";
+			}
+			if (CoreIconScaleSlider != null)
+			{
+				ConfigManager.CurrentConfig.CoreIconScale = CoreIconScaleSlider.Value;
+			}
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CoreImageOffsetSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			if (CoreImageOffsetXLabel != null && CoreImageOffsetXSlider != null)
+			{
+				CoreImageOffsetXLabel.Text = $"{(int)CoreImageOffsetXSlider.Value} px";
+			}
+			if (CoreImageOffsetYLabel != null && CoreImageOffsetYSlider != null)
+			{
+				CoreImageOffsetYLabel.Text = $"{(int)CoreImageOffsetYSlider.Value} px";
+			}
+			if (CoreImageOffsetXSlider != null)
+			{
+				ConfigManager.CurrentConfig.CoreImageOffsetX = CoreImageOffsetXSlider.Value;
+			}
+			if (CoreImageOffsetYSlider != null)
+			{
+				ConfigManager.CurrentConfig.CoreImageOffsetY = CoreImageOffsetYSlider.Value;
+			}
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void ResetCoreTransformButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig != null)
+		{
+			_isUpdatingUi = true;
+			if (CoreIconScaleSlider != null)
+			{
+				CoreIconScaleSlider.Value = 1.0;
+			}
+			if (CoreIconScaleLabel != null)
+			{
+				CoreIconScaleLabel.Text = "100%";
+			}
+			if (CoreImageOffsetXSlider != null)
+			{
+				CoreImageOffsetXSlider.Value = 0.0;
+			}
+			if (CoreImageOffsetXLabel != null)
+			{
+				CoreImageOffsetXLabel.Text = "0 px";
+			}
+			if (CoreImageOffsetYSlider != null)
+			{
+				CoreImageOffsetYSlider.Value = 0.0;
+			}
+			if (CoreImageOffsetYLabel != null)
+			{
+				CoreImageOffsetYLabel.Text = "0 px";
+			}
+			ConfigManager.CurrentConfig.CoreIconScale = 1.0;
+			ConfigManager.CurrentConfig.CoreImageOffsetX = 0.0;
+			ConfigManager.CurrentConfig.CoreImageOffsetY = 0.0;
+			_isUpdatingUi = false;
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void HighlightGlowPresetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && HighlightGlowPresetComboBox != null && ConfigManager.CurrentConfig != null && HighlightGlowPresetComboBox.SelectedItem is ComboBoxItem { Tag: var tag })
+		{
+			string text = tag?.ToString() ?? "Auto";
+			ConfigManager.CurrentConfig.HighlightGlowPreset = text;
+			switch (text)
+			{
+			case "Lilac":
+				ConfigManager.CurrentConfig.HighlightGlowColor = "#A855F7";
+				HighlightGlowColorTextBox.Text = "#A855F7";
+				break;
+			case "Blue":
+				ConfigManager.CurrentConfig.HighlightGlowColor = "#3B82F6";
+				HighlightGlowColorTextBox.Text = "#3B82F6";
+				break;
+			case "Emerald":
+				ConfigManager.CurrentConfig.HighlightGlowColor = "#10B981";
+				HighlightGlowColorTextBox.Text = "#10B981";
+				break;
+			case "Rose":
+				ConfigManager.CurrentConfig.HighlightGlowColor = "#EC4899";
+				HighlightGlowColorTextBox.Text = "#EC4899";
+				break;
+			case "Amber":
+				ConfigManager.CurrentConfig.HighlightGlowColor = "#F59E0B";
+				HighlightGlowColorTextBox.Text = "#F59E0B";
+				break;
+			case "Red":
+				ConfigManager.CurrentConfig.HighlightGlowColor = "#EF4444";
+				HighlightGlowColorTextBox.Text = "#EF4444";
+				break;
+			case "White":
+				ConfigManager.CurrentConfig.HighlightGlowColor = "#FFFFFF";
+				HighlightGlowColorTextBox.Text = "#FFFFFF";
+				break;
+			case "Auto":
+				ConfigManager.CurrentConfig.HighlightGlowColor = "";
+				HighlightGlowColorTextBox.Text = "";
+				break;
+			}
+			if (CustomHighlightGlowPanel != null)
+			{
+				CustomHighlightGlowPanel.Visibility = ((!(text == "Custom") && string.IsNullOrEmpty(HighlightGlowColorTextBox.Text)) ? Visibility.Collapsed : Visibility.Visible);
+			}
+			UpdateColorPreviews();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void HighlightGlowColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null && HighlightGlowColorTextBox != null)
+		{
+			ConfigManager.CurrentConfig.HighlightGlowColor = HighlightGlowColorTextBox.Text.Trim();
+			UpdateColorPreviews();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void HighlightGlowRadiusSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (!_isUpdatingUi && HighlightGlowRadiusLabel != null && ConfigManager.CurrentConfig != null)
+		{
+			HighlightGlowRadiusLabel.Text = $"{e.NewValue:0} px";
+			ConfigManager.CurrentConfig.HighlightGlowRadius = e.NewValue;
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void HighlightGlowOpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (!_isUpdatingUi && HighlightGlowOpacityLabel != null && ConfigManager.CurrentConfig != null)
+		{
+			HighlightGlowOpacityLabel.Text = $"{e.NewValue:0}%";
+			ConfigManager.CurrentConfig.HighlightGlowOpacity = e.NewValue / 100.0;
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SubHighlightGlowPresetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || SubHighlightGlowPresetComboBox == null || ConfigManager.CurrentConfig == null || !(SubHighlightGlowPresetComboBox.SelectedItem is ComboBoxItem { Tag: var tag }))
+		{
+			return;
+		}
+		string text = tag?.ToString() ?? "FollowPrimary";
+		ConfigManager.CurrentConfig.SubWheelHighlightGlowPreset = text;
+		switch (text)
+		{
+		case "Lilac":
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "#A855F7";
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "#A855F7";
+			}
+			break;
+		case "Blue":
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "#3B82F6";
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "#3B82F6";
+			}
+			break;
+		case "Emerald":
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "#10B981";
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "#10B981";
+			}
+			break;
+		case "Rose":
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "#EC4899";
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "#EC4899";
+			}
+			break;
+		case "Amber":
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "#F59E0B";
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "#F59E0B";
+			}
+			break;
+		case "Red":
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "#EF4444";
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "#EF4444";
+			}
+			break;
+		case "White":
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "#FFFFFF";
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "#FFFFFF";
+			}
+			break;
+		case "None":
+		case "Auto":
+		case "FollowPrimary":
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = "";
+			if (SubHighlightGlowColorTextBox != null)
+			{
+				SubHighlightGlowColorTextBox.Text = "";
+			}
+			break;
+		}
+		if (SubCustomHighlightGlowPanel != null)
+		{
+			SubCustomHighlightGlowPanel.Visibility = ((!(text == "Custom") && string.IsNullOrEmpty(SubHighlightGlowColorTextBox?.Text)) ? Visibility.Collapsed : Visibility.Visible);
+		}
+		UpdateColorPreviews();
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	private void SubHighlightGlowColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null && SubHighlightGlowColorTextBox != null)
+		{
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowColor = SubHighlightGlowColorTextBox.Text.Trim();
+			UpdateColorPreviews();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SubHighlightGlowRadiusSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (!_isUpdatingUi && SubHighlightGlowRadiusLabel != null && ConfigManager.CurrentConfig != null)
+		{
+			SubHighlightGlowRadiusLabel.Text = $"{e.NewValue:0} px";
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowRadius = e.NewValue;
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void SubHighlightGlowOpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (!_isUpdatingUi && SubHighlightGlowOpacityLabel != null && ConfigManager.CurrentConfig != null)
+		{
+			SubHighlightGlowOpacityLabel.Text = $"{e.NewValue:0}%";
+			ConfigManager.CurrentConfig.SubWheelHighlightGlowOpacity = e.NewValue / 100.0;
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			ScheduleAutoSave();
+		}
+	}
+
+	private void PickIcon_Click(object sender, RoutedEventArgs e)
+	{
+		if (!(sender is FrameworkElement { DataContext: SlotViewModel dataContext }))
+		{
+			return;
+		}
+		IconPickerWindow iconPickerWindow = new IconPickerWindow(dataContext.IconKey);
+		iconPickerWindow.Owner = this;
+		if (iconPickerWindow.ShowDialog() == true)
+		{
+			dataContext.IconKey = iconPickerWindow.SelectedIconKey ?? "";
+			dataContext.InheritAppIconPath = "";
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+	}
+
+	private void ManageSubActions_Click(object sender, RoutedEventArgs e)
+	{
+		if (!(sender is FrameworkElement { DataContext: SlotViewModel dataContext }))
+		{
+			return;
+		}
+		try
+		{
+			WheelProfile? profile = _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault();
+			bool isGlobal = string.Equals(profile?.ProcessName, "Global", StringComparison.OrdinalIgnoreCase);
+			bool inheritanceEnabled = ConfigManager.CurrentConfig?.EnableGlobalInheritance == true;
+
+			// 若当前方案为非全局方案，且子动作未配置，若有继承自全局的子动作，预加载供编辑
+			List<ActionItem> initialSubs = dataContext.Action.SubActions ?? new List<ActionItem>();
+			if (initialSubs.Count == 0 && !isGlobal && inheritanceEnabled && profile != null)
+			{
+				ActionItem? eff = profile.GetEffectiveAction(dataContext.PositionIndex);
+				if (eff != null && eff.IsInherited && eff.SubActions != null && eff.SubActions.Count > 0)
+				{
+					initialSubs = eff.SubActions.Select(s => {
+						var c = s.Clone();
+						c.IsInherited = false;
+						return c;
+					}).ToList();
+				}
+			}
+
+			SubActionEditorWindow subActionEditorWindow = new SubActionEditorWindow(dataContext.DirectionLabel, dataContext.Name, initialSubs);
+			subActionEditorWindow.Owner = this;
+			if (subActionEditorWindow.ShowDialog() == true)
+			{
+				if (!isGlobal && inheritanceEnabled && profile != null && !WheelProfile.IsActionConfigured(dataContext.Action))
+				{
+					ActionItem? eff = profile.GetEffectiveAction(dataContext.PositionIndex);
+					if (eff != null && eff.IsInherited)
+					{
+						dataContext.Action.Name = eff.Name;
+						dataContext.Action.Type = eff.Type;
+						dataContext.Action.Parameter = eff.Parameter;
+						dataContext.Action.Arguments = eff.Arguments;
+						dataContext.Action.IconKey = eff.IconKey;
+						dataContext.Action.CustomIconSvg = eff.CustomIconSvg;
+						dataContext.Action.InheritAppIconPath = eff.InheritAppIconPath;
+						dataContext.Action.CommandTerminal = eff.CommandTerminal;
+						dataContext.Action.CustomIconSize = eff.CustomIconSize;
+						dataContext.Action.CustomTextColor = eff.CustomTextColor;
+						dataContext.Action.IsInherited = false;
+					}
+				}
+				dataContext.Action.SubActions = subActionEditorWindow.ResultSubActions;
+				dataContext.NotifySubActionsChanged();
+				RefreshFocusSubActionsChips();
+				RefreshSlots();
+				RenderMappingsWheelPreview();
+				ConfigManager.SaveConfig();
+				RenderLiveWheelPreview();
+			}
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show("打开级联子菜单编辑器失败: " + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Hand);
+		}
+	}
+
+	private void EnableMultiTierCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null && EnableMultiTierCheckBox != null)
+		{
+			ConfigManager.CurrentConfig.EnableMultiTier = EnableMultiTierCheckBox.IsChecked == true;
+			bool isFan = string.Equals(ConfigManager.CurrentConfig.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+			if (AutoExpandSubRingsPanel != null)
+			{
+				AutoExpandSubRingsPanel.Visibility = (ConfigManager.CurrentConfig.EnableMultiTier && !isFan) ? Visibility.Visible : Visibility.Collapsed;
+			}
+			ConfigManager.SaveConfig();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+	}
+
+	private void AutoExpandSubRingsCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null && AutoExpandSubRingsCheckBox != null)
+		{
+			ConfigManager.CurrentConfig.AutoExpandSubRingsOnPopup = AutoExpandSubRingsCheckBox.IsChecked == true;
+			ConfigManager.SaveConfig();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+	}
+
+	private void CustomColorExpander_Expanded(object sender, RoutedEventArgs e)
+	{
+		PopulateCustomColorsIfEmpty();
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+	}
+
+	private void CustomColorExpander_Collapsed(object sender, RoutedEventArgs e)
+	{
+		Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+		if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+		{
+			RenderLiveWheelPreview();
+		}
+	}
+
+	private void PopulateCustomColorsIfEmpty()
+	{
+		if (CustomSectorBgTextBox != null && _previewStyleRenderer != null)
+		{
+			if (string.IsNullOrWhiteSpace(CustomSectorBgTextBox.Text) && _previewDefaultBrush is SolidColorBrush solidColorBrush)
+			{
+				CustomSectorBgTextBox.Text = $"#{solidColorBrush.Color.A:X2}{solidColorBrush.Color.R:X2}{solidColorBrush.Color.G:X2}{solidColorBrush.Color.B:X2}";
+			}
+			if (string.IsNullOrWhiteSpace(CustomSectorBorderTextBox.Text) && _previewBorderBrush is SolidColorBrush solidColorBrush2)
+			{
+				CustomSectorBorderTextBox.Text = $"#{solidColorBrush2.Color.A:X2}{solidColorBrush2.Color.R:X2}{solidColorBrush2.Color.G:X2}{solidColorBrush2.Color.B:X2}";
+			}
+			if (string.IsNullOrWhiteSpace(CustomHighlightBgTextBox.Text) && _previewHighlightBrush is SolidColorBrush solidColorBrush3)
+			{
+				CustomHighlightBgTextBox.Text = $"#{solidColorBrush3.Color.A:X2}{solidColorBrush3.Color.R:X2}{solidColorBrush3.Color.G:X2}{solidColorBrush3.Color.B:X2}";
+			}
+			if (string.IsNullOrWhiteSpace(CustomHighlightBorderTextBox.Text) && _previewHighlightBorderBrush is SolidColorBrush solidColorBrush4)
+			{
+				CustomHighlightBorderTextBox.Text = $"#{solidColorBrush4.Color.A:X2}{solidColorBrush4.Color.R:X2}{solidColorBrush4.Color.G:X2}{solidColorBrush4.Color.B:X2}";
+			}
+			if (string.IsNullOrWhiteSpace(CustomTextTextBox.Text) && _previewTextBrush is SolidColorBrush solidColorBrush5)
+			{
+				CustomTextTextBox.Text = $"#{solidColorBrush5.Color.A:X2}{solidColorBrush5.Color.R:X2}{solidColorBrush5.Color.G:X2}{solidColorBrush5.Color.B:X2}";
+			}
+			UpdateColorPreviews();
+		}
+	}
+
+	private void CustomColorTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.CustomSectorBg = CustomSectorBgTextBox.Text.Trim();
+			ConfigManager.CurrentConfig.CustomSectorBorder = CustomSectorBorderTextBox.Text.Trim();
+			ConfigManager.CurrentConfig.CustomHighlightBg = CustomHighlightBgTextBox.Text.Trim();
+			ConfigManager.CurrentConfig.CustomHighlightBorder = CustomHighlightBorderTextBox.Text.Trim();
+			ConfigManager.CurrentConfig.CustomText = CustomTextTextBox.Text.Trim();
+			UpdateColorPreviews();
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+		}
+	}
+
+	private void UpdateColorPreviews()
+	{
+		UpdateColorPreviewBorder(CustomSectorBgPreview, CustomSectorBgTextBox.Text);
+		UpdateColorPreviewBorder(CustomSectorBorderPreview, CustomSectorBorderTextBox.Text);
+		UpdateColorPreviewBorder(CustomHighlightBgPreview, CustomHighlightBgTextBox.Text);
+		UpdateColorPreviewBorder(CustomHighlightBorderPreview, CustomHighlightBorderTextBox.Text);
+		UpdateColorPreviewBorder(CustomTextPreview, CustomTextTextBox.Text);
+		if (HighlightGlowColorPreview != null && HighlightGlowColorTextBox != null)
+		{
+			UpdateColorPreviewBorder(HighlightGlowColorPreview, HighlightGlowColorTextBox.Text);
+		}
+		if (SubHighlightGlowColorPreview != null && SubHighlightGlowColorTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubHighlightGlowColorPreview, SubHighlightGlowColorTextBox.Text);
+		}
+		if (SubCustomSectorBgPreview != null && SubCustomSectorBgTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomSectorBgPreview, SubCustomSectorBgTextBox.Text);
+		}
+		if (SubCustomSectorBorderPreview != null && SubCustomSectorBorderTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomSectorBorderPreview, SubCustomSectorBorderTextBox.Text);
+		}
+		if (SubCustomHighlightBgPreview != null && SubCustomHighlightBgTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomHighlightBgPreview, SubCustomHighlightBgTextBox.Text);
+		}
+		if (SubCustomHighlightBorderPreview != null && SubCustomHighlightBorderTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomHighlightBorderPreview, SubCustomHighlightBorderTextBox.Text);
+		}
+		if (SubCustomTextPreview != null && SubCustomTextTextBox != null)
+		{
+			UpdateColorPreviewBorder(SubCustomTextPreview, SubCustomTextTextBox.Text);
+		}
+	}
+
+	private void UpdateColorPreviewBorder(Border border, string hex)
+	{
+		try
+		{
+			if (!string.IsNullOrEmpty(hex))
+			{
+				System.Windows.Media.Color color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
+				border.Background = new SolidColorBrush(color);
+			}
+			else
+			{
+				border.Background = System.Windows.Media.Brushes.Transparent;
+			}
+		}
+		catch
+		{
+			border.Background = System.Windows.Media.Brushes.Transparent;
+		}
+	}
+
+	private void PickCustomColor_Click(object sender, RoutedEventArgs e)
+	{
+		if (!(sender is FrameworkElement { Tag: string tag }))
+		{
+			return;
+		}
+		System.Windows.Controls.TextBox targetBox = GetColorTextBoxByTag(tag);
+		if (targetBox != null)
+		{
+			string text = targetBox.Text;
+			ColorPickerWindow colorPickerWindow = new ColorPickerWindow(text)
+			{
+				Owner = this
+			};
+			colorPickerWindow.ColorChangedCallback = delegate(string hex)
+			{
+				targetBox.Text = hex;
+			};
+			if (colorPickerWindow.ShowDialog() == true && !string.IsNullOrEmpty(colorPickerWindow.SelectedHexColor))
+			{
+				targetBox.Text = colorPickerWindow.SelectedHexColor;
+			}
+			else
+			{
+				targetBox.Text = text;
+			}
+		}
+	}
+
+	private void PickEyedropper_Click(object sender, RoutedEventArgs e)
+	{
+		if (!(sender is FrameworkElement { Tag: string tag }))
+		{
+			return;
+		}
+		System.Windows.Controls.TextBox colorTextBoxByTag = GetColorTextBoxByTag(tag);
+		if (colorTextBoxByTag != null)
+		{
+			ScreenEyedropperOverlay screenEyedropperOverlay = new ScreenEyedropperOverlay();
+			if (screenEyedropperOverlay.ShowDialog() == true && !string.IsNullOrEmpty(screenEyedropperOverlay.CapturedHexColor))
+			{
+				colorTextBoxByTag.Text = screenEyedropperOverlay.CapturedHexColor;
+			}
+		}
+	}
+
+	private System.Windows.Controls.TextBox? GetColorTextBoxByTag(string tag)
+	{
+		return tag switch
+		{
+			"CustomSectorBg" => CustomSectorBgTextBox, 
+			"CustomSectorBorder" => CustomSectorBorderTextBox, 
+			"CustomHighlightBg" => CustomHighlightBgTextBox, 
+			"CustomHighlightBorder" => CustomHighlightBorderTextBox, 
+			"CustomText" => CustomTextTextBox, 
+			"SectorCustomText" => SectorTextColorTextBox,
+			"BatchCustomText" => BatchTextColorTextBox,
+			"CoreCustomText" => CoreTextColorTextBox,
+			"HighlightGlowColor" => HighlightGlowColorTextBox, 
+			"SubHighlightGlowColor" => SubHighlightGlowColorTextBox, 
+			"SubCustomSectorBg" => SubCustomSectorBgTextBox, 
+			"SubCustomSectorBorder" => SubCustomSectorBorderTextBox, 
+			"SubCustomHighlightBg" => SubCustomHighlightBgTextBox, 
+			"SubCustomHighlightBorder" => SubCustomHighlightBorderTextBox, 
+			"SubCustomText" => SubCustomTextTextBox, 
+			"LayerIndicatorBg" => LayerIndicatorBgTextBox,
+			"LayerIndicatorBorder" => LayerIndicatorBorderTextBox,
+			"LayerIndicatorText" => LayerIndicatorTextTextBox,
+			_ => null, 
+		};
+	}
+
+	private void ThemeSegmentButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is System.Windows.Controls.RadioButton rb && rb.Tag is string tag)
+		{
+			SetAppTheme(tag);
+		}
+	}
+
+	private void SidebarThemeCollapsedButton_Click(object sender, RoutedEventArgs e)
+	{
+		string current = ConfigManager.CurrentConfig?.AppTheme ?? "System";
+		string next = current.ToLowerInvariant() switch
+		{
+			"system" => "Light",
+			"light" => "Dark",
+			"dark" => "TitaniumGray",
+			_ => "System"
+		};
+		SetAppTheme(next);
+	}
+
+	private void SetAppTheme(string themeTag)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.AppTheme = themeTag;
+			AppThemeManager.ApplyTheme(this, themeTag);
+			UpdateSidebarThemeVisualState(themeTag);
+			bool isDark = IsCurrentThemeDark();
+			UpdateLogoTheme(isDark);
+			App.ApplyTrayTheme(isDark);
+			if (AppearanceSettingsGrid != null && AppearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void UpdateSidebarThemeVisualState(string themeTag)
+	{
+		_isUpdatingUi = true;
+		try
+		{
+			string tag = themeTag ?? "System";
+			if (ThemeBtnSystem != null) ThemeBtnSystem.IsChecked = string.Equals(tag, "System", StringComparison.OrdinalIgnoreCase);
+			if (ThemeBtnLight != null) ThemeBtnLight.IsChecked = string.Equals(tag, "Light", StringComparison.OrdinalIgnoreCase);
+			if (ThemeBtnDark != null) ThemeBtnDark.IsChecked = string.Equals(tag, "Dark", StringComparison.OrdinalIgnoreCase);
+			if (ThemeBtnGray != null) ThemeBtnGray.IsChecked = string.Equals(tag, "TitaniumGray", StringComparison.OrdinalIgnoreCase);
+
+			if (SidebarThemeCollapsedIcon != null)
+			{
+				SidebarThemeCollapsedIcon.Text = tag.ToLowerInvariant() switch
+				{
+					"light" => "☀️",
+					"dark" => "🌙",
+					"titaniumgray" => "⚙️",
+					_ => "🌓"
+				};
+			}
+			if (SidebarThemeCollapsedButton != null)
+			{
+				string name = tag.ToLowerInvariant() switch
+				{
+					"light" => I18n.T("SidebarThemeLight"),
+					"dark" => I18n.T("SidebarThemeDark"),
+					"titaniumgray" => I18n.T("SidebarThemeGray"),
+					_ => I18n.T("SidebarThemeSystem")
+				};
+				SidebarThemeCollapsedButton.ToolTip = I18n.T("SidebarThemeToggleTip") + ": " + name;
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = false;
+		}
+	}
+
+	private void DisableOnFullScreenCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUiInitialized && !_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.DisableOnFullScreen = DisableOnFullScreenCheckBox.IsChecked == true;
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void ModifierCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUiInitialized && !_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.DisableOnCtrl = CtrlModifierCheckBox.IsChecked == true;
+			ConfigManager.CurrentConfig.DisableOnShift = ShiftModifierCheckBox.IsChecked == true;
+			ConfigManager.CurrentConfig.DisableOnAlt = AltModifierCheckBox.IsChecked == true;
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void BrowseBlacklistButton_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			ProgramPickerWindow programPickerWindow = new ProgramPickerWindow();
+			programPickerWindow.Owner = this;
+			if (programPickerWindow.ShowDialog() == true && !string.IsNullOrEmpty(programPickerWindow.SelectedPath))
+			{
+				string proc = System.IO.Path.GetFileName(programPickerWindow.SelectedPath).ToLower();
+				AddBlacklistProcess(proc);
+			}
+		}
+		catch (Exception)
+		{
+		}
+	}
+
+	private void AddBlacklistButton_Click(object sender, RoutedEventArgs e)
+	{
+		string text = NewBlacklistProcessTextBox.Text.Trim().ToLower();
+		if (!string.IsNullOrEmpty(text))
+		{
+			AddBlacklistProcess(text);
+			return;
+		}
+
+		// 输入框为空时，弹出智能运行窗口与进程捕捉器（与照片 2 效果一致），直观高效
+		try
+		{
+			WindowPickerWindow picker = new WindowPickerWindow
+			{
+				Owner = this
+			};
+			if (picker.ShowDialog() == true)
+			{
+				string proc = !string.IsNullOrEmpty(picker.SelectedProcessName)
+					? picker.SelectedProcessName
+					: System.IO.Path.GetFileName(picker.SelectedPath);
+				if (!string.IsNullOrEmpty(proc))
+				{
+					AddBlacklistProcess(proc);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("Failed to open WindowPickerWindow for blacklist", ex);
+		}
+	}
+
+	private void NewBlacklistProcessTextBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+	{
+		if ((int)e.Key == 6)
+		{
+			AddBlacklistButton_Click(sender, e);
+			e.Handled = true;
+		}
+	}
+
+	private void IsolationModeRadio_Checked(object sender, RoutedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			System.Windows.Controls.RadioButton isolationWhitelistRadio = IsolationWhitelistRadio;
+			string isolationMode = ((isolationWhitelistRadio != null && isolationWhitelistRadio.IsChecked == true) ? "Whitelist" : "Blacklist");
+			ConfigManager.CurrentConfig.IsolationMode = isolationMode;
+			RefreshProcessListUI();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void RefreshProcessListUI()
+	{
+		if (BlacklistListBox == null || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		bool flag = string.Equals(ConfigManager.CurrentConfig.IsolationMode, "Whitelist", StringComparison.OrdinalIgnoreCase);
+		if (IsolationWhitelistRadio != null)
+		{
+			IsolationWhitelistRadio.IsChecked = flag;
+		}
+		if (IsolationBlacklistRadio != null)
+		{
+			IsolationBlacklistRadio.IsChecked = !flag;
+		}
+		if (ProcessListDescText != null)
+		{
+			ProcessListDescText.Text = (flag ? I18n.T("WhitelistDesc") : I18n.T("BlacklistDesc"));
+		}
+
+		string? previouslySelectedProcess = (BlacklistListBox.SelectedItem as BlacklistProcessItemViewModel)?.ProcessName ?? _recordingProcessName;
+
+		List<string>? list = flag ? ConfigManager.CurrentConfig.WhitelistedProcesses : ConfigManager.CurrentConfig.BlacklistedProcesses;
+		var viewModels = new List<BlacklistProcessItemViewModel>();
+		if (list != null)
+		{
+			foreach (string item in list)
+			{
+				TriggerConfig? overrideTrigger = null;
+				if (!flag && ConfigManager.CurrentConfig.BlacklistTriggerOverrides != null)
+				{
+					ConfigManager.CurrentConfig.BlacklistTriggerOverrides.TryGetValue(item, out overrideTrigger);
+				}
+				viewModels.Add(BlacklistProcessItemViewModel.Create(item, overrideTrigger));
+			}
+		}
+
+		BlacklistListBox.ItemsSource = viewModels;
+
+		if (!string.IsNullOrEmpty(previouslySelectedProcess))
+		{
+			var matched = viewModels.FirstOrDefault(vm => string.Equals(vm.ProcessName, previouslySelectedProcess, StringComparison.OrdinalIgnoreCase));
+			if (matched != null)
+			{
+				BlacklistListBox.SelectedItem = matched;
+				BlacklistListBox.ScrollIntoView(matched);
+				UpdateProcessTriggerCardVisual();
+			}
+			else if (_recordingProcessName != null)
+			{
+				HideProcessTriggerCard();
+			}
+		}
+	}
+
+	private void BlacklistListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (BlacklistListBox.SelectedItem is BlacklistProcessItemViewModel vm)
+		{
+			ShowProcessTriggerCard(vm.ProcessName);
+		}
+	}
+
+	private void BlacklistListBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+	{
+		if ((int)e.Key == 32 || (int)e.Key == 2)
+		{
+			DeleteBlacklistButton_Click(sender, e);
+			e.Handled = true;
+		}
+	}
+
+	private void ShowProcessTriggerCard(string proc)
+	{
+		if (string.IsNullOrWhiteSpace(proc))
+		{
+			return;
+		}
+		_recordingProcessName = proc.Trim().ToLower();
+		if (SelectedProcessNameLabel != null)
+		{
+			SelectedProcessNameLabel.Text = _recordingProcessName;
+		}
+		if (BlacklistProcessTriggerCard != null)
+		{
+			BlacklistProcessTriggerCard.Visibility = Visibility.Visible;
+		}
+		UpdateProcessTriggerCardVisual();
+	}
+
+	private void HideProcessTriggerCard()
+	{
+		if (_isRecordingProcessTrigger)
+		{
+			StopProcessTriggerRecording(saved: false);
+		}
+		_recordingProcessName = null;
+		if (BlacklistProcessTriggerCard != null)
+		{
+			BlacklistProcessTriggerCard.Visibility = Visibility.Collapsed;
+		}
+	}
+
+	private void UpdateProcessTriggerCardVisual()
+	{
+		if (string.IsNullOrWhiteSpace(_recordingProcessName) || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+
+		TriggerConfig? trigger = null;
+		ConfigManager.CurrentConfig.BlacklistTriggerOverrides?.TryGetValue(_recordingProcessName, out trigger);
+
+		if (trigger != null)
+		{
+			if (ProcessCurrentTriggerBadgeText != null)
+			{
+				ProcessCurrentTriggerBadgeText.Text = "🎯 " + FormatTriggerDisplay(trigger);
+				ProcessCurrentTriggerBadgeText.Foreground = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981"));
+			}
+			if (ProcessCurrentTriggerBadgeBorder != null)
+			{
+				ProcessCurrentTriggerBadgeBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 16, 185, 129));
+				ProcessCurrentTriggerBadgeBorder.BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(120, 16, 185, 129));
+			}
+			if (ResetProcessTriggerButton != null)
+			{
+				ResetProcessTriggerButton.IsEnabled = true;
+			}
+		}
+		else
+		{
+			if (ProcessCurrentTriggerBadgeText != null)
+			{
+				ProcessCurrentTriggerBadgeText.Text = "🚫 " + I18n.T("ProcessTriggerDefaultPass");
+				ProcessCurrentTriggerBadgeText.Foreground = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#94A3B8"));
+			}
+			if (ProcessCurrentTriggerBadgeBorder != null)
+			{
+				ProcessCurrentTriggerBadgeBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(20, 148, 163, 184));
+				ProcessCurrentTriggerBadgeBorder.BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(60, 148, 163, 184));
+			}
+			if (ResetProcessTriggerButton != null)
+			{
+				ResetProcessTriggerButton.IsEnabled = false;
+			}
+		}
+	}
+
+	private void RecordProcessTriggerButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (!_isRecordingProcessTrigger)
+		{
+			StartProcessTriggerRecording();
+		}
+		else
+		{
+			StopProcessTriggerRecording(saved: false);
+		}
+	}
+
+	private void StartProcessTriggerRecording()
+	{
+		if (string.IsNullOrWhiteSpace(_recordingProcessName))
+		{
+			return;
+		}
+		_isRecordingProcessTrigger = true;
+		if (RecordProcessTriggerButton != null)
+		{
+			RecordProcessTriggerButton.Content = I18n.T("BtnRecordProcessTriggerListening");
+			RecordProcessTriggerButton.Background = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#EF4444"));
+		}
+		if (ProcessLiveSensorStatusText != null)
+		{
+			ProcessLiveSensorStatusText.Text = string.Format(I18n.T("ProcessSensorListeningFmt"), _recordingProcessName);
+		}
+		if (ProcessLiveSensorDot != null)
+		{
+			ProcessLiveSensorDot.Fill = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#EF4444"));
+		}
+	}
+
+	private void StopProcessTriggerRecording(bool saved)
+	{
+		_isRecordingProcessTrigger = false;
+		if (RecordProcessTriggerButton != null)
+		{
+			RecordProcessTriggerButton.Content = I18n.T("BtnRecordProcessTrigger");
+			((DependencyObject)RecordProcessTriggerButton).ClearValue(System.Windows.Controls.Control.BackgroundProperty);
+		}
+		if (ProcessLiveSensorStatusText != null)
+		{
+			if (saved)
+			{
+				ProcessLiveSensorStatusText.Text = string.Format(I18n.T("ProcessSensorSavedFmt"), _recordingProcessName);
+			}
+			else
+			{
+				ProcessLiveSensorStatusText.Text = I18n.T("ProcessSensorReadyTip");
+			}
+		}
+		if (ProcessLiveSensorDot != null)
+		{
+			ProcessLiveSensorDot.Fill = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#10B981"));
+		}
+		UpdateProcessTriggerCardVisual();
+		RefreshProcessListUI();
+	}
+
+	private void ResetProcessTriggerButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (!string.IsNullOrWhiteSpace(_recordingProcessName) && ConfigManager.CurrentConfig?.BlacklistTriggerOverrides != null)
+		{
+			ConfigManager.CurrentConfig.BlacklistTriggerOverrides.Remove(_recordingProcessName);
+			ScheduleAutoSave();
+			StopProcessTriggerRecording(saved: false);
+			if (ProcessLiveSensorStatusText != null)
+			{
+				ProcessLiveSensorStatusText.Text = string.Format(I18n.T("ProcessSensorResetFmt"), _recordingProcessName);
+			}
+			UpdateProcessTriggerCardVisual();
+			RefreshProcessListUI();
+		}
+	}
+
+	private void CloseProcessTriggerCardBtn_Click(object sender, RoutedEventArgs e)
+	{
+		HideProcessTriggerCard();
+	}
+
+	private void ConfigProcessTriggerBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if ((sender as FrameworkElement)?.Tag is BlacklistProcessItemViewModel vm)
+		{
+			ShowProcessTriggerCard(vm.ProcessName);
+			StartProcessTriggerRecording();
+		}
+	}
+
+	private void ResetProcessTriggerBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if ((sender as FrameworkElement)?.Tag is BlacklistProcessItemViewModel vm)
+		{
+			ConfigManager.CurrentConfig?.BlacklistTriggerOverrides?.Remove(vm.ProcessName);
+			ScheduleAutoSave();
+			if (string.Equals(_recordingProcessName, vm.ProcessName, StringComparison.OrdinalIgnoreCase))
+			{
+				UpdateProcessTriggerCardVisual();
+			}
+			RefreshProcessListUI();
+		}
+	}
+
+	private void DeleteSingleProcessBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if ((sender as FrameworkElement)?.Tag is BlacklistProcessItemViewModel vm)
+		{
+			string proc = vm.ProcessName;
+			if (string.Equals(ConfigManager.CurrentConfig?.IsolationMode, "Whitelist", StringComparison.OrdinalIgnoreCase))
+			{
+				ConfigManager.CurrentConfig?.WhitelistedProcesses?.Remove(proc);
+			}
+			else
+			{
+				ConfigManager.CurrentConfig?.BlacklistedProcesses?.Remove(proc);
+				ConfigManager.CurrentConfig?.BlacklistTriggerOverrides?.Remove(proc);
+			}
+			if (string.Equals(_recordingProcessName, proc, StringComparison.OrdinalIgnoreCase))
+			{
+				HideProcessTriggerCard();
+			}
+			ScheduleAutoSave();
+			RefreshProcessListUI();
+		}
+	}
+
+	private void AddBlacklistProcess(string proc)
+	{
+		if (string.IsNullOrWhiteSpace(proc))
+		{
+			return;
+		}
+		proc = proc.Trim().ToLower();
+		if (!proc.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+		{
+			proc += ".exe";
+		}
+		bool isWhitelist = string.Equals(ConfigManager.CurrentConfig?.IsolationMode, "Whitelist", StringComparison.OrdinalIgnoreCase);
+		List<string> list = isWhitelist
+			? (ConfigManager.CurrentConfig.WhitelistedProcesses ??= new List<string>())
+			: (ConfigManager.CurrentConfig.BlacklistedProcesses ??= new List<string>());
+
+		if (!list.Contains(proc))
+		{
+			list.Add(proc);
+			NewBlacklistProcessTextBox?.Clear();
+			SyncUiToConfigAndSave();
+			RefreshProcessListUI();
+			ShowProcessTriggerCard(proc);
+		}
+		else
+		{
+			ShowProcessTriggerCard(proc);
+		}
+	}
+
+	private void DeleteBlacklistButton_Click(object sender, RoutedEventArgs e)
+	{
+		var selectedVm = BlacklistListBox?.SelectedItem as BlacklistProcessItemViewModel;
+		string? text = selectedVm?.ProcessName;
+		if (string.IsNullOrEmpty(text) && BlacklistListBox?.Items.Count > 0)
+		{
+			var lastVm = BlacklistListBox.Items[BlacklistListBox.Items.Count - 1] as BlacklistProcessItemViewModel;
+			text = lastVm?.ProcessName;
+		}
+		if (!string.IsNullOrEmpty(text))
+		{
+			if (string.Equals(ConfigManager.CurrentConfig?.IsolationMode, "Whitelist", StringComparison.OrdinalIgnoreCase))
+			{
+				ConfigManager.CurrentConfig?.WhitelistedProcesses?.Remove(text);
+			}
+			else
+			{
+				ConfigManager.CurrentConfig?.BlacklistedProcesses?.Remove(text);
+				ConfigManager.CurrentConfig?.BlacklistTriggerOverrides?.Remove(text);
+			}
+			if (string.Equals(_recordingProcessName, text, StringComparison.OrdinalIgnoreCase))
+			{
+				HideProcessTriggerCard();
+			}
+			SyncUiToConfigAndSave();
+			RefreshProcessListUI();
+		}
+	}
+
+	private async void CheckUpdateNowBtn_Click(object sender, RoutedEventArgs e)
+	{
+		await CheckForUpdateInternalAsync(silent: false);
+	}
+
+	private async Task CheckForUpdateInternalAsync(bool silent = false)
+	{
+		try
+		{
+			if (CheckUpdateNowBtn != null)
+			{
+				CheckUpdateNowBtn.IsEnabled = false;
+				CheckUpdateNowBtn.Content = I18n.T("BtnCheckingUpdate");
+			}
+			if (UpdateStatusBadgeText != null)
+			{
+				UpdateStatusBadgeText.Text = I18n.T("UpdateStatusChecking");
+				UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(59, 130, 246));
+			}
+			if (UpdateStatusBadge != null)
+			{
+				UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 59, 130, 246));
+			}
+
+			string channel = ConfigManager.CurrentConfig?.UpdateChannel ?? "Stable";
+			string proxy = ConfigManager.CurrentConfig?.UpdateProxySource ?? "ghfast";
+			string customProxy = ConfigManager.CurrentConfig?.CustomProxyUrl ?? "";
+
+			// 仅在检查应用更新时同步一次 GitHub 贡献者名单，平时默认离线
+			_ = SyncContributorsFromGitHubAsync();
+
+			_allFetchedReleases = await UpdateManager.Instance.FetchAllReleasesAsync(proxy, customProxy);
+			ReleaseInfo? rel = UpdateManager.Instance.GetLatestUpdateRelease(_allFetchedReleases, channel);
+			UpdateRollbackBadgeAndCandidates();
+
+			if (ConfigManager.CurrentConfig != null)
+			{
+				ConfigManager.CurrentConfig.LastCheckUpdateTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+				ScheduleAutoSave();
+			}
+
+			if (rel != null && rel.IsNewerVersion)
+			{
+				_latestReleaseInfo = rel;
+
+				if (UpdateStatusBadgeText != null)
+				{
+					UpdateStatusBadgeText.Text = string.Format(I18n.T("UpdateStatusFoundNew"), rel.TagName);
+					UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(245, 158, 11));
+				}
+				if (UpdateStatusBadge != null)
+				{
+					UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 245, 158, 11));
+				}
+				if (UpdateStatusDescText != null)
+				{
+					UpdateStatusDescText.Text = string.Format(I18n.T("UpdateStatusFoundNewDesc"), rel.TagName, $"{rel.PublishedAt:yyyy-MM-dd HH:mm}");
+				}
+
+				if (UpdateNewVersionTagText != null)
+				{
+					UpdateNewVersionTagText.Text = string.Format(I18n.T("UpdateNewVersionTag"), rel.TagName);
+				}
+				if (UpdateReleaseChannelTag != null)
+				{
+					UpdateReleaseChannelTag.Text = rel.IsPrerelease ? I18n.T("ReleaseChannelBeta") : I18n.T("ReleaseChannelStable");
+				}
+				if (UpdateReleaseDateText != null)
+				{
+					UpdateReleaseDateText.Text = string.Format(I18n.T("UpdateReleaseDateFmt"), $"{rel.PublishedAt:yyyy-MM-dd HH:mm}");
+				}
+				if (UpdateChangelogTextBlock != null)
+				{
+					UpdateChangelogTextBlock.Text = string.IsNullOrWhiteSpace(rel.Body) ? I18n.T("NoChangelogAvailable") : rel.Body;
+				}
+
+				if (UpdateNewVersionPanel != null)
+				{
+					UpdateNewVersionPanel.Visibility = Visibility.Visible;
+				}
+				if (UpdateReadyToInstallPanel != null)
+				{
+					UpdateReadyToInstallPanel.Visibility = Visibility.Collapsed;
+				}
+				if (UpdateDownloadProgressPanel != null)
+				{
+					UpdateDownloadProgressPanel.Visibility = Visibility.Collapsed;
+				}
+			}
+			else if (rel != null)
+			{
+				_latestReleaseInfo = rel;
+				if (UpdateStatusBadgeText != null)
+				{
+					UpdateStatusBadgeText.Text = I18n.T("UpdateStatusUpToDate");
+					UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+				}
+				if (UpdateStatusBadge != null)
+				{
+					UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 16, 185, 129));
+				}
+				if (UpdateStatusDescText != null)
+				{
+					UpdateStatusDescText.Text = string.Format(I18n.T("UpdateStatusUpToDateDesc"), AppVersionInfo.DisplayVersion, rel.TagName, ConfigManager.CurrentConfig?.LastCheckUpdateTime ?? "");
+				}
+				if (UpdateNewVersionPanel != null)
+				{
+					UpdateNewVersionPanel.Visibility = Visibility.Collapsed;
+				}
+			}
+			else
+			{
+				if (!silent)
+				{
+					if (UpdateStatusBadgeText != null)
+					{
+						UpdateStatusBadgeText.Text = I18n.T("UpdateStatusError");
+						UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(239, 68, 68));
+					}
+					if (UpdateStatusBadge != null)
+					{
+						UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 239, 68, 68));
+					}
+					if (UpdateStatusDescText != null)
+					{
+						UpdateStatusDescText.Text = I18n.T("UpdateStatusErrorDesc");
+					}
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("CheckForUpdateInternalAsync error", ex);
+		}
+		finally
+		{
+			if (CheckUpdateNowBtn != null)
+			{
+				CheckUpdateNowBtn.IsEnabled = true;
+				CheckUpdateNowBtn.Content = I18n.T("BtnCheckUpdate");
+			}
+		}
+	}
+
+	private async void StartDownloadUpdateBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_latestReleaseInfo == null) return;
+
+		bool isStandalone = (UpdatePkgStandaloneRadio?.IsChecked == true);
+		string? rawAssetUrl = isStandalone ? _latestReleaseInfo.StandaloneAssetUrl : _latestReleaseInfo.LightweightAssetUrl;
+
+		if (string.IsNullOrEmpty(rawAssetUrl))
+		{
+			OpenWebReleaseBtn_Click(sender, e);
+			return;
+		}
+
+		string proxy = ConfigManager.CurrentConfig?.UpdateProxySource ?? "ghproxy";
+		string customProxy = ConfigManager.CurrentConfig?.CustomProxyUrl ?? "";
+		string downloadUrl = UpdateManager.Instance.GetProxiedDownloadUrl(rawAssetUrl, proxy, customProxy);
+
+		string fileName = isStandalone
+			? $"StarPie-{_latestReleaseInfo.TagName}-Standalone-win-x64.zip"
+			: $"StarPie-{_latestReleaseInfo.TagName}-Lightweight-win-x64.zip";
+
+		string destPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "StarPie_Updates", fileName);
+		_downloadedZipPath = destPath;
+
+		if (UpdateNewVersionPanel != null) UpdateNewVersionPanel.Visibility = Visibility.Collapsed;
+		if (UpdateReadyToInstallPanel != null) UpdateReadyToInstallPanel.Visibility = Visibility.Collapsed;
+		if (UpdateDownloadProgressPanel != null) UpdateDownloadProgressPanel.Visibility = Visibility.Visible;
+
+		if (UpdateDownloadingTitleText != null) UpdateDownloadingTitleText.Text = string.Format(I18n.T("UpdateDownloadingFmt"), fileName);
+		if (UpdateDownloadPercentText != null) UpdateDownloadPercentText.Text = "0%";
+		if (UpdateDownloadProgressBar != null) UpdateDownloadProgressBar.Value = 0;
+		if (UpdateDownloadSpeedText != null) UpdateDownloadSpeedText.Text = I18n.T("UpdateDownloadSpeedConnecting");
+
+		_downloadCts?.Dispose();
+		_downloadCts = new CancellationTokenSource();
+
+		Progress<UpdateProgressInfo> progress = new Progress<UpdateProgressInfo>(info =>
+		{
+			if (UpdateDownloadProgressBar != null) UpdateDownloadProgressBar.Value = info.Percent;
+			if (UpdateDownloadPercentText != null) UpdateDownloadPercentText.Text = $"{info.Percent}%";
+			if (UpdateDownloadSpeedText != null) UpdateDownloadSpeedText.Text = $"⚡ {info.FormattedSpeed}";
+			if (UpdateDownloadSizeText != null) UpdateDownloadSizeText.Text = info.FormattedProgress;
+		});
+
+		try
+		{
+			await UpdateManager.Instance.DownloadAssetAsync(downloadUrl, destPath, progress, _downloadCts.Token);
+
+			if (UpdateDownloadProgressPanel != null) UpdateDownloadProgressPanel.Visibility = Visibility.Collapsed;
+			if (UpdateReadyToInstallPanel != null) UpdateReadyToInstallPanel.Visibility = Visibility.Visible;
+
+			if (UpdateStatusBadgeText != null)
+			{
+				UpdateStatusBadgeText.Text = I18n.T("UpdateStatusDownloadComplete");
+				UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+			}
+			if (UpdateStatusBadge != null)
+			{
+				UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 16, 185, 129));
+			}
+		}
+		catch (OperationCanceledException)
+		{
+			if (UpdateDownloadProgressPanel != null) UpdateDownloadProgressPanel.Visibility = Visibility.Collapsed;
+			if (UpdateNewVersionPanel != null) UpdateNewVersionPanel.Visibility = Visibility.Visible;
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("DownloadUpdate failed", ex);
+			if (UpdateDownloadProgressPanel != null) UpdateDownloadProgressPanel.Visibility = Visibility.Collapsed;
+			if (UpdateNewVersionPanel != null) UpdateNewVersionPanel.Visibility = Visibility.Visible;
+			System.Windows.MessageBox.Show($"下载更新包失败：{ex.Message}\n建议切换加速镜像源重试或点击前往网页下载。", "StarPie 更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	private void CancelDownloadBtn_Click(object sender, RoutedEventArgs e)
+	{
+		_downloadCts?.Cancel();
+	}
+
+	private void ApplyRestartUpdateBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (!string.IsNullOrEmpty(_downloadedZipPath) && File.Exists(_downloadedZipPath))
+		{
+			UpdateManager.Instance.RestartAndApplyUpdate(_downloadedZipPath);
+		}
+		else
+		{
+			System.Windows.MessageBox.Show("未找到已下载的更新包，请重新点击下载。", "StarPie 更新", MessageBoxButton.OK, MessageBoxImage.Information);
+		}
+	}
+
+	private void OpenUpdateFolderBtn_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			if (!string.IsNullOrEmpty(_downloadedZipPath) && File.Exists(_downloadedZipPath))
+			{
+				Process.Start("explorer.exe", $"/select,\"{_downloadedZipPath}\"");
+			}
+			else
+			{
+				string folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "StarPie_Updates");
+				if (!Directory.Exists(folder)) Directory.CreateDirectory(folder);
+				Process.Start("explorer.exe", folder);
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("OpenUpdateFolder failed", ex);
+		}
+	}
+
+	private void OpenWebReleaseBtn_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			string url = _latestReleaseInfo?.HtmlUrl ?? "https://github.com/oohb144/StarPie-Touch/releases";
+			Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("OpenWebRelease failed", ex);
+		}
+	}
+
+	private void AutoCheckUpdateCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null)
+		{
+			ConfigManager.CurrentConfig.AutoCheckUpdate = (AutoCheckUpdateCheckBox.IsChecked == true);
+			ScheduleAutoSave();
+		}
+	}
+
+	private void UpdateChannelComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null && UpdateChannelComboBox.SelectedItem is ComboBoxItem item)
+		{
+			ConfigManager.CurrentConfig.UpdateChannel = item.Tag?.ToString() ?? "Stable";
+			ScheduleAutoSave();
+			UpdateRollbackBadgeAndCandidates();
+		}
+	}
+
+	private void UpdateRollbackBadgeAndCandidates()
+	{
+		if (RollbackCountBadgeText == null || RollbackVersionComboBox == null) return;
+
+		string channel = (UpdateChannelComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString()
+			?? ConfigManager.CurrentConfig?.UpdateChannel
+			?? "Stable";
+		bool isBeta = string.Equals(channel, "Beta", StringComparison.OrdinalIgnoreCase);
+
+		// 1. 更新徽章
+		if (isBeta)
+		{
+			RollbackCountBadgeText.Text = I18n.T("RollbackBadgeBeta");
+			if (RollbackCountBadge != null)
+			{
+				RollbackCountBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 245, 158, 11));
+				RollbackCountBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(245, 158, 11));
+			}
+		}
+		else
+		{
+			RollbackCountBadgeText.Text = I18n.T("RollbackBadgeStable");
+			if (RollbackCountBadge != null)
+			{
+				RollbackCountBadge.Background = (System.Windows.Media.Brush)FindResource("NavTabActiveBgBrush");
+				RollbackCountBadgeText.Foreground = (System.Windows.Media.Brush)FindResource("AccentPrimaryBrush");
+			}
+		}
+
+		// 2. 更新候选列表
+		RollbackVersionComboBox.Items.Clear();
+		_selectedRollbackRelease = null;
+		if (RollbackDetailCard != null) RollbackDetailCard.Visibility = Visibility.Collapsed;
+		if (StartRollbackBtn != null) StartRollbackBtn.IsEnabled = false;
+
+		if (_allFetchedReleases == null || _allFetchedReleases.Count == 0)
+		{
+			ComboBoxItem emptyItem = new ComboBoxItem
+			{
+				Content = I18n.T("RollbackEmpty"),
+				IsEnabled = false
+			};
+			RollbackVersionComboBox.Items.Add(emptyItem);
+			RollbackVersionComboBox.SelectedIndex = 0;
+			return;
+		}
+
+		var candidates = UpdateManager.Instance.GetRollbackCandidates(_allFetchedReleases, channel);
+		if (candidates.Count == 0)
+		{
+			ComboBoxItem emptyItem = new ComboBoxItem
+			{
+				Content = I18n.T("RollbackEmpty"),
+				IsEnabled = false
+			};
+			RollbackVersionComboBox.Items.Add(emptyItem);
+			RollbackVersionComboBox.SelectedIndex = 0;
+			return;
+		}
+
+		foreach (var rel in candidates)
+		{
+			string typeTag = rel.IsPrerelease ? "测试版" : "正式版";
+			ComboBoxItem item = new ComboBoxItem
+			{
+				Content = $"{rel.TagName}  [{typeTag}] · {rel.PublishedAt:yyyy-MM-dd}",
+				Tag = rel
+			};
+			RollbackVersionComboBox.Items.Add(item);
+		}
+
+		RollbackVersionComboBox.SelectedIndex = 0;
+	}
+
+	private void RollbackVersionComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (RollbackVersionComboBox == null || RollbackVersionComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not ReleaseInfo rel)
+		{
+			_selectedRollbackRelease = null;
+			if (RollbackDetailCard != null) RollbackDetailCard.Visibility = Visibility.Collapsed;
+			if (StartRollbackBtn != null) StartRollbackBtn.IsEnabled = false;
+			return;
+		}
+
+		_selectedRollbackRelease = rel;
+		if (StartRollbackBtn != null) StartRollbackBtn.IsEnabled = true;
+
+		if (RollbackDetailCard != null) RollbackDetailCard.Visibility = Visibility.Visible;
+		if (RollbackDetailTagText != null) RollbackDetailTagText.Text = rel.TagName;
+		if (RollbackDetailChannelText != null)
+		{
+			RollbackDetailChannelText.Text = rel.IsPrerelease ? I18n.T("ReleaseChannelBeta") : I18n.T("ReleaseChannelStable");
+		}
+		if (RollbackDetailChannelBorder != null)
+		{
+			RollbackDetailChannelBorder.Background = rel.IsPrerelease
+				? new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 245, 158, 11))
+				: new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 16, 185, 129));
+		}
+		if (RollbackDetailDateText != null)
+		{
+			RollbackDetailDateText.Text = string.Format(I18n.T("RollbackDetailDateFmt"), $"{rel.PublishedAt:yyyy-MM-dd HH:mm}");
+		}
+		if (RollbackInstallTypeText != null)
+		{
+			RollbackInstallTypeText.Text = UpdateManager.Instance.IsCurrentInstallationStandalone()
+				? I18n.T("RollbackArchStandalone")
+				: I18n.T("RollbackArchLightweight");
+		}
+		if (RollbackChangelogText != null)
+		{
+			RollbackChangelogText.Text = string.IsNullOrWhiteSpace(rel.Body) ? I18n.T("NoChangelogAvailable") : rel.Body;
+		}
+	}
+
+	private async void StartRollbackBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (_selectedRollbackRelease == null) return;
+
+		string confirmMsg = string.Format(I18n.T("RollbackConfirmMsg"), _selectedRollbackRelease.TagName);
+		string confirmTitle = I18n.T("RollbackConfirmTitle");
+
+		MessageBoxResult result = MessageBox.Show(confirmMsg, confirmTitle, MessageBoxButton.YesNo, MessageBoxImage.Question);
+		if (result != MessageBoxResult.Yes) return;
+
+		bool isStandalone = UpdateManager.Instance.IsCurrentInstallationStandalone();
+		string? rawAssetUrl = isStandalone ? _selectedRollbackRelease.StandaloneAssetUrl : _selectedRollbackRelease.LightweightAssetUrl;
+
+		if (string.IsNullOrEmpty(rawAssetUrl))
+		{
+			Process.Start(new ProcessStartInfo(_selectedRollbackRelease.HtmlUrl) { UseShellExecute = true });
+			return;
+		}
+
+		string proxy = ConfigManager.CurrentConfig?.UpdateProxySource ?? "ghfast";
+		string customProxy = ConfigManager.CurrentConfig?.CustomProxyUrl ?? "";
+		string downloadUrl = UpdateManager.Instance.GetProxiedDownloadUrl(rawAssetUrl, proxy, customProxy);
+
+		string fileName = isStandalone
+			? $"StarPie-{_selectedRollbackRelease.TagName}-Standalone-win-x64.zip"
+			: $"StarPie-{_selectedRollbackRelease.TagName}-Lightweight-win-x64.zip";
+
+		string destPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "StarPie_Updates", fileName);
+		_downloadedZipPath = destPath;
+
+		if (UpdateNewVersionPanel != null) UpdateNewVersionPanel.Visibility = Visibility.Collapsed;
+		if (RollbackDetailCard != null) RollbackDetailCard.Visibility = Visibility.Collapsed;
+		if (UpdateReadyToInstallPanel != null) UpdateReadyToInstallPanel.Visibility = Visibility.Collapsed;
+		if (UpdateDownloadProgressPanel != null) UpdateDownloadProgressPanel.Visibility = Visibility.Visible;
+
+		if (UpdateDownloadingTitleText != null) UpdateDownloadingTitleText.Text = string.Format(I18n.T("RollbackDownloadingFmt"), fileName);
+		if (UpdateDownloadPercentText != null) UpdateDownloadPercentText.Text = "0%";
+		if (UpdateDownloadProgressBar != null) UpdateDownloadProgressBar.Value = 0;
+		if (UpdateDownloadSpeedText != null) UpdateDownloadSpeedText.Text = I18n.T("UpdateDownloadSpeedConnecting");
+
+		_downloadCts?.Dispose();
+		_downloadCts = new CancellationTokenSource();
+
+		Progress<UpdateProgressInfo> progress = new Progress<UpdateProgressInfo>(info =>
+		{
+			if (UpdateDownloadProgressBar != null) UpdateDownloadProgressBar.Value = info.Percent;
+			if (UpdateDownloadPercentText != null) UpdateDownloadPercentText.Text = $"{info.Percent}%";
+			if (UpdateDownloadSpeedText != null) UpdateDownloadSpeedText.Text = $"⚡ {info.FormattedSpeed}";
+			if (UpdateDownloadSizeText != null) UpdateDownloadSizeText.Text = info.FormattedProgress;
+		});
+
+		try
+		{
+			await UpdateManager.Instance.DownloadAssetAsync(downloadUrl, destPath, progress, _downloadCts.Token);
+
+			if (UpdateDownloadProgressPanel != null) UpdateDownloadProgressPanel.Visibility = Visibility.Collapsed;
+			if (UpdateReadyToInstallPanel != null) UpdateReadyToInstallPanel.Visibility = Visibility.Visible;
+
+			if (UpdateStatusBadgeText != null)
+			{
+				UpdateStatusBadgeText.Text = I18n.T("UpdateStatusRollbackComplete");
+				UpdateStatusBadgeText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(16, 185, 129));
+			}
+			if (UpdateStatusBadge != null)
+			{
+				UpdateStatusBadge.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(30, 16, 185, 129));
+			}
+		}
+		catch (OperationCanceledException)
+		{
+			if (UpdateDownloadProgressPanel != null) UpdateDownloadProgressPanel.Visibility = Visibility.Collapsed;
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogError("Rollback download failed", ex);
+			if (UpdateDownloadProgressPanel != null) UpdateDownloadProgressPanel.Visibility = Visibility.Collapsed;
+			System.Windows.MessageBox.Show($"下载历史回退包失败：{ex.Message}\n建议切换加速镜像源重试或前往网页下载。", "StarPie 版本回退", MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+	}
+
+	private void UpdateProxyComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && ConfigManager.CurrentConfig != null && UpdateProxyComboBox.SelectedItem is ComboBoxItem item)
+		{
+			ConfigManager.CurrentConfig.UpdateProxySource = item.Tag?.ToString() ?? "ghfast";
+			ScheduleAutoSave();
+		}
+	}
+
+	private void ToggleContributorsCard_Click(object sender, MouseButtonEventArgs e)
+	{
+		if (ContributorsContentPanel == null) return;
+		bool isVisible = ContributorsContentPanel.Visibility == Visibility.Visible;
+		ContributorsContentPanel.Visibility = isVisible ? Visibility.Collapsed : Visibility.Visible;
+		if (ContributorsExpandArrow != null)
+		{
+			ContributorsExpandArrow.Text = isVisible ? "▼" : "▲";
+		}
+	}
+
+	private void OpenGitHubRepo_Click(object sender, MouseButtonEventArgs e)
+	{
+		try
+		{
+			Process.Start(new ProcessStartInfo("https://github.com/oohb144/StarPie-Touch") { UseShellExecute = true });
+		}
+		catch { }
+	}
+
+	private static List<GitHubContributorInfo> GetDefaultContributors()
+	{
+		return new List<GitHubContributorInfo>
+		{
+			new GitHubContributorInfo { Login = "Sunse666", AvatarUrl = "https://avatars.githubusercontent.com/u/108920194?v=4", HtmlUrl = "https://github.com/Sunse666", Contributions = 79 },
+			new GitHubContributorInfo { Login = "SoftBlack42", AvatarUrl = "https://avatars.githubusercontent.com/u/10101010?v=4", HtmlUrl = "https://github.com/SoftBlack42", Contributions = 35 },
+			new GitHubContributorInfo { Login = "IQ-Director", AvatarUrl = "https://avatars.githubusercontent.com/u/148705602?v=4", HtmlUrl = "https://github.com/IQ-Director", Contributions = 3 },
+			new GitHubContributorInfo { Login = "Zsdhak1", AvatarUrl = "https://avatars.githubusercontent.com/u/119934371?v=4", HtmlUrl = "https://github.com/Zsdhak1", Contributions = 3 },
+			new GitHubContributorInfo { Login = "ACbye", AvatarUrl = "https://avatars.githubusercontent.com/u/49258204?v=4", HtmlUrl = "https://github.com/ACbye", Contributions = 1 },
+			new GitHubContributorInfo { Login = "AkiraYim", AvatarUrl = "https://avatars.githubusercontent.com/u/163013897?v=4", HtmlUrl = "https://github.com/AkiraYim", Contributions = 1 }
+		};
+	}
+
+	private void LoadContributorsOffline()
+	{
+		RenderContributors(GetDefaultContributors());
+		if (ContributorsSyncStatusText != null)
+		{
+			ContributorsSyncStatusText.Text = "🌐 本地收录名单 (检查更新时可联网刷新)";
+		}
+	}
+
+	private async void RefreshContributors_Click(object sender, MouseButtonEventArgs e)
+	{
+		if (ContributorsSyncStatusText != null)
+		{
+			ContributorsSyncStatusText.Text = "⏳ 正在向 GitHub 请求最新贡献者名单...";
+		}
+		await SyncContributorsFromGitHubAsync();
+	}
+
+	private async Task SyncContributorsFromGitHubAsync()
+	{
+		try
+		{
+			using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+			client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("StarPie-Desktop", AppVersionInfo.DisplayVersion));
+			client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github.v3+json"));
+
+			string json = await client.GetStringAsync("https://api.github.com/repos/SoftBlack42/StarPie/contributors");
+			var list = JsonSerializer.Deserialize<List<GitHubContributorInfo>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+			if (list != null && list.Count > 0)
+			{
+				list = list.OrderByDescending(c => c.Contributions).ToList();
+				Dispatcher.Invoke(() =>
+				{
+					RenderContributors(list);
+					if (ContributorsSyncStatusText != null)
+					{
+						ContributorsSyncStatusText.Text = $"🌐 已与 GitHub 仓库实时同步 (共 {list.Count} 位贡献者，按贡献量排序)";
+					}
+				});
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLogger.LogWarn($"GitHub contributors sync skipped/offline: {ex.Message}");
+			Dispatcher.Invoke(() =>
+			{
+				if (ContributorsSyncStatusText != null)
+				{
+					ContributorsSyncStatusText.Text = "🌐 本地收录名单 (网络离线或 API 限流)";
+				}
+			});
+		}
+	}
+
+	private void RenderContributors(List<GitHubContributorInfo> contributors)
+	{
+		if (ContributorsWrapPanel == null) return;
+		ContributorsWrapPanel.Children.Clear();
+		if (ContributorsCountText != null)
+		{
+			ContributorsCountText.Text = $"{contributors.Count} 位";
+		}
+
+		foreach (var c in contributors)
+		{
+			var chip = CreateContributorChip(c);
+			ContributorsWrapPanel.Children.Add(chip);
+		}
+	}
+
+	private UIElement CreateContributorChip(GitHubContributorInfo contributor)
+	{
+		var border = new Border
+		{
+			Background = (System.Windows.Media.Brush)FindResource("SubtleCardBrush"),
+			BorderBrush = (System.Windows.Media.Brush)FindResource("CardBorderBrush"),
+			BorderThickness = new Thickness(1),
+			CornerRadius = new CornerRadius(16),
+			Padding = new Thickness(4, 3, 10, 3),
+			Margin = new Thickness(0, 0, 8, 8),
+			Cursor = System.Windows.Input.Cursors.Hand,
+			ToolTip = $"{contributor.Login} (贡献: {contributor.Contributions} 次提交)\n点击在浏览器中访问 GitHub 个人主页"
+		};
+
+		var sp = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+		// 圆形头像
+		var avatarBorder = new Border
+		{
+			Width = 26,
+			Height = 26,
+			CornerRadius = new CornerRadius(13),
+			ClipToBounds = true,
+			Background = (System.Windows.Media.Brush)FindResource("ItemHoverBrush")
+		};
+
+		try
+		{
+			if (!string.IsNullOrEmpty(contributor.AvatarUrl))
+			{
+				var bi = new BitmapImage();
+				bi.BeginInit();
+				bi.UriSource = new Uri(contributor.AvatarUrl, UriKind.RelativeOrAbsolute);
+				bi.DecodePixelWidth = 52;
+				bi.CacheOption = BitmapCacheOption.OnDemand;
+				bi.EndInit();
+				avatarBorder.Background = new ImageBrush(bi) { Stretch = Stretch.UniformToFill };
+			}
+		}
+		catch
+		{
+			avatarBorder.Child = new TextBlock
+			{
+				Text = contributor.Login.Length > 0 ? contributor.Login.Substring(0, 1).ToUpper() : "?",
+				HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+				VerticalAlignment = VerticalAlignment.Center,
+				FontWeight = FontWeights.Bold,
+				FontSize = 11,
+				Foreground = (System.Windows.Media.Brush)FindResource("AccentPrimaryBrush")
+			};
+		}
+
+		sp.Children.Add(avatarBorder);
+
+		// 名称
+		var nameTb = new TextBlock
+		{
+			Text = contributor.Login,
+			FontSize = 11.5,
+			FontWeight = FontWeights.SemiBold,
+			Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush"),
+			VerticalAlignment = VerticalAlignment.Center,
+			Margin = new Thickness(6, 0, 4, 0)
+		};
+		sp.Children.Add(nameTb);
+
+		// 贡献次数徽标
+		if (contributor.Contributions > 0)
+		{
+			var countTb = new TextBlock
+			{
+				Text = $"{contributor.Contributions}",
+				FontSize = 10,
+				FontWeight = FontWeights.Bold,
+				Foreground = (System.Windows.Media.Brush)FindResource("AccentPrimaryBrush"),
+				VerticalAlignment = VerticalAlignment.Center,
+				Opacity = 0.85
+			};
+			sp.Children.Add(countTb);
+		}
+
+		border.Child = sp;
+
+		// 悬停交互与点击
+		border.MouseEnter += (s, e) => border.Background = (System.Windows.Media.Brush)FindResource("ItemHoverBrush");
+		border.MouseLeave += (s, e) => border.Background = (System.Windows.Media.Brush)FindResource("SubtleCardBrush");
+		border.MouseLeftButtonDown += (s, e) =>
+		{
+			try
+			{
+				string url = string.IsNullOrEmpty(contributor.HtmlUrl) ? $"https://github.com/{contributor.Login}" : contributor.HtmlUrl;
+				Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+			}
+			catch { }
+		};
+
+		return border;
+	}
+
+	private async void AboutCheckUpdateBtn_Click(object sender, RoutedEventArgs e)
+	{
+		SwitchToTab(3);
+		await CheckForUpdateInternalAsync(silent: false);
+	}
+
+	private void AutoStartCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (!_isUpdatingUi && !_isUiInitializing && !_isLoadingAutoStartState)
+		{
+			bool valueOrDefault = AutoStartCheckBox.IsChecked == true;
+			bool asAdmin = (AutoStartAsAdminCheckBox?.IsChecked == true);
+			if (valueOrDefault == _loadedAutoStartEnabled && asAdmin == _loadedAutoStartAsAdmin)
+			{
+				return;
+			}
+			ConfigManager.SetAutoStart(valueOrDefault, asAdmin);
+			_loadedAutoStartEnabled = valueOrDefault;
+			_loadedAutoStartAsAdmin = asAdmin;
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void AutoStartAsAdminCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (!_isUpdatingUi && !_isUiInitializing && !_isLoadingAutoStartState)
+		{
+			bool flag = (AutoStartAsAdminCheckBox?.IsChecked == true);
+			bool enabled = AutoStartCheckBox.IsChecked == true;
+			if (flag == _loadedAutoStartAsAdmin && enabled == _loadedAutoStartEnabled)
+			{
+				return;
+			}
+			if (ConfigManager.CurrentConfig != null)
+			{
+				ConfigManager.CurrentConfig.AutoStartAsAdmin = flag;
+			}
+			ConfigManager.SetAutoStart(enabled, flag);
+			_loadedAutoStartEnabled = enabled;
+			_loadedAutoStartAsAdmin = flag;
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void ElevatePrivileges_Click(object sender, RoutedEventArgs e)
+	{
+		App.RestartElevated();
+	}
+
+	public class ConfigProfileDisplayItem
+	{
+		public string Name { get; set; } = string.Empty;
+		public string DisplayName { get; set; } = string.Empty;
+		public override string ToString() => DisplayName;
+	}
+
+	private string GetSelectedConfigProfileName()
+	{
+		return ConfigProfilesComboBox?.SelectedValue as string
+			?? (ConfigProfilesComboBox?.SelectedItem as ConfigProfileDisplayItem)?.Name
+			?? ConfigProfilesComboBox?.SelectedItem as string
+			?? ConfigManager.CurrentConfig?.ActiveConfigProfileName
+			?? "默认配置";
+	}
+
+	private readonly List<ConfigProfileDisplayItem> _cachedProfileDisplayItems = new();
+
+	private void RefreshConfigProfilesUi()
+	{
+		if (ConfigProfilesComboBox == null) return;
+		var rawProfiles = ConfigManager.GetSavedConfigNames();
+		string active = ConfigManager.CurrentConfig?.ActiveConfigProfileName ?? "默认配置";
+
+		string defaultLabel = I18n.T("DefaultConfigProfile");
+
+		while (_cachedProfileDisplayItems.Count > rawProfiles.Count)
+		{
+			_cachedProfileDisplayItems.RemoveAt(_cachedProfileDisplayItems.Count - 1);
+		}
+		for (int i = 0; i < rawProfiles.Count; i++)
+		{
+			string p = rawProfiles[i];
+			string disp = (string.Equals(p, "默认配置", StringComparison.OrdinalIgnoreCase) || string.Equals(p, "Default", StringComparison.OrdinalIgnoreCase))
+				? defaultLabel
+				: p;
+
+			if (i < _cachedProfileDisplayItems.Count)
+			{
+				_cachedProfileDisplayItems[i].Name = p;
+				_cachedProfileDisplayItems[i].DisplayName = disp;
+			}
+			else
+			{
+				_cachedProfileDisplayItems.Add(new ConfigProfileDisplayItem
+				{
+					Name = p,
+					DisplayName = disp
+				});
+			}
+		}
+
+		bool wasUpdating = _isUpdatingUi;
+		_isUpdatingUi = true;
+		try
+		{
+			ConfigProfilesComboBox.ItemsSource = null;
+			ConfigProfilesComboBox.SelectedValuePath = "Name";
+			ConfigProfilesComboBox.DisplayMemberPath = "DisplayName";
+			ConfigProfilesComboBox.ItemsSource = _cachedProfileDisplayItems;
+			ConfigProfilesComboBox.SelectedValue = active;
+			if (ConfigProfilesComboBox.SelectedIndex < 0 && _cachedProfileDisplayItems.Count > 0)
+			{
+				ConfigProfilesComboBox.SelectedIndex = 0;
+			}
+
+			string displayActive = (string.Equals(active, "默认配置", StringComparison.OrdinalIgnoreCase) || string.Equals(active, "Default", StringComparison.OrdinalIgnoreCase))
+				? defaultLabel
+				: active;
+
+			if (ActiveProfileBadgeText != null)
+			{
+				ActiveProfileBadgeText.Text = $"{I18n.T("ActiveProfilePrefix")}{displayActive}";
+			}
+
+			if (DeleteProfileBtn != null)
+			{
+				DeleteProfileBtn.IsEnabled = _cachedProfileDisplayItems.Count > 1;
+			}
+		}
+		finally
+		{
+			_isUpdatingUi = wasUpdating;
+		}
+	}
+
+	private void ConfigProfilesComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigProfilesComboBox == null) return;
+		string? selectedName = ConfigProfilesComboBox.SelectedValue as string
+			?? (ConfigProfilesComboBox.SelectedItem as ConfigProfileDisplayItem)?.Name
+			?? ConfigProfilesComboBox.SelectedItem as string;
+		if (!string.IsNullOrEmpty(selectedName))
+		{
+			if (string.Equals(selectedName, ConfigManager.CurrentConfig?.ActiveConfigProfileName, StringComparison.OrdinalIgnoreCase))
+			{
+				return;
+			}
+
+			// 保存当前方案的修改
+			SyncUiToConfigAndSave();
+
+			if (ConfigManager.SwitchToConfig(selectedName))
+			{
+				_selectedProfile = null;
+				_isUpdatingUi = true;
+				try
+				{
+					LoadConfigToUi();
+					AppThemeManager.ApplyTheme(this, ConfigManager.CurrentConfig.AppTheme ?? "System");
+				}
+				finally
+				{
+					_isUpdatingUi = false;
+				}
+				_selectedProfile = ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+				if (ProfilesListBox != null) ProfilesListBox.SelectedItem = _selectedProfile;
+				if (MappingsProfileComboBox != null) MappingsProfileComboBox.SelectedItem = _selectedProfile;
+				ReloadThemePresets();
+				RefreshSlots();
+				UpdateFocusEditorUi();
+				RenderMappingsWheelPreview();
+				RenderLiveWheelPreview();
+				RefreshConfigProfilesUi();
+				App.ApplyTrayTheme(IsCurrentThemeDark());
+				App.ShowTrayBalloon(1500, "StarPie", $"已热切换至配置方案「{selectedName}」", ToolTipIcon.Info);
+			}
+		}
+	}
+
+	private void SaveNewProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		var list = ConfigManager.GetSavedConfigNames();
+		string defaultName = $"方案_{list.Count + 1}";
+		InputDialog inputDialog = new InputDialog(
+			"保存为新配置方案",
+			"请输入新配置方案名称（如“CAD建模方案”、“日常办公”等）：",
+			defaultName,
+			(string input) =>
+			{
+				if (string.IsNullOrWhiteSpace(input))
+					return (IsValid: false, ErrorMessage: "方案名称不能为空！");
+				string clean = ConfigManager.CleanFileName(input);
+				if (string.IsNullOrWhiteSpace(clean))
+					return (IsValid: false, ErrorMessage: "方案名称包含非法字符，请重新输入！");
+				if (list.Any(x => string.Equals(x, clean, StringComparison.OrdinalIgnoreCase)))
+					return (IsValid: false, ErrorMessage: $"方案名称「{clean}」已存在，请使用其他名称！");
+				return (IsValid: true, ErrorMessage: "");
+			});
+		inputDialog.Owner = this;
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string newName = ConfigManager.CleanFileName(inputDialog.InputText.Trim());
+			SyncUiToConfigAndSave(saveToDisk: false);
+			if (ConfigManager.SaveConfigAs(newName))
+			{
+				RefreshConfigProfilesUi();
+				System.Windows.MessageBox.Show(this, $"已成功将当前全部设置另存为方案「{newName}」并已激活！", "保存成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+			}
+			else
+			{
+				System.Windows.MessageBox.Show(this, "保存新配置方案失败，请检查写入权限。", "错误", MessageBoxButton.OK, MessageBoxImage.Hand);
+			}
+		}
+	}
+
+	private void RenameProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		string currentName = GetSelectedConfigProfileName();
+		var list = ConfigManager.GetSavedConfigNames();
+		InputDialog inputDialog = new InputDialog(
+			"重命名配置方案",
+			$"请输入配置方案「{currentName}」的新名称：",
+			currentName,
+			(string input) =>
+			{
+				if (string.IsNullOrWhiteSpace(input))
+					return (IsValid: false, ErrorMessage: "方案名称不能为空！");
+				string clean = ConfigManager.CleanFileName(input);
+				if (string.IsNullOrWhiteSpace(clean))
+					return (IsValid: false, ErrorMessage: "方案名称包含非法字符，请重新输入！");
+				if (!string.Equals(clean, currentName, StringComparison.OrdinalIgnoreCase) &&
+				    list.Any(x => string.Equals(x, clean, StringComparison.OrdinalIgnoreCase)))
+					return (IsValid: false, ErrorMessage: $"方案名称「{clean}」已存在，请使用其他名称！");
+				return (IsValid: true, ErrorMessage: "");
+			});
+		inputDialog.Owner = this;
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			string newName = ConfigManager.CleanFileName(inputDialog.InputText.Trim());
+			if (string.Equals(newName, currentName, StringComparison.OrdinalIgnoreCase)) return;
+
+			if (ConfigManager.RenameSavedConfig(currentName, newName))
+			{
+				RefreshConfigProfilesUi();
+				System.Windows.MessageBox.Show(this, $"配置方案已成功重命名为「{newName}」！", "重命名成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+			}
+			else
+			{
+				System.Windows.MessageBox.Show(this, "重命名配置方案失败。", "错误", MessageBoxButton.OK, MessageBoxImage.Hand);
+			}
+		}
+	}
+
+	private void DeleteProfileBtn_Click(object sender, RoutedEventArgs e)
+	{
+		string currentName = GetSelectedConfigProfileName();
+		var list = ConfigManager.GetSavedConfigNames();
+		if (list.Count <= 1)
+		{
+			System.Windows.MessageBox.Show(this, "至少需要保留一个配置方案，无法删除最后一份配置。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+			return;
+		}
+
+		var res = System.Windows.MessageBox.Show(
+			this,
+			$"确定要删除配置方案「{currentName}」吗？\n删除后该方案配置文件将被永久移除。",
+			"确认删除配置方案",
+			MessageBoxButton.YesNo,
+			MessageBoxImage.Question);
+		if (res == MessageBoxResult.Yes)
+		{
+			if (ConfigManager.DeleteSavedConfig(currentName, out string fallbackName))
+			{
+				_selectedProfile = null;
+				_isUpdatingUi = true;
+				try
+				{
+					LoadConfigToUi();
+					AppThemeManager.ApplyTheme(this, ConfigManager.CurrentConfig.AppTheme ?? "System");
+				}
+				finally
+				{
+					_isUpdatingUi = false;
+				}
+				_selectedProfile = ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+				if (ProfilesListBox != null) ProfilesListBox.SelectedItem = _selectedProfile;
+				if (MappingsProfileComboBox != null) MappingsProfileComboBox.SelectedItem = _selectedProfile;
+				ReloadThemePresets();
+				RefreshSlots();
+				UpdateFocusEditorUi();
+				RenderMappingsWheelPreview();
+				RenderLiveWheelPreview();
+				RefreshConfigProfilesUi();
+				System.Windows.MessageBox.Show(this, $"已成功删除配置方案「{currentName}」，当前已切换至方案「{fallbackName}」。", "删除成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+			}
+			else
+			{
+				System.Windows.MessageBox.Show(this, "删除配置方案失败。", "错误", MessageBoxButton.OK, MessageBoxImage.Hand);
+			}
+		}
+	}
+
+	private void ExportConfigButton_Click(object sender, RoutedEventArgs e)
+	{
+		string targetProfile = GetSelectedConfigProfileName();
+		Microsoft.Win32.SaveFileDialog saveFileDialog = new Microsoft.Win32.SaveFileDialog
+		{
+			Filter = "JSON 配置文件 (*.json)|*.json",
+			FileName = $"StarPie_Config_{targetProfile}_{DateTime.Now:yyyyMMdd}.json",
+			Title = $"导出配置方案「{targetProfile}」"
+		};
+		if (saveFileDialog.ShowDialog() == true)
+		{
+			if (ConfigManager.ExportConfigToFile(targetProfile, saveFileDialog.FileName))
+			{
+				System.Windows.MessageBox.Show(this, $"配置方案「{targetProfile}」已成功导出至文件！", "导出成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+			}
+			else
+			{
+				System.Windows.MessageBox.Show(this, "配置导出失败，请检查写入权限。", "错误", MessageBoxButton.OK, MessageBoxImage.Hand);
+			}
+		}
+	}
+
+	private void ImportConfigButton_Click(object sender, RoutedEventArgs e)
+	{
+		Microsoft.Win32.OpenFileDialog openFileDialog = new Microsoft.Win32.OpenFileDialog
+		{
+			Filter = "JSON 配置文件 (*.json)|*.json",
+			Title = "选择要导入的 StarPie 配置文件"
+		};
+		if (openFileDialog.ShowDialog() != true)
+		{
+			return;
+		}
+
+		string defaultName = System.IO.Path.GetFileNameWithoutExtension(openFileDialog.FileName);
+		InputDialog inputDialog = new InputDialog(
+			"导入配置方案",
+			"请输入导入方案在列表中的显示名称：",
+			defaultName,
+			(string input) =>
+			{
+				if (string.IsNullOrWhiteSpace(input))
+					return (IsValid: false, ErrorMessage: "方案名称不能为空！");
+				string clean = ConfigManager.CleanFileName(input);
+				if (string.IsNullOrWhiteSpace(clean))
+					return (IsValid: false, ErrorMessage: "方案名称包含非法字符，请重新输入！");
+				return (IsValid: true, ErrorMessage: "");
+			});
+		inputDialog.Owner = this;
+		string? chosenName = null;
+		if (inputDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(inputDialog.InputText))
+		{
+			chosenName = inputDialog.InputText.Trim();
+		}
+
+		if (ConfigManager.ImportExternalConfig(openFileDialog.FileName, chosenName, out string importedName))
+		{
+			_selectedProfile = null;
+			_isUpdatingUi = true;
+			try
+			{
+				LoadConfigToUi();
+				AppThemeManager.ApplyTheme(this, ConfigManager.CurrentConfig.AppTheme ?? "System");
+			}
+			finally
+			{
+				_isUpdatingUi = false;
+			}
+			_selectedProfile = ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+			if (ProfilesListBox != null)
+			{
+				ProfilesListBox.SelectedItem = _selectedProfile;
+			}
+			if (MappingsProfileComboBox != null)
+			{
+				MappingsProfileComboBox.SelectedItem = _selectedProfile;
+			}
+			ReloadThemePresets();
+			RefreshSlots();
+			UpdateFocusEditorUi();
+			RenderMappingsWheelPreview();
+			RenderLiveWheelPreview();
+			RefreshConfigProfilesUi();
+			System.Windows.MessageBox.Show(this, $"外部配置文件已成功导入并收纳入方案「{importedName}」！\n已即时生效并切换至该方案。", "导入成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+		else
+		{
+			System.Windows.MessageBox.Show(this, "导入失败：文件格式不匹配或已损坏。", "错误", MessageBoxButton.OK, MessageBoxImage.Hand);
+		}
+	}
+
+	private void ResetDefaultConfigBtn_Click(object sender, RoutedEventArgs e)
+	{
+		string currentName = GetSelectedConfigProfileName();
+		var res = System.Windows.MessageBox.Show(
+			this,
+			$"确定要将当前激活的方案「{currentName}」恢复为初始默认配置吗？\n该操作将重置手势动作与轮盘外观为初始推荐状态，其他已保存方案不受影响。",
+			"确认重置配置",
+			MessageBoxButton.YesNo,
+			MessageBoxImage.Warning);
+		if (res == MessageBoxResult.Yes)
+		{
+			ConfigManager.ResetToDefault(currentName);
+
+			_selectedProfile = null;
+			_isUpdatingUi = true;
+			try
+			{
+				LoadConfigToUi();
+				AppThemeManager.ApplyTheme(this, ConfigManager.CurrentConfig.AppTheme ?? "System");
+			}
+			finally
+			{
+				_isUpdatingUi = false;
+			}
+			_selectedProfile = ConfigManager.CurrentConfig.Profiles?.FirstOrDefault();
+			if (ProfilesListBox != null) ProfilesListBox.SelectedItem = _selectedProfile;
+			if (MappingsProfileComboBox != null) MappingsProfileComboBox.SelectedItem = _selectedProfile;
+			ReloadThemePresets();
+			RefreshSlots();
+			UpdateFocusEditorUi();
+			RenderMappingsWheelPreview();
+			RenderLiveWheelPreview();
+			RefreshConfigProfilesUi();
+			System.Windows.MessageBox.Show(this, $"方案「{currentName}」已成功重置为默认配置！", "重置完成", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+	}
+
+	private void TrimMemoryButton_Click(object sender, RoutedEventArgs e)
+	{
+		MemoryOptimizer.TrimMemory(force: true);
+		System.Windows.MessageBox.Show(this, "物理工作集内存已深度压缩！", "提示", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+	}
+
+	private void OpenLogFolderButton_Click(object sender, RoutedEventArgs e)
+	{
+		AppLogger.OpenLogFolder();
+	}
+
+	private void ViewTodayLogButton_Click(object sender, RoutedEventArgs e)
+	{
+		AppLogger.OpenTodayLogFile();
+	}
+
+	private void OpenReleasesFolderButton_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			string text = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "releases");
+			if (!Directory.Exists(text))
+			{
+				text = AppDomain.CurrentDomain.BaseDirectory;
+			}
+			Process.Start(new ProcessStartInfo("explorer.exe", text)
+			{
+				UseShellExecute = true
+			});
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show("无法打开目录: " + ex.Message);
+		}
+	}
+
+	private void OpenAppFolderButton_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
+			Process.Start(new ProcessStartInfo("explorer.exe", baseDirectory)
+			{
+				UseShellExecute = true
+			});
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show("无法打开目录: " + ex.Message);
+		}
+	}
+
+	private void OpenChangelogButton_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			string text = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "CHANGELOG.md");
+			if (File.Exists(text))
+			{
+				Process.Start(new ProcessStartInfo(text)
+				{
+					UseShellExecute = true
+				});
+			}
+			else
+			{
+				System.Windows.MessageBox.Show("CHANGELOG.md 文件位于根目录。", "提示");
+			}
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show("无法打开文件: " + ex.Message);
+		}
+	}
+
+	private void SaveButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (SyncUiToConfigAndSave())
+		{
+			System.Windows.MessageBox.Show("配置已成功保存至硬盘！", "成功", MessageBoxButton.OK, MessageBoxImage.Asterisk);
+		}
+		else
+		{
+			System.Windows.MessageBox.Show("配置保存失败。请查看日志了解原因，并确认程序对配置目录有写入权限。", "保存失败", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+	}
+
+	private void CloseButton_Click(object sender, RoutedEventArgs e)
+	{
+		Close();
+	}
+
+	private void Browse_Click(object sender, RoutedEventArgs e)
+	{
+		if (!(sender is FrameworkElement { DataContext: SlotViewModel dataContext }))
+		{
+			return;
+		}
+		ProgramPickerWindow programPickerWindow = new ProgramPickerWindow();
+		programPickerWindow.Owner = this;
+		if (programPickerWindow.ShowDialog() == true && !string.IsNullOrEmpty(programPickerWindow.SelectedPath))
+		{
+			dataContext.Parameter = programPickerWindow.SelectedPath;
+			if (ActionNameDefaults.IsAutoFilled(dataContext.Name))
+			{
+				dataContext.Name = ((!string.IsNullOrEmpty(programPickerWindow.SelectedName)) ? programPickerWindow.SelectedName : System.IO.Path.GetFileNameWithoutExtension(programPickerWindow.SelectedPath));
+			}
+		}
+	}
+
+	private void BrowseFolder_Click(object sender, RoutedEventArgs e)
+	{
+		if (!(sender is FrameworkElement { DataContext: SlotViewModel dataContext }))
+		{
+			return;
+		}
+		try
+		{
+			OpenFolderDialog openFolderDialog = new OpenFolderDialog
+			{
+				Title = I18n.T("BtnBrowseFolder"),
+				Multiselect = false
+			};
+			if (!string.IsNullOrWhiteSpace(dataContext.Parameter) && Directory.Exists(dataContext.Parameter))
+			{
+				openFolderDialog.InitialDirectory = dataContext.Parameter;
+			}
+			if (openFolderDialog.ShowDialog(this) != true)
+			{
+				return;
+			}
+			string folderName = openFolderDialog.FolderName;
+			if (!string.IsNullOrEmpty(folderName))
+			{
+				dataContext.Parameter = folderName;
+				if (ActionNameDefaults.IsAutoFilled(dataContext.Name))
+				{
+					DirectoryInfo directoryInfo = new DirectoryInfo(folderName);
+					dataContext.Name = directoryInfo.Name;
+				}
+				if (string.IsNullOrEmpty(dataContext.IconKey))
+				{
+					dataContext.IconKey = "Folder";
+				}
+				SyncUiToConfigAndSave();
+			}
+		}
+		catch (Exception)
+		{
+		}
+	}
+
+	private void Test_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is FrameworkElement { DataContext: SlotViewModel dataContext })
+		{
+			ActionExecutor.Execute(dataContext.Action);
+		}
+	}
+
+	private void SetComboBoxSelectedValue(System.Windows.Controls.ComboBox comboBox, string value)
+	{
+		if (comboBox == null || string.IsNullOrEmpty(value))
+		{
+			return;
+		}
+		string b = value;
+		if (value == "RoundedRect" || value == "FloatingCapsules" || value == "Capsule")
+		{
+			b = "RoundedCapsule";
+		}
+		switch (value)
+		{
+		case "OrganicPetals":
+		case "ArcTracker":
+		case "LiquidDroplets":
+		case "MinimalArc":
+			b = "Original";
+			break;
+		}
+		foreach (object item in (IEnumerable)comboBox.Items)
+		{
+			if (item is ComboBoxItem { Tag: var tag } comboBoxItem)
+			{
+				string text = tag?.ToString() ?? "";
+				if (string.Equals(text, value, StringComparison.OrdinalIgnoreCase) || string.Equals(text, b, StringComparison.OrdinalIgnoreCase) || text.StartsWith(value, StringComparison.OrdinalIgnoreCase))
+				{
+					comboBox.SelectedItem = comboBoxItem;
+					return;
+				}
+			}
+		}
+		if (comboBox == WheelFontFamilyComboBox)
+		{
+			ComboBoxItem comboBoxItem2 = new ComboBoxItem
+			{
+				Content = "\ud83d\udd24 " + value,
+				Tag = value,
+				FontFamily = new System.Windows.Media.FontFamily(value)
+			};
+			comboBox.Items.Insert(0, comboBoxItem2);
+			comboBox.SelectedItem = comboBoxItem2;
+		}
+	}
+
+	private bool IsRunningAsAdmin()
+	{
+		try
+		{
+			using WindowsIdentity ntIdentity = WindowsIdentity.GetCurrent();
+			return new WindowsPrincipal(ntIdentity).IsInRole(WindowsBuiltInRole.Administrator);
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private void RenderLiveWheelPreview()
+	{
+		if (_isRenderingPreview || LiveWheelPreviewCanvas == null || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		_isRenderingPreview = true;
+		try
+		{
+			LiveWheelPreviewCanvas.Children.Clear();
+			_previewSectorPaths.Clear();
+			_previewTransforms.Clear();
+			_previewAngles.Clear();
+			_previewSubSectorPaths.Clear();
+			_previewSubTransforms.Clear();
+			_previewSubParentIndices.Clear();
+			_previewSubIndices.Clear();
+			_previewSubAngles.Clear();
+			_previewCoreIconElement = null;
+			_previewCoreIconDefaultVisibility = Visibility.Collapsed;
+			_previewCoreIconDefaultOpacity = 1.0;
+			_previewCoreIconDefaultEffect = null;
+			_previewCoreUsesCustomImage = false;
+			_previewCoreSelectionOverlay = null;
+			_previewCoreSelectionText = null;
+			_lastHoveredSector = -2;
+			_lastHoveredSubIndex = -2;
+			double num = 300.0 / 2.0;
+			double num2 = 300.0 / 2.0;
+			bool enableMultiTier = ConfigManager.CurrentConfig.EnableMultiTier;
+			double num3 = ((ConfigManager.CurrentConfig.SubWheelRadiusRatio > 1.1) ? ConfigManager.CurrentConfig.SubWheelRadiusRatio : 1.45);
+			WheelProfile wheelProfile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles.FirstOrDefault() ?? new WheelProfile
+			{
+				SectorCount = 8,
+				Actions = new List<ActionItem>()
+			};
+			bool num4 = enableMultiTier && wheelProfile.Actions != null && wheelProfile.Actions.Any((ActionItem a) => a != null && a.SubActions != null && a.SubActions.Count > 0);
+			double num5 = Math.Max(80.0, ConfigManager.CurrentConfig.WheelRadius);
+			double num6 = ((ConfigManager.CurrentConfig.SubWheelOuterRadius > 0.0) ? ConfigManager.CurrentConfig.SubWheelOuterRadius : (ConfigManager.CurrentConfig.WheelRadius * num3));
+			double baseScaleRef = Math.Max(215.0, ConfigManager.CurrentConfig.WheelRadius * 1.55);
+			double num7 = 135.0 / baseScaleRef;
+			double num8 = Math.Max(30.0, ConfigManager.CurrentConfig.WheelRadius * num7);
+			double num9 = Math.Max(15.0, ConfigManager.CurrentConfig.InnerRadius * num7);
+			double num10 = Math.Max(10.0, ConfigManager.CurrentConfig.CoreRadius * num7);
+			double gap = Math.Max(0.0, ConfigManager.CurrentConfig.SectorGap * num7);
+			double cornerRadius = Math.Max(0.0, ConfigManager.CurrentConfig.SectorCornerRadius * num7);
+			double num11 = Math.Max(0.0, ((ConfigManager.CurrentConfig.SubWheelInnerGap >= 0.0) ? ConfigManager.CurrentConfig.SubWheelInnerGap : 7.0) * num7);
+			double num12 = num8 + num11 + 2.0;
+			double num13 = Math.Max(num12 + 10.0, num6 * num7);
+			double cornerRadius2 = Math.Max(0.0, ((ConfigManager.CurrentConfig.SubWheelCornerRadius >= 0.0) ? ConfigManager.CurrentConfig.SubWheelCornerRadius : 14.0) * num7);
+			if (num9 >= num8)
+			{
+				num9 = num8 * 0.5;
+			}
+			if (num10 >= num9)
+			{
+				num10 = num9 * 0.8;
+			}
+			string text = ConfigManager.CurrentConfig.UiStyle ?? "ClassicRing";
+			string text2 = ConfigManager.CurrentConfig.Theme ?? "System";
+			string shape = ConfigManager.CurrentConfig.Shape ?? "Original";
+			string text3 = ConfigManager.CurrentConfig.IconLayoutMode ?? "IconAndText";
+			bool flag = ConfigManager.CurrentConfig.ShowText && text3 != "IconOnly";
+			_previewStyleRenderer = StyleRendererFactory.CreateRenderer(text);
+			_previewStyleRenderer.Initialize(text2, ConfigManager.CurrentConfig);
+			_previewDefaultBrush = _previewStyleRenderer.DefaultSectorBrush;
+			_previewHighlightBrush = _previewStyleRenderer.HighlightSectorBrush;
+			_previewBorderBrush = _previewStyleRenderer.SectorBorderBrush;
+			_previewHighlightBorderBrush = _previewStyleRenderer.HighlightBorderBrush;
+			_previewTextBrush = _previewStyleRenderer.TextColorBrush;
+			_previewCoreBgBrush = _previewStyleRenderer.CoreBgBrush;
+			_previewCoreBorderBrush = _previewStyleRenderer.CoreBorderBrush;
+			if (CustomColorExpander != null && CustomColorExpander.IsExpanded)
+			{
+				try
+				{
+					if (CustomSectorBgTextBox != null && !string.IsNullOrWhiteSpace(CustomSectorBgTextBox.Text))
+					{
+						System.Windows.Media.Color color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(CustomSectorBgTextBox.Text.Trim());
+						_previewDefaultBrush = new SolidColorBrush(color);
+						_previewCoreBgBrush = _previewDefaultBrush;
+					}
+					if (CustomSectorBorderTextBox != null && !string.IsNullOrWhiteSpace(CustomSectorBorderTextBox.Text))
+					{
+						System.Windows.Media.Color color2 = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(CustomSectorBorderTextBox.Text.Trim());
+						_previewBorderBrush = new SolidColorBrush(color2);
+						_previewCoreBorderBrush = _previewBorderBrush;
+					}
+					if (CustomHighlightBgTextBox != null && !string.IsNullOrWhiteSpace(CustomHighlightBgTextBox.Text))
+					{
+						System.Windows.Media.Color color3 = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(CustomHighlightBgTextBox.Text.Trim());
+						_previewHighlightBrush = new SolidColorBrush(color3);
+					}
+					if (CustomHighlightBorderTextBox != null && !string.IsNullOrWhiteSpace(CustomHighlightBorderTextBox.Text))
+					{
+						System.Windows.Media.Color color4 = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(CustomHighlightBorderTextBox.Text.Trim());
+						_previewHighlightBorderBrush = new SolidColorBrush(color4);
+					}
+					if (CustomTextTextBox != null && !string.IsNullOrWhiteSpace(CustomTextTextBox.Text))
+					{
+						System.Windows.Media.Color color5 = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(CustomTextTextBox.Text.Trim());
+						_previewTextBrush = new SolidColorBrush(color5);
+					}
+				}
+				catch
+				{
+				}
+			}
+			string text4 = ((!string.IsNullOrEmpty(ConfigManager.CurrentConfig.SubWheelUiStyle) && ConfigManager.CurrentConfig.SubWheelUiStyle != "FollowPrimary") ? ConfigManager.CurrentConfig.SubWheelUiStyle : text);
+			string text5 = ((!string.IsNullOrEmpty(ConfigManager.CurrentConfig.SubWheelTheme) && ConfigManager.CurrentConfig.SubWheelTheme != "FollowPrimary") ? ConfigManager.CurrentConfig.SubWheelTheme : text2);
+			if (ConfigManager.CurrentConfig.UseIndependentSubWheelTheme || text4 != text || text5 != text2)
+			{
+				try
+				{
+					_previewSubStyleRenderer = StyleRendererFactory.CreateRenderer(text4);
+					_previewSubStyleRenderer.Initialize(text5, ConfigManager.CurrentConfig);
+					_previewSubDefaultBrush = _previewSubStyleRenderer.DefaultSectorBrush;
+					_previewSubHighlightBrush = _previewSubStyleRenderer.HighlightSectorBrush;
+					_previewSubBorderBrush = _previewSubStyleRenderer.SectorBorderBrush;
+					_previewSubHighlightBorderBrush = _previewSubStyleRenderer.HighlightBorderBrush;
+					_previewSubTextBrush = _previewSubStyleRenderer.TextColorBrush;
+					if (text5 == "Custom")
+					{
+						if (!string.IsNullOrWhiteSpace(ConfigManager.CurrentConfig.SubWheelCustomSectorBg))
+						{
+							_previewSubDefaultBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ConfigManager.CurrentConfig.SubWheelCustomSectorBg));
+						}
+						if (!string.IsNullOrWhiteSpace(ConfigManager.CurrentConfig.SubWheelCustomSectorBorder))
+						{
+							_previewSubBorderBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ConfigManager.CurrentConfig.SubWheelCustomSectorBorder));
+						}
+						if (!string.IsNullOrWhiteSpace(ConfigManager.CurrentConfig.SubWheelCustomHighlightBg))
+						{
+							_previewSubHighlightBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ConfigManager.CurrentConfig.SubWheelCustomHighlightBg));
+						}
+						if (!string.IsNullOrWhiteSpace(ConfigManager.CurrentConfig.SubWheelCustomHighlightBorder))
+						{
+							_previewSubHighlightBorderBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ConfigManager.CurrentConfig.SubWheelCustomHighlightBorder));
+						}
+						if (!string.IsNullOrWhiteSpace(ConfigManager.CurrentConfig.SubWheelCustomText))
+						{
+							_previewSubTextBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ConfigManager.CurrentConfig.SubWheelCustomText));
+						}
+					}
+				}
+				catch
+				{
+					_previewSubStyleRenderer = _previewStyleRenderer;
+					_previewSubDefaultBrush = _previewDefaultBrush;
+					_previewSubHighlightBrush = _previewHighlightBrush;
+					_previewSubBorderBrush = _previewBorderBrush;
+					_previewSubHighlightBorderBrush = _previewHighlightBorderBrush;
+					_previewSubTextBrush = _previewTextBrush;
+				}
+			}
+			else
+			{
+				_previewSubStyleRenderer = _previewStyleRenderer;
+				_previewSubDefaultBrush = _previewDefaultBrush;
+				_previewSubHighlightBrush = _previewHighlightBrush;
+				_previewSubBorderBrush = _previewBorderBrush;
+				_previewSubHighlightBorderBrush = _previewHighlightBorderBrush;
+				_previewSubTextBrush = _previewTextBrush;
+			}
+			if (SubCustomColorExpander != null && SubCustomColorExpander.IsExpanded)
+			{
+				try
+				{
+					if (SubCustomSectorBgTextBox != null && !string.IsNullOrWhiteSpace(SubCustomSectorBgTextBox.Text))
+					{
+						_previewSubDefaultBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(SubCustomSectorBgTextBox.Text.Trim()));
+					}
+					if (SubCustomSectorBorderTextBox != null && !string.IsNullOrWhiteSpace(SubCustomSectorBorderTextBox.Text))
+					{
+						_previewSubBorderBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(SubCustomSectorBorderTextBox.Text.Trim()));
+					}
+					if (SubCustomHighlightBgTextBox != null && !string.IsNullOrWhiteSpace(SubCustomHighlightBgTextBox.Text))
+					{
+						_previewSubHighlightBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(SubCustomHighlightBgTextBox.Text.Trim()));
+					}
+					if (SubCustomHighlightBorderTextBox != null && !string.IsNullOrWhiteSpace(SubCustomHighlightBorderTextBox.Text))
+					{
+						_previewSubHighlightBorderBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(SubCustomHighlightBorderTextBox.Text.Trim()));
+					}
+					if (SubCustomTextTextBox != null && !string.IsNullOrWhiteSpace(SubCustomTextTextBox.Text))
+					{
+						_previewSubTextBrush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(SubCustomTextTextBox.Text.Trim()));
+					}
+				}
+				catch
+				{
+				}
+			}
+			Grid grid = new Grid
+			{
+				Width = num10 * 2.0,
+				Height = num10 * 2.0,
+				RenderTransformOrigin = new Point(0.5, 0.5)
+			};
+			_previewCoreScale = new ScaleTransform(1.0, 1.0);
+			grid.RenderTransform = _previewCoreScale;
+			_previewCoreGrid = grid;
+			_previewCoreCircle = new Ellipse
+			{
+				Width = num10 * 2.0,
+				Height = num10 * 2.0,
+				Fill = _previewCoreBgBrush,
+				Stroke = _previewCoreBorderBrush,
+				StrokeThickness = 1.5
+			};
+			grid.Children.Add(_previewCoreCircle);
+			double num14 = Math.Max(12.0, num10 * 0.42);
+			bool hasCustomPattern = IconHelper.HasCustomCenterPattern(ConfigManager.CurrentConfig);
+			string text6 = ConfigManager.CurrentConfig.CoreIconType ?? "Exit";
+			bool num15 = text6 == "Custom";
+			IconHelper.CustomIconItem customIconItem = null;
+			if (num15 && !string.IsNullOrEmpty(ConfigManager.CurrentConfig.CoreCustomIconKey))
+			{
+				customIconItem = IconHelper.GetCustomIcons().FirstOrDefault((IconHelper.CustomIconItem c) => string.Equals(c.Key, ConfigManager.CurrentConfig.CoreCustomIconKey, StringComparison.OrdinalIgnoreCase));
+			}
+			bool flag2 = customIconItem != null && !customIconItem.IsSvg && File.Exists(customIconItem.FilePath);
+			bool flag3 = !string.IsNullOrEmpty(ConfigManager.CurrentConfig.CoreCustomImagePath) && File.Exists(ConfigManager.CurrentConfig.CoreCustomImagePath);
+			bool num16 = ((text6 == "Image") | flag2) || (flag3 && text6 != "Custom" && text6 != "Exit");
+			string text7 = (flag2 ? customIconItem?.FilePath : (flag3 ? ConfigManager.CurrentConfig.CoreCustomImagePath : null));
+			double num17 = ((ConfigManager.CurrentConfig.CoreIconScale > 0.0) ? ConfigManager.CurrentConfig.CoreIconScale : 1.0);
+			double coreImageOffsetX = ConfigManager.CurrentConfig.CoreImageOffsetX;
+			double coreImageOffsetY = ConfigManager.CurrentConfig.CoreImageOffsetY;
+			TranslateTransform renderTransform = ((coreImageOffsetX != 0.0 || coreImageOffsetY != 0.0) ? new TranslateTransform(coreImageOffsetX, coreImageOffsetY) : null);
+			ActionItem? effectiveCenter = wheelProfile.GetEffectiveCenterAction();
+			if (hasCustomPattern)
+			{
+				// 1. 自定义中心图案（贴图、自定义SVG、预设非Exit图案），支持缩放与偏移
+				ImageSource? loadedImgSource = null;
+				if (num16 && !string.IsNullOrEmpty(text7))
+				{
+					loadedImgSource = IconHelper.GetCustomImageSource(text7);
+				}
+
+				if (loadedImgSource != null)
+				{
+					double num18 = num10 * 1.85;
+					Ellipse ellipse = new Ellipse
+					{
+						Width = num18,
+						Height = num18,
+						HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+						VerticalAlignment = VerticalAlignment.Center,
+						IsHitTestVisible = false,
+						Visibility = ((!ConfigManager.CurrentConfig.ShowCoreIcon) ? Visibility.Collapsed : Visibility.Visible)
+					};
+					try
+					{
+						ImageBrush imageBrush = new ImageBrush(loadedImgSource)
+						{
+							Stretch = ParseStretchMode(ConfigManager.CurrentConfig.CoreCustomImageStretch),
+							AlignmentX = AlignmentX.Center,
+							AlignmentY = AlignmentY.Center
+						};
+						TransformGroup transformGroup = new TransformGroup();
+						if (Math.Abs(num17 - 1.0) > 0.001)
+						{
+							transformGroup.Children.Add(new ScaleTransform(num17, num17, num18 / 2.0, num18 / 2.0));
+						}
+						if (Math.Abs(coreImageOffsetX) > 0.001 || Math.Abs(coreImageOffsetY) > 0.001)
+						{
+							transformGroup.Children.Add(new TranslateTransform(coreImageOffsetX, coreImageOffsetY));
+						}
+						if (transformGroup.Children.Count > 0)
+						{
+							imageBrush.Transform = transformGroup;
+						}
+						RenderOptions.SetBitmapScalingMode((DependencyObject)(object)imageBrush, BitmapScalingMode.HighQuality);
+						RenderOptions.SetEdgeMode((DependencyObject)(object)ellipse, EdgeMode.Unspecified);
+						ellipse.Fill = imageBrush;
+					}
+					catch
+					{
+					}
+					_previewCoreIconElement = ellipse;
+					_previewCoreIconDefaultVisibility = ellipse.Visibility;
+					_previewCoreIconDefaultOpacity = ellipse.Opacity;
+					_previewCoreIconDefaultEffect = ellipse.Effect;
+					_previewCoreUsesCustomImage = true;
+					grid.Children.Add(ellipse);
+				}
+				else
+				{
+					_previewExitIcon = new System.Windows.Shapes.Path
+					{
+						Name = "CoreExitIcon",
+						Data = IconHelper.GetCoreIconGeometry(text6, ConfigManager.CurrentConfig.CoreCustomIconKey, ConfigManager.CurrentConfig.CoreCustomIconSvg),
+						Fill = _previewTextBrush,
+						Width = num14 * num17,
+						Height = num14 * num17,
+						RenderTransform = renderTransform,
+						Stretch = Stretch.Uniform,
+						HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+						VerticalAlignment = VerticalAlignment.Center,
+						IsHitTestVisible = false,
+						Visibility = ((!ConfigManager.CurrentConfig.ShowCoreIcon) ? Visibility.Collapsed : Visibility.Visible)
+					};
+					_previewCoreIconElement = _previewExitIcon;
+					_previewCoreIconDefaultVisibility = _previewExitIcon.Visibility;
+					_previewCoreIconDefaultOpacity = _previewExitIcon.Opacity;
+					_previewCoreIconDefaultEffect = _previewExitIcon.Effect;
+					_previewCoreUsesCustomImage = false;
+					grid.Children.Add(_previewExitIcon);
+				}
+			}
+			else if (effectiveCenter != null)
+			{
+				// 2. 未自定义中心图案，但启用了中心核圆功能 -> 展示动作功能图标（必须严格正中居中，绝无偏移与缩放污染！）
+				ActionItem centerAction = effectiveCenter;
+				bool centerActionRendered = false;
+				double actionIconDim = num10 * 0.48;
+				double actionImgDim = num10 * 0.95;
+
+				// 2.1 自定义矢量 SVG
+				if (!string.IsNullOrEmpty(centerAction.CustomIconSvg))
+				{
+					try
+					{
+						_previewExitIcon = new System.Windows.Shapes.Path
+						{
+							Name = "CoreExitIcon",
+							Data = Geometry.Parse(centerAction.CustomIconSvg),
+							Fill = _previewTextBrush,
+							Width = actionIconDim,
+							Height = actionIconDim,
+							RenderTransform = null, // 确保正中居中，无偏移！
+							Stretch = Stretch.Uniform,
+							HorizontalAlignment = HorizontalAlignment.Center,
+							VerticalAlignment = VerticalAlignment.Center,
+							IsHitTestVisible = false,
+							Visibility = Visibility.Visible
+						};
+						_previewCoreIconElement = _previewExitIcon;
+						_previewCoreIconDefaultVisibility = _previewExitIcon.Visibility;
+						_previewCoreIconDefaultOpacity = _previewExitIcon.Opacity;
+						_previewCoreIconDefaultEffect = _previewExitIcon.Effect;
+						_previewCoreUsesCustomImage = false;
+						grid.Children.Add(_previewExitIcon);
+						centerActionRendered = true;
+					}
+					catch { }
+				}
+
+				// 2.2 继承应用程序图标
+				if (!centerActionRendered && !string.IsNullOrEmpty(centerAction.InheritAppIconPath))
+				{
+					try
+					{
+						ImageSource? appIcon = IconHelper.GetIcon(centerAction.InheritAppIconPath);
+						if (appIcon != null)
+						{
+							Ellipse ellipse = new Ellipse
+							{
+								Width = actionImgDim,
+								Height = actionImgDim,
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false,
+								Visibility = Visibility.Visible
+							};
+							ImageBrush imgBrush = new ImageBrush(appIcon)
+							{
+								Stretch = Stretch.Uniform,
+								AlignmentX = AlignmentX.Center,
+								AlignmentY = AlignmentY.Center
+							};
+							RenderOptions.SetBitmapScalingMode(imgBrush, BitmapScalingMode.HighQuality);
+							ellipse.Fill = imgBrush;
+							_previewCoreIconElement = ellipse;
+							_previewCoreIconDefaultVisibility = ellipse.Visibility;
+							_previewCoreIconDefaultOpacity = ellipse.Opacity;
+							_previewCoreIconDefaultEffect = ellipse.Effect;
+							_previewCoreUsesCustomImage = true;
+							grid.Children.Add(ellipse);
+							centerActionRendered = true;
+						}
+					}
+					catch { }
+				}
+
+				// 2.3 图标关键字 (custom: 或内置矢量)
+				if (!centerActionRendered && !string.IsNullOrEmpty(centerAction.IconKey))
+				{
+					if (centerAction.IconKey.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+					{
+						IconHelper.CustomIconItem? cItem = IconHelper.GetCustomIcons().FirstOrDefault(c => string.Equals(c.Key, centerAction.IconKey, StringComparison.OrdinalIgnoreCase));
+						if (cItem != null)
+						{
+							if (cItem.IsSvg && !string.IsNullOrEmpty(cItem.SvgData))
+							{
+								try
+								{
+									_previewExitIcon = new System.Windows.Shapes.Path
+									{
+										Name = "CoreExitIcon",
+										Data = Geometry.Parse(cItem.SvgData),
+										Fill = _previewTextBrush,
+										Width = actionIconDim,
+										Height = actionIconDim,
+										RenderTransform = null, // 确保正中居中，无偏移！
+										Stretch = Stretch.Uniform,
+										HorizontalAlignment = HorizontalAlignment.Center,
+										VerticalAlignment = VerticalAlignment.Center,
+										IsHitTestVisible = false,
+										Visibility = Visibility.Visible
+									};
+									_previewCoreIconElement = _previewExitIcon;
+									_previewCoreIconDefaultVisibility = _previewExitIcon.Visibility;
+									_previewCoreIconDefaultOpacity = _previewExitIcon.Opacity;
+									_previewCoreIconDefaultEffect = _previewExitIcon.Effect;
+									_previewCoreUsesCustomImage = false;
+									grid.Children.Add(_previewExitIcon);
+									centerActionRendered = true;
+								}
+								catch { }
+							}
+							else if (File.Exists(cItem.FilePath))
+							{
+								try
+								{
+									ImageSource? customSrc = IconHelper.GetCustomImageSource(cItem.FilePath);
+									if (customSrc != null)
+									{
+										Ellipse ellipse = new Ellipse
+										{
+											Width = actionImgDim,
+											Height = actionImgDim,
+											HorizontalAlignment = HorizontalAlignment.Center,
+											VerticalAlignment = VerticalAlignment.Center,
+											IsHitTestVisible = false,
+											Visibility = Visibility.Visible
+										};
+										ImageBrush imgBrush = new ImageBrush(customSrc)
+										{
+											Stretch = Stretch.Uniform,
+											AlignmentX = AlignmentX.Center,
+											AlignmentY = AlignmentY.Center
+										};
+										RenderOptions.SetBitmapScalingMode(imgBrush, BitmapScalingMode.HighQuality);
+										ellipse.Fill = imgBrush;
+										_previewCoreIconElement = ellipse;
+										_previewCoreIconDefaultVisibility = ellipse.Visibility;
+										_previewCoreIconDefaultOpacity = ellipse.Opacity;
+										_previewCoreIconDefaultEffect = ellipse.Effect;
+										_previewCoreUsesCustomImage = true;
+										grid.Children.Add(ellipse);
+										centerActionRendered = true;
+									}
+								}
+								catch { }
+							}
+						}
+					}
+					else
+					{
+						string centerSvg = IconHelper.GetSvgPathByKey(centerAction.IconKey);
+						if (!string.IsNullOrEmpty(centerSvg))
+						{
+							try
+							{
+								_previewExitIcon = new System.Windows.Shapes.Path
+								{
+									Name = "CoreExitIcon",
+									Data = Geometry.Parse(centerSvg),
+									Fill = _previewTextBrush,
+									Width = actionIconDim,
+									Height = actionIconDim,
+									RenderTransform = null, // 确保正中居中，无偏移！
+									Stretch = Stretch.Uniform,
+									HorizontalAlignment = HorizontalAlignment.Center,
+									VerticalAlignment = VerticalAlignment.Center,
+									IsHitTestVisible = false,
+									Visibility = Visibility.Visible
+								};
+								_previewCoreIconElement = _previewExitIcon;
+								_previewCoreIconDefaultVisibility = _previewExitIcon.Visibility;
+								_previewCoreIconDefaultOpacity = _previewExitIcon.Opacity;
+								_previewCoreIconDefaultEffect = _previewExitIcon.Effect;
+								_previewCoreUsesCustomImage = false;
+								grid.Children.Add(_previewExitIcon);
+								centerActionRendered = true;
+							}
+							catch { }
+						}
+					}
+				}
+
+				// 2.4 启动目标应用程序原生提取图标
+				if (!centerActionRendered && string.Equals(centerAction.Type, "Launch", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(centerAction.Parameter))
+				{
+					try
+					{
+						ImageSource? appIcon = IconHelper.GetIcon(centerAction.Parameter);
+						if (appIcon != null)
+						{
+							Ellipse ellipse = new Ellipse
+							{
+								Width = actionImgDim,
+								Height = actionImgDim,
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false,
+								Visibility = Visibility.Visible
+							};
+							ImageBrush imgBrush = new ImageBrush(appIcon)
+							{
+								Stretch = Stretch.Uniform,
+								AlignmentX = AlignmentX.Center,
+								AlignmentY = AlignmentY.Center
+							};
+							RenderOptions.SetBitmapScalingMode(imgBrush, BitmapScalingMode.HighQuality);
+							ellipse.Fill = imgBrush;
+							_previewCoreIconElement = ellipse;
+							_previewCoreIconDefaultVisibility = ellipse.Visibility;
+							_previewCoreIconDefaultOpacity = ellipse.Opacity;
+							_previewCoreIconDefaultEffect = ellipse.Effect;
+							_previewCoreUsesCustomImage = true;
+							grid.Children.Add(ellipse);
+							centerActionRendered = true;
+						}
+					}
+					catch { }
+				}
+
+				// 2.5 动作类型保底默认图标
+				if (!centerActionRendered && !string.IsNullOrEmpty(centerAction.Type))
+				{
+					string defaultKey = centerAction.Type switch
+					{
+						"WebUrl" or "Url" => "Explorer",
+						"Folder" or "OpenFolder" => "Folder",
+						"Launch" => "Terminal",
+						"Hotkey" => "Command",
+						"Command" => "Terminal",
+						"SwitchWindow" => "Tile",
+						"System" => "Settings",
+						_ => "Command"
+					};
+					string fallbackSvg = IconHelper.GetSvgPathByKey(defaultKey);
+					if (!string.IsNullOrEmpty(fallbackSvg))
+					{
+						try
+						{
+							_previewExitIcon = new System.Windows.Shapes.Path
+							{
+								Name = "CoreExitIcon",
+								Data = Geometry.Parse(fallbackSvg),
+								Fill = _previewTextBrush,
+								Width = actionIconDim,
+								Height = actionIconDim,
+								RenderTransform = null, // 确保正中居中，无偏移！
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = HorizontalAlignment.Center,
+								VerticalAlignment = VerticalAlignment.Center,
+								IsHitTestVisible = false,
+								Visibility = Visibility.Visible
+							};
+							_previewCoreIconElement = _previewExitIcon;
+							_previewCoreIconDefaultVisibility = _previewExitIcon.Visibility;
+							_previewCoreIconDefaultOpacity = _previewExitIcon.Opacity;
+							_previewCoreIconDefaultEffect = _previewExitIcon.Effect;
+							_previewCoreUsesCustomImage = false;
+							grid.Children.Add(_previewExitIcon);
+							centerActionRendered = true;
+						}
+						catch { }
+					}
+				}
+			}
+			else
+			{
+				// 3. 既无自定义图案，又未配置中心动作：保底 Exit 图标或隐藏
+				_previewExitIcon = new System.Windows.Shapes.Path
+				{
+					Name = "CoreExitIcon",
+					Data = IconHelper.GetCoreIconGeometry("Exit"),
+					Fill = _previewTextBrush,
+					Width = num14 * num17,
+					Height = num14 * num17,
+					RenderTransform = renderTransform,
+					Stretch = Stretch.Uniform,
+					HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+					VerticalAlignment = VerticalAlignment.Center,
+					IsHitTestVisible = false,
+					Visibility = ((!ConfigManager.CurrentConfig.ShowCoreIcon) ? Visibility.Collapsed : Visibility.Visible)
+				};
+				_previewCoreIconElement = _previewExitIcon;
+				_previewCoreIconDefaultVisibility = _previewExitIcon.Visibility;
+				_previewCoreIconDefaultOpacity = _previewExitIcon.Opacity;
+				_previewCoreIconDefaultEffect = _previewExitIcon.Effect;
+				_previewCoreUsesCustomImage = false;
+				grid.Children.Add(_previewExitIcon);
+			}
+			_previewCoreSelectionOverlay = new Ellipse
+			{
+				Width = num10 * 2.0,
+				Height = num10 * 2.0,
+				Fill = CreateFrostedCoreBrush(_previewCoreBgBrush),
+				Opacity = 0.92,
+				Stroke = new SolidColorBrush(System.Windows.Media.Color.FromArgb(130, 255, 255, 255)),
+				StrokeThickness = 1.1,
+				Visibility = Visibility.Collapsed,
+				IsHitTestVisible = false,
+				Effect = new BlurEffect { Radius = 7.0, RenderingBias = RenderingBias.Performance }
+			};
+			grid.Children.Add(_previewCoreSelectionOverlay);
+			double previewCoreFontSize = (ConfigManager.CurrentConfig?.CoreFontSize > 0.0)
+				? ConfigManager.CurrentConfig.CoreFontSize
+				: Math.Max(8.0, Math.Min(16.0, num10 / 4.0));
+			// 预览与实轮盘共用同一取色规则：自动模式跟随配色主题的文字笔刷，只有关闭自动后才采用手动指定色。
+			// 否则默认值 #FFFFFFFF 非空，预览永远画白字，白底白字会在预览里原样复现。
+			bool previewCoreTextAuto = ConfigManager.CurrentConfig == null || ConfigManager.CurrentConfig.CoreTextColorAuto;
+			Brush previewCoreTextBrush = (!previewCoreTextAuto && !string.IsNullOrWhiteSpace(ConfigManager.CurrentConfig?.CoreTextColor))
+				? CreateBrushFromHexSafe(ConfigManager.CurrentConfig.CoreTextColor, _previewTextBrush)
+				: _previewTextBrush;
+			string previewCoreFontFamily = (!string.IsNullOrWhiteSpace(ConfigManager.CurrentConfig?.CoreFontFamily))
+				? ConfigManager.CurrentConfig.CoreFontFamily
+				: (ConfigManager.CurrentConfig?.WheelFontFamily ?? "Microsoft YaHei UI, Segoe UI");
+			_previewCoreSelectionText = new TextBlock
+			{
+				Width = Math.Max(24.0, Math.Min(num10 * 1.75, 150.0)),
+				Foreground = previewCoreTextBrush,
+				FontSize = Math.Max(7.5, previewCoreFontSize * 0.82),
+				FontFamily = new System.Windows.Media.FontFamily(previewCoreFontFamily),
+				FontWeight = FontWeights.SemiBold,
+				HorizontalAlignment = HorizontalAlignment.Center,
+				VerticalAlignment = VerticalAlignment.Center,
+				TextAlignment = TextAlignment.Center,
+				TextWrapping = TextWrapping.Wrap,
+				TextTrimming = TextTrimming.CharacterEllipsis,
+				MaxHeight = Math.Max(24.0, num10 * 1.15),
+				Visibility = Visibility.Collapsed,
+				IsHitTestVisible = false,
+				Effect = new DropShadowEffect
+				{
+					BlurRadius = 2.0,
+					ShadowDepth = 1.0,
+					Opacity = 0.4
+				}
+			};
+			grid.Children.Add(_previewCoreSelectionText);
+			_previewStyleRenderer.RenderDecorations(LiveWheelPreviewCanvas, grid, num, num2, num8, num10, 1);
+			int num19 = ((wheelProfile.SectorCount > 0) ? wheelProfile.SectorCount : 8);
+			double num20 = 360.0 / (double)num19;
+			int totalActualSubActions = 0;
+			if (wheelProfile.Actions != null)
+			{
+				foreach (var a in wheelProfile.Actions)
+				{
+					if (a?.SubActions != null) totalActualSubActions += a.SubActions.Count;
+				}
+			}
+			for (int num21 = 0; num21 < num19; num21++)
+			{
+				double num22 = (double)num21 * num20;
+				double num23 = num22 - num20 / 2.0;
+				double endAngle = num22 + num20 / 2.0;
+				double num24 = num22 * (Math.PI / 180.0);
+				double num25 = (num9 + num8) / 2.0;
+				double num26 = num + Math.Cos(num24) * num25;
+				double num27 = num2 + Math.Sin(num24) * num25;
+				Geometry data = IconHelper.CreateAdvancedSectorGeometry(num, num2, num23, endAngle, num9, num8, shape, gap, cornerRadius);
+				TranslateTransform translateTransform = new TranslateTransform(0.0, 0.0);
+				System.Windows.Shapes.Path path = new System.Windows.Shapes.Path
+				{
+					Data = data,
+					Fill = _previewDefaultBrush,
+					Stroke = _previewBorderBrush,
+					StrokeThickness = _previewStyleRenderer.BorderThickness,
+					RenderTransform = translateTransform,
+					Tag = num21,
+					Cursor = System.Windows.Input.Cursors.Hand
+				};
+				int clickedSectorIndex = num21;
+				path.MouseLeftButtonDown += (s, e) =>
+				{
+					e.Handled = true;
+					OnPreviewSectorClicked(clickedSectorIndex);
+				};
+				bool isMultiSelected = (_selectedMultiSlots.Count > 1 && _selectedMultiSlots.Contains(num21));
+				bool isSingleSelected = (_selectedLayoutSlotIndex == num21 && LayoutTargetSlotRadio != null && LayoutTargetSlotRadio.IsChecked == true);
+				if (isMultiSelected || isSingleSelected)
+				{
+					path.Stroke = new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248));
+					path.StrokeThickness = 2.4;
+					path.Effect = new DropShadowEffect
+					{
+						Color = System.Windows.Media.Color.FromRgb(56, 189, 248),
+						BlurRadius = 14.0,
+						ShadowDepth = 0.0,
+						Opacity = 0.95
+					};
+				}
+
+				if (isMultiSelected)
+				{
+					int order = _selectedMultiSlots.IndexOf(num21) + 1;
+					Border badge = new Border
+					{
+						Width = 19,
+						Height = 19,
+						CornerRadius = new CornerRadius(9.5),
+						Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(37, 99, 235)),
+						BorderBrush = System.Windows.Media.Brushes.White,
+						BorderThickness = new Thickness(1.5),
+						IsHitTestVisible = false,
+						Effect = new DropShadowEffect
+						{
+							Color = System.Windows.Media.Colors.Black,
+							BlurRadius = 6,
+							ShadowDepth = 1,
+							Opacity = 0.45
+						},
+						Child = new TextBlock
+						{
+							Text = order.ToString(),
+							FontSize = 10,
+							FontWeight = FontWeights.Bold,
+							Foreground = System.Windows.Media.Brushes.White,
+							HorizontalAlignment = HorizontalAlignment.Center,
+							VerticalAlignment = VerticalAlignment.Center
+						}
+					};
+					double badgeR = (num9 + num8) / 2.0 + (num8 - num9) * 0.28;
+					double badgeX = num + Math.Cos(num24) * badgeR;
+					double badgeY = num2 + Math.Sin(num24) * badgeR;
+					Canvas.SetLeft(badge, badgeX - 9.5);
+					Canvas.SetTop(badge, badgeY - 9.5);
+					Panel.SetZIndex(badge, 25);
+					LiveWheelPreviewCanvas.Children.Add(badge);
+				}
+				System.Windows.Controls.Panel.SetZIndex(path, 0);
+				LiveWheelPreviewCanvas.Children.Add(path);
+				_previewStyleRenderer?.ApplySectorHighlight(path, isHighlighted: false);
+				_previewSectorPaths.Add(path);
+				_previewTransforms.Add(translateTransform);
+				_previewAngles.Add(num24);
+				StackPanel stackPanel = new StackPanel
+				{
+					Orientation = System.Windows.Controls.Orientation.Vertical,
+					HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+					VerticalAlignment = VerticalAlignment.Center,
+					IsHitTestVisible = false,
+					RenderTransform = translateTransform
+				};
+				string text8 = "";
+				string text9 = "";
+				string text10 = "";
+				string text11 = null;
+				IconHelper.CustomIconItem customIconItem2 = null;
+				ActionItem? action = wheelProfile.GetEffectiveAction(num21);
+				if (action != null)
+				{
+					text8 = action.Name ?? "";
+					text9 = action.Type ?? "Hotkey";
+					text10 = action.Parameter ?? "";
+					if (!string.IsNullOrEmpty(action.CustomIconSvg))
+					{
+						text11 = action.CustomIconSvg;
+					}
+					else if (!string.IsNullOrEmpty(action.IconKey) && action.IconKey.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+					{
+						customIconItem2 = IconHelper.GetCustomIcons().FirstOrDefault((IconHelper.CustomIconItem c) => string.Equals(c.Key, action.IconKey, StringComparison.OrdinalIgnoreCase));
+						if (customIconItem2 != null && customIconItem2.IsSvg)
+						{
+							text11 = customIconItem2.SvgData;
+						}
+					}
+					if (string.IsNullOrEmpty(text11) && customIconItem2 == null)
+					{
+						if (!string.IsNullOrEmpty(action.IconKey))
+						{
+							text11 = IconHelper.GetSvgPathByKey(action.IconKey);
+						}
+						else
+						{
+							switch (text9)
+							{
+							case "Folder":
+							case "OpenFolder":
+								text11 = IconHelper.GetSvgPathByKey("Folder");
+								break;
+							case "System":
+								if (!string.IsNullOrEmpty(text10))
+								{
+									text11 = IconHelper.GetSvgPathByKey(text10);
+								}
+								break;
+							}
+						}
+					}
+				}
+
+				string sectorLayout = text3;
+				if (action != null && !string.IsNullOrWhiteSpace(action.LayoutMode) && action.LayoutMode != "Inherit")
+				{
+					sectorLayout = action.LayoutMode;
+				}
+				bool shouldShowIcon = (sectorLayout != "TextOnly");
+				bool shouldShowText = (sectorLayout != "IconOnly");
+
+				Brush sectorPreviewTextBrush = _previewTextBrush;
+				if (action != null && !string.IsNullOrWhiteSpace(action.CustomTextColor))
+				{
+					sectorPreviewTextBrush = CreateBrushFromHexSafe(action.CustomTextColor, _previewTextBrush);
+				}
+
+				UIElement? iconElement = null;
+				if (shouldShowIcon)
+				{
+					double baseIconSize = (action != null && action.CustomIconSize.HasValue && action.CustomIconSize.Value > 0.0)
+						? action.CustomIconSize.Value
+						: ((ConfigManager.CurrentConfig.SectorIconSize > 0.0) ? ConfigManager.CurrentConfig.SectorIconSize : 20.0);
+					double num29 = num19 switch
+					{
+						4 => 1.2, 
+						12 => 0.8, 
+						_ => 1.0, 
+					};
+					double num30 = ((sectorLayout == "IconOnly") ? (baseIconSize * 1.35) : baseIconSize) * 0.72 * num29 * (num7 / (135.0 / num5));
+					// 1. Explicit Custom SVG
+					if (!string.IsNullOrEmpty(action?.CustomIconSvg))
+					{
+						try
+						{
+							iconElement = new System.Windows.Shapes.Path
+							{
+								Data = Geometry.Parse(action.CustomIconSvg),
+								Fill = sectorPreviewTextBrush,
+								Width = num30,
+								Height = num30,
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+							};
+						}
+						catch { }
+					}
+
+					// 2. Inherited App Icon
+					if (iconElement == null && action != null && !string.IsNullOrEmpty(action.InheritAppIconPath))
+					{
+						try
+						{
+							ImageSource? appIcon = IconHelper.GetIcon(action.InheritAppIconPath);
+							if (appIcon != null)
+							{
+								iconElement = new System.Windows.Controls.Image
+								{
+									Source = appIcon,
+									Width = num30,
+									Height = num30,
+									Stretch = Stretch.Uniform,
+									HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+								};
+							}
+						}
+						catch { }
+					}
+
+					// 3. Custom icon pack
+					if (iconElement == null && customIconItem2 != null)
+					{
+						if (!customIconItem2.IsSvg)
+						{
+							ImageSource customImageSource = IconHelper.GetCustomImageSource(customIconItem2.FilePath);
+							if (customImageSource != null)
+							{
+								iconElement = new System.Windows.Controls.Image
+								{
+									Source = customImageSource,
+									Width = num30,
+									Height = num30,
+									Stretch = Stretch.Uniform,
+									HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+								};
+							}
+						}
+						else if (!string.IsNullOrEmpty(customIconItem2.SvgData))
+						{
+							try
+							{
+								iconElement = new System.Windows.Shapes.Path
+								{
+									Data = Geometry.Parse(customIconItem2.SvgData),
+									Fill = sectorPreviewTextBrush,
+									Width = num30,
+									Height = num30,
+									Stretch = Stretch.Uniform,
+									HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+								};
+							}
+							catch { }
+						}
+					}
+
+					// 4. Built-in IconKey SVG
+					if (iconElement == null && !string.IsNullOrEmpty(text11))
+					{
+						try
+						{
+							iconElement = new System.Windows.Shapes.Path
+							{
+								Data = Geometry.Parse(text11),
+								Fill = sectorPreviewTextBrush,
+								Width = num30,
+								Height = num30,
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+							};
+						}
+						catch { }
+					}
+					else if (iconElement == null && text9 == "Launch" && !string.IsNullOrEmpty(text10))
+					{
+						BitmapSource icon = IconHelper.GetIcon(text10);
+						if (icon != null)
+						{
+							iconElement = new System.Windows.Controls.Image
+							{
+								Source = icon,
+								Width = num30,
+								Height = num30,
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+							};
+						}
+					}
+					else if (iconElement == null)
+					{
+						try
+						{
+							iconElement = new System.Windows.Shapes.Path
+							{
+								Data = Geometry.Parse("M19,15H5V5H19M19,3H5C3.89,3 3,3.89 3,5V15C3,16.1 3.89,17 5,17H19C20.1,17 21,16.1 21,15V5C21,3.89 20.1,3 19,3M2,18H22V20H2V18Z"),
+								Fill = sectorPreviewTextBrush,
+								Width = num30,
+								Height = num30,
+								Stretch = Stretch.Uniform,
+								HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+							};
+						}
+						catch { }
+					}
+				}
+
+				TextBlock? textElement = null;
+				if (shouldShowText && !string.IsNullOrEmpty(text8))
+				{
+					double baseFontSize = (action != null && action.CustomFontSize.HasValue && action.CustomFontSize.Value > 0.0)
+						? action.CustomFontSize.Value
+						: ((ConfigManager.CurrentConfig.SectorFontSize > 0.0) ? ConfigManager.CurrentConfig.SectorFontSize : 11.0);
+					double num32 = num19 switch
+					{
+						4 => 1.2, 
+						12 => 0.8, 
+						_ => 1.0, 
+					};
+					double val2 = ((sectorLayout == "TextOnly") ? (baseFontSize + 1.2) : baseFontSize) * 0.82 * num32 * (num7 / (135.0 / num5));
+					string previewText = SectorTextFormatter.FormatSectorText(text8, num19);
+					string[] previewLines = previewText.Split('\n');
+					double previewMaxWeight = previewLines.Max(l => SectorTextFormatter.MeasureVisualWeight(l));
+					int previewMaxLen = previewLines.Max(l => l.Length);
+					bool previewIsPureAscii = previewText.All(c => c < 128);
+					if (num19 == 12)
+					{
+						if (previewMaxWeight > 8.0 || (previewIsPureAscii && previewMaxLen > 7))
+						{
+							val2 = Math.Max(5.5, val2 * 0.82);
+						}
+						else if (previewMaxWeight > 5.0)
+						{
+							val2 = Math.Max(6.0, val2 * 0.90);
+						}
+					}
+					else if (num19 == 8)
+					{
+						if (previewMaxWeight > 12.0 || (previewIsPureAscii && previewMaxLen > 10))
+						{
+							val2 = Math.Max(6.2, val2 * 0.85);
+						}
+						else if (previewMaxWeight > 8.0)
+						{
+							val2 = Math.Max(6.8, val2 * 0.92);
+						}
+					}
+					else
+					{
+						if (previewMaxWeight > 16.0)
+						{
+							val2 = Math.Max(7.5, val2 * 0.88);
+						}
+					}
+
+					double maxWidth = num19 switch
+					{
+						4 => 96.0, 
+						12 => 52.0, 
+						_ => 80.0, 
+					} * num7;
+					string sectorFont = (action != null && !string.IsNullOrWhiteSpace(action.CustomFontFamily))
+						? action.CustomFontFamily
+						: (ConfigManager.CurrentConfig.WheelFontFamily ?? "Microsoft YaHei UI, Segoe UI");
+					textElement = new TextBlock
+					{
+						Text = previewText,
+						FontSize = Math.Max(5.5, val2),
+						FontFamily = new System.Windows.Media.FontFamily(sectorFont),
+						Foreground = sectorPreviewTextBrush,
+						FontWeight = (sectorLayout == "TextOnly") ? FontWeights.SemiBold : FontWeights.Medium,
+						HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+						TextAlignment = TextAlignment.Center,
+						TextWrapping = TextWrapping.Wrap,
+						TextTrimming = TextTrimming.CharacterEllipsis,
+						LineHeight = Math.Max(7.0, val2 * 1.15),
+						LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+						MaxWidth = maxWidth
+					};
+				}
+
+				string textPlacement = (!string.IsNullOrWhiteSpace(action?.CustomTextPlacement))
+					? action.CustomTextPlacement
+					: (ConfigManager.CurrentConfig.SectorTextPlacement ?? "Below");
+				double textOffX = (action != null && action.CustomTextOffsetX.HasValue)
+					? action.CustomTextOffsetX.Value
+					: ConfigManager.CurrentConfig.SectorTextOffsetX;
+				double textOffY = (action != null && action.CustomTextOffsetY.HasValue)
+					? action.CustomTextOffsetY.Value
+					: ConfigManager.CurrentConfig.SectorTextOffsetY;
+
+				if (textElement != null && (Math.Abs(textOffX) > 0.001 || Math.Abs(textOffY) > 0.001))
+				{
+					textElement.RenderTransform = new TranslateTransform(textOffX * num7, textOffY * num7);
+				}
+
+				if (textPlacement == "Above")
+				{
+					if (textElement != null)
+					{
+						textElement.Margin = new Thickness(0.0, 0.0, 0.0, (iconElement != null) ? 1 : 0);
+						stackPanel.Children.Add(textElement);
+					}
+					if (iconElement != null)
+					{
+						stackPanel.Children.Add(iconElement);
+					}
+				}
+				else
+				{
+					if (iconElement != null)
+					{
+						if (iconElement is FrameworkElement fe)
+						{
+							fe.Margin = new Thickness(0.0, 0.0, 0.0, (textElement != null) ? 1 : 0);
+						}
+						stackPanel.Children.Add(iconElement);
+					}
+					if (textElement != null)
+					{
+						stackPanel.Children.Add(textElement);
+					}
+				}
+				double num33 = num19 switch
+				{
+					4 => 96.0, 
+					12 => 56.0, 
+					_ => 80.0, 
+				} * num7;
+				double num34 = num19 switch
+				{
+					4 => 64.0, 
+					12 => 44.0, 
+					_ => 54.0, 
+				} * num7;
+				Grid grid2 = new Grid
+				{
+					Width = num33,
+					Height = num34,
+					IsHitTestVisible = false,
+					RenderTransform = translateTransform
+				};
+				if (action != null && action.IsInherited)
+				{
+					stackPanel.Opacity = 0.65;
+				}
+				grid2.Children.Add(stackPanel);
+				Canvas.SetLeft(grid2, num26 - num33 / 2.0);
+				Canvas.SetTop(grid2, num27 - num34 / 2.0);
+				System.Windows.Controls.Panel.SetZIndex(grid2, 10);
+				LiveWheelPreviewCanvas.Children.Add(grid2);
+
+				if (!enableMultiTier || wheelProfile.Actions == null || num21 >= wheelProfile.Actions.Count || wheelProfile.Actions[num21] == null)
+				{
+					continue;
+				}
+
+				bool isFan = string.Equals(ConfigManager.CurrentConfig.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+
+				int targetSelectedParent = _selectedLayoutSlotIndex >= 0
+					? _selectedLayoutSlotIndex
+					: (_selectedSlotIndex >= 0 ? _selectedSlotIndex : 0);
+				if (targetSelectedParent >= num19)
+				{
+					targetSelectedParent = 0;
+				}
+
+				ActionItem actionItem = wheelProfile.Actions[num21];
+
+				List<ActionItem>? subActionsList = null;
+				if (actionItem.SubActions != null && actionItem.SubActions.Count > 0)
+				{
+					subActionsList = actionItem.SubActions;
+				}
+				else if (totalActualSubActions == 0)
+				{
+					// 全方案完全未配置任何实际二级动作时，仅当用户主动展开左侧二级尺寸/配色折叠栏（或蜂窝扇二级模式）时，
+					// 为当前选中的单个主扇区提供3项预览，方便微调视觉效果；正常浏览时绝不全量虚构填充全部扇区
+					bool isTier2Editing = (Tier2ThemeExpander?.IsExpanded == true || Tier2DimensionsExpander?.IsExpanded == true || (isFan && Tier2ConfigSegmentRadio?.IsChecked == true));
+					if (isTier2Editing && num21 == targetSelectedParent)
+					{
+						subActionsList = new List<ActionItem>
+						{
+							new ActionItem { Name = "子动作 1", Type = "Hotkey" },
+							new ActionItem { Name = "子动作 2", Type = "Hotkey" },
+							new ActionItem { Name = "子动作 3", Type = "Hotkey" }
+						};
+					}
+				}
+
+				if (subActionsList == null || subActionsList.Count == 0)
+				{
+					continue;
+				}
+
+				if (isFan)
+				{
+					// 蜂窝扇形态保持现状：仅在切换至二级配置时展开，且仅展开当前选中的单个扇区以消除重叠遮挡
+					bool isTier2Mode = (Tier2ConfigSegmentRadio != null && Tier2ConfigSegmentRadio.IsChecked == true);
+					if (!isTier2Mode || num21 != targetSelectedParent)
+					{
+						continue;
+					}
+				}
+				// 外圈子环形态（!isFan）：有实际子动作的扇区自动完整展开外圈子环，无子动作的扇区不虚构多余子盘
+
+				int count = subActionsList.Count;
+				int activeCount = isFan ? Math.Min(3, count) : count;
+				double num35 = num20 / (double)count;
+				for (int num36 = 0; num36 < activeCount; num36++)
+				{
+					double num37 = num23 + (double)num36 * num35;
+					double num38 = num37 + num35;
+					double num39 = (num37 + num38) / 2.0 * (Math.PI / 180.0);
+					double num40 = (num12 + num13) / 2.0;
+					double num41 = num + Math.Cos(num39) * num40;
+					double num42 = num2 + Math.Sin(num39) * num40;
+
+					Geometry data2;
+					double itemR_sub = 0.0;
+					if (isFan)
+					{
+						int slot = RadialWindow.GetFanSlotIndex(num36, activeCount);
+						var (du, dv) = RadialWindow.GetFanSubOffsetForShape(ConfigManager.CurrentConfig.Shape, slot);
+						double ratio = (ConfigManager.CurrentConfig.SubWheelOuterRadius > 0.0 && ConfigManager.CurrentConfig.WheelRadius > 0.0)
+							? (ConfigManager.CurrentConfig.SubWheelOuterRadius / (ConfigManager.CurrentConfig.WheelRadius * 1.55))
+							: 1.0;
+						itemR_sub = (num8 - num9) * 0.40 * Math.Max(0.5, Math.Min(2.5, ratio));
+						double R_sub = ((num9 + num8) / 2.0 * ratio) + num11;
+						double ux = Math.Cos(num24), uy = Math.Sin(num24);
+						double vx = -Math.Sin(num24), vy = Math.Cos(num24);
+						num41 = num + ux * (du * R_sub) + vx * (dv * R_sub);
+						num42 = num2 + uy * (du * R_sub) + vy * (dv * R_sub);
+						data2 = RadialWindow.CreateSubMenuGeometry(shape, num41, num42, itemR_sub, num24, num, num2, cornerRadius2);
+					}
+					else
+					{
+						data2 = IconHelper.CreateAdvancedSectorGeometry(num, num2, num37, num38, num12, num13, shape, num11, cornerRadius2);
+					}
+
+					TranslateTransform translateTransform2 = new TranslateTransform(0.0, 0.0);
+					bool isSelectedSub = (LayoutTargetSlotRadio != null && LayoutTargetSlotRadio.IsChecked == true && _selectedLayoutSlotIndex >= 0 && _selectedLayoutTier == 2 && num21 == _selectedLayoutSlotIndex && num36 == _selectedLayoutSubSlotIndex);
+					System.Windows.Shapes.Path path2 = new System.Windows.Shapes.Path
+					{
+						Data = data2,
+						Fill = _previewSubDefaultBrush,
+						Stroke = isSelectedSub ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248)) : _previewSubBorderBrush,
+						StrokeThickness = isSelectedSub ? 2.4 : (_previewSubStyleRenderer?.BorderThickness ?? _previewStyleRenderer?.BorderThickness ?? 1.2),
+						RenderTransform = translateTransform2,
+						Tag = $"sub_{num21}_{num36}",
+						Opacity = 0.95,
+						Cursor = System.Windows.Input.Cursors.Hand,
+						Effect = isSelectedSub ? new DropShadowEffect
+						{
+							Color = System.Windows.Media.Color.FromRgb(56, 189, 248),
+							BlurRadius = 14.0,
+							ShadowDepth = 0.0,
+							Opacity = 0.95
+						} : null
+					};
+					int clickedParentIdx = num21;
+					int clickedSubIdx = num36;
+					path2.MouseLeftButtonDown += (s, e) =>
+					{
+						e.Handled = true;
+						OnPreviewSubSectorClicked(clickedParentIdx, clickedSubIdx);
+					};
+					if (!isSelectedSub)
+					{
+						_previewSubStyleRenderer?.ApplySectorHighlight(path2, isHighlighted: false);
+					}
+					System.Windows.Controls.Panel.SetZIndex(path2, isSelectedSub ? 25 : 15);
+					LiveWheelPreviewCanvas.Children.Add(path2);
+					_previewSubSectorPaths.Add(path2);
+					_previewSubTransforms.Add(translateTransform2);
+					_previewSubParentIndices.Add(num21);
+					_previewSubIndices.Add(num36);
+					_previewSubAngles.Add(isFan ? num24 : num39);
+					ActionItem actionItem2 = subActionsList[num36];
+					StackPanel stackPanel2 = new StackPanel
+					{
+						Orientation = Orientation.Vertical,
+						HorizontalAlignment = HorizontalAlignment.Center,
+						VerticalAlignment = VerticalAlignment.Center,
+						IsHitTestVisible = false,
+						RenderTransform = translateTransform2
+					};
+
+					string subLayout = (actionItem2 != null && !string.IsNullOrWhiteSpace(actionItem2.LayoutMode) && actionItem2.LayoutMode != "Inherit")
+						? actionItem2.LayoutMode
+						: (ConfigManager.CurrentConfig.IconLayoutMode ?? "IconAndText");
+					bool subShouldShowIcon = (subLayout != "TextOnly");
+					bool subShouldShowText = (subLayout != "IconOnly");
+					Brush subSectorPreviewTextBrush = _previewSubTextBrush;
+					if (actionItem2 != null && !string.IsNullOrWhiteSpace(actionItem2.CustomTextColor))
+					{
+						subSectorPreviewTextBrush = CreateBrushFromHexSafe(actionItem2.CustomTextColor, _previewSubTextBrush);
+					}
+
+					double currentSubIconDim = 0.0;
+					if (subShouldShowIcon)
+					{
+						double subBaseIconSize = (actionItem2 != null && actionItem2.CustomIconSize.HasValue && actionItem2.CustomIconSize.Value > 0.0)
+							? actionItem2.CustomIconSize.Value
+							: ((ConfigManager.CurrentConfig.SubWheelIconSize > 0.0) ? ConfigManager.CurrentConfig.SubWheelIconSize : 18.0);
+						double num43 = ((subLayout == "IconOnly") ? (subBaseIconSize * 1.35) : subBaseIconSize) * 0.65 * num7;
+						currentSubIconDim = num43;
+						UIElement? subIconEl = null;
+
+						if (!string.IsNullOrEmpty(actionItem2?.CustomIconSvg))
+						{
+							try
+							{
+								subIconEl = new System.Windows.Shapes.Path
+								{
+									Data = Geometry.Parse(actionItem2.CustomIconSvg),
+									Fill = subSectorPreviewTextBrush,
+									Width = num43,
+									Height = num43,
+									Stretch = Stretch.Uniform,
+									HorizontalAlignment = HorizontalAlignment.Center,
+									Margin = new Thickness(0, 0, 0, subShouldShowText ? 1 : 0)
+								};
+							}
+							catch { }
+						}
+
+						if (subIconEl == null && actionItem2 != null && !string.IsNullOrEmpty(actionItem2.InheritAppIconPath))
+						{
+							try
+							{
+								ImageSource? appIcon2 = IconHelper.GetIcon(actionItem2.InheritAppIconPath);
+								if (appIcon2 != null)
+								{
+									subIconEl = new Image
+									{
+										Source = appIcon2,
+										Width = num43,
+										Height = num43,
+										Stretch = Stretch.Uniform,
+										HorizontalAlignment = HorizontalAlignment.Center,
+										Margin = new Thickness(0, 0, 0, subShouldShowText ? 1 : 0)
+									};
+								}
+							}
+							catch { }
+						}
+
+						if (subIconEl == null)
+						{
+							string text12 = null;
+							if (!string.IsNullOrEmpty(actionItem2?.IconKey))
+							{
+								text12 = IconHelper.GetSvgPathByKey(actionItem2.IconKey);
+							}
+							else if (actionItem2?.Type == "Folder" || actionItem2?.Type == "OpenFolder")
+							{
+								text12 = IconHelper.GetSvgPathByKey("Folder");
+							}
+							else if (actionItem2?.Type == "System" && !string.IsNullOrEmpty(actionItem2.Parameter))
+							{
+								text12 = IconHelper.GetSvgPathByKey(actionItem2.Parameter);
+							}
+
+							if (!string.IsNullOrEmpty(text12))
+							{
+								try
+								{
+									subIconEl = new System.Windows.Shapes.Path
+									{
+										Data = Geometry.Parse(text12),
+										Fill = subSectorPreviewTextBrush,
+										Width = num43,
+										Height = num43,
+										Stretch = Stretch.Uniform,
+										HorizontalAlignment = HorizontalAlignment.Center,
+										Margin = new Thickness(0, 0, 0, subShouldShowText ? 1 : 0)
+									};
+								}
+								catch { }
+							}
+							else if (actionItem2?.Type == "Launch" && !string.IsNullOrEmpty(actionItem2?.Parameter))
+							{
+								BitmapSource icon2 = IconHelper.GetIcon(actionItem2.Parameter);
+								if (icon2 != null)
+								{
+									subIconEl = new Image
+									{
+										Source = icon2,
+										Width = num43,
+										Height = num43,
+										Stretch = Stretch.Uniform,
+										HorizontalAlignment = HorizontalAlignment.Center,
+										Margin = new Thickness(0, 0, 0, subShouldShowText ? 1 : 0)
+									};
+								}
+							}
+						}
+
+						if (subIconEl != null)
+						{
+							stackPanel2.Children.Add(subIconEl);
+						}
+					}
+
+					double subBaseFontSize = (actionItem2 != null && actionItem2.CustomFontSize.HasValue && actionItem2.CustomFontSize.Value > 0.0)
+						? actionItem2.CustomFontSize.Value
+						: ((ConfigManager.CurrentConfig.SubWheelFontSize > 0.0) ? ConfigManager.CurrentConfig.SubWheelFontSize : 10.0);
+
+					double num45;
+					double num46;
+					if (isFan)
+					{
+						double reqHoneyH = (subShouldShowIcon ? currentSubIconDim : 0.0) + subBaseFontSize * 2.6 * num7 + 8.0 * num7;
+						num45 = Math.Max(itemR_sub * 2.2, subBaseFontSize * 5.5 * num7);
+						num46 = Math.Max(itemR_sub * 2.0, reqHoneyH);
+					}
+					else
+					{
+						double previewSubThickness = Math.Max(24.0 * num7, num13 - num12);
+						double previewArcLength = num40 * (num35 * Math.PI / 180.0);
+						num45 = Math.Max((count >= 4 ? 76.0 : 92.0) * num7, Math.Min(140.0 * num7, previewArcLength * 0.90));
+						double minReqH = (subShouldShowIcon ? currentSubIconDim : 0.0) + subBaseFontSize * 2.6 * num7 + 8.0 * num7;
+						num46 = Math.Max((count >= 4 ? 54.0 : 64.0) * num7, Math.Min(130.0 * num7, Math.Max(previewSubThickness * 0.88, minReqH)));
+					}
+
+					if (subShouldShowText && !string.IsNullOrEmpty(actionItem2.Name))
+					{
+						string subFontFamily = (actionItem2 != null && !string.IsNullOrWhiteSpace(actionItem2.CustomFontFamily))
+							? actionItem2.CustomFontFamily
+							: (ConfigManager.CurrentConfig.WheelFontFamily ?? "Microsoft YaHei UI, Segoe UI");
+						double subFontSize = Math.Max(5.0, ((subLayout == "TextOnly") ? (subBaseFontSize + 1.0) : subBaseFontSize) * 0.88 * num7);
+						int subCharLen = actionItem2.Name.Length;
+						string subPreviewText = SectorTextFormatter.FormatSectorText(actionItem2.Name, num19, isSubWheel: true);
+						string[] subPreviewLines = subPreviewText.Split('\n');
+						double subPreviewMaxWeight = subPreviewLines.Max(l => SectorTextFormatter.MeasureVisualWeight(l));
+						if (subPreviewMaxWeight > 8.0)
+						{
+							subFontSize = Math.Max(4.2, subFontSize * 0.85);
+						}
+						else if (subPreviewMaxWeight > 5.0)
+						{
+							subFontSize = Math.Max(4.6, subFontSize * 0.92);
+						}
+
+						TextBlock element8 = new TextBlock
+						{
+							Text = subPreviewText,
+							FontSize = subFontSize,
+							FontFamily = new FontFamily(subFontFamily),
+							Foreground = subSectorPreviewTextBrush,
+							FontWeight = (subLayout == "TextOnly") ? FontWeights.SemiBold : FontWeights.Normal,
+							HorizontalAlignment = HorizontalAlignment.Center,
+							TextAlignment = TextAlignment.Center,
+							TextWrapping = TextWrapping.Wrap,
+							TextTrimming = TextTrimming.CharacterEllipsis,
+							LineHeight = Math.Max(5.5, subFontSize * 1.15),
+							LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+							MaxWidth = Math.Max(48.0 * num7, num45 - 4.0 * num7),
+							MaxHeight = Math.Max(subFontSize * 2.6 + 4.0 * num7, num46 - (subShouldShowIcon ? currentSubIconDim + 4.0 * num7 : 6.0 * num7))
+						};
+						stackPanel2.Children.Add(element8);
+					}
+					Grid grid3 = new Grid
+					{
+						Width = num45,
+						Height = num46,
+						IsHitTestVisible = false,
+						RenderTransform = translateTransform2,
+						Opacity = 1.0
+					};
+					grid3.Children.Add(stackPanel2);
+					Canvas.SetLeft(grid3, num41 - num45 / 2.0);
+					Canvas.SetTop(grid3, num42 - num46 / 2.0);
+					System.Windows.Controls.Panel.SetZIndex(grid3, 50);
+					LiveWheelPreviewCanvas.Children.Add(grid3);
+					_previewSubContainers.Add(grid3);
+				}
+			}
+			Canvas.SetLeft(grid, num - num10);
+			Canvas.SetTop(grid, num2 - num10);
+			System.Windows.Controls.Panel.SetZIndex(grid, 15);
+			LiveWheelPreviewCanvas.Children.Add(grid);
+		}
+		catch (Exception)
+		{
+		}
+		finally
+		{
+			_isRenderingPreview = false;
+		}
+		UpdateLayerIndicatorPreview();
+	}
+
+	private static Stretch ParseStretchMode(string? stretch)
+	{
+		if (string.Equals(stretch, "Uniform", StringComparison.OrdinalIgnoreCase))
+		{
+			return Stretch.Uniform;
+		}
+		if (string.Equals(stretch, "Fill", StringComparison.OrdinalIgnoreCase))
+		{
+			return Stretch.Fill;
+		}
+		if (string.Equals(stretch, "None", StringComparison.OrdinalIgnoreCase))
+		{
+			return Stretch.None;
+		}
+		return Stretch.UniformToFill;
+	}
+
+	private static System.Windows.Media.Brush CreateFrostedCoreBrush(System.Windows.Media.Brush baseBrush)
+	{
+		System.Windows.Media.Color baseColor = (baseBrush as SolidColorBrush)?.Color ?? System.Windows.Media.Color.FromRgb(36, 44, 60);
+		double luminance = (0.2126 * baseColor.R) + (0.7152 * baseColor.G) + (0.0722 * baseColor.B);
+		if (luminance >= 165.0)
+		{
+			return new SolidColorBrush(System.Windows.Media.Color.FromArgb(88, byte.MaxValue, byte.MaxValue, byte.MaxValue));
+		}
+
+		return new SolidColorBrush(System.Windows.Media.Color.FromArgb(
+			112,
+			(byte)Math.Min(255, baseColor.R + 48),
+			(byte)Math.Min(255, baseColor.G + 56),
+			(byte)Math.Min(255, baseColor.B + 72)));
+	}
+
+	private static System.Windows.Media.Brush CreateBrushFromHexSafe(string? hex, System.Windows.Media.Brush fallback)
+	{
+		if (string.IsNullOrWhiteSpace(hex))
+		{
+			return fallback;
+		}
+		try
+		{
+			return new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
+		}
+		catch
+		{
+			return fallback;
+		}
+	}
+
+	private void UpdatePreviewCoreSelection(int mainIndex, int subIndex, WheelProfile? wheelProfile)
+	{
+		bool shouldShow = ConfigManager.CurrentConfig?.ShowSelectedActionText == true && mainIndex >= 0 && wheelProfile != null;
+		string selectedName = string.Empty;
+		if (shouldShow && wheelProfile!.Actions != null && mainIndex < wheelProfile.Actions.Count)
+		{
+			ActionItem action = wheelProfile.Actions[mainIndex];
+			if (subIndex >= 0 && subIndex < _previewSubIndices.Count && subIndex < _previewSubParentIndices.Count && _previewSubParentIndices[subIndex] == mainIndex)
+			{
+				int localSubIndex = _previewSubIndices[subIndex];
+				if (action?.SubActions != null && localSubIndex >= 0 && localSubIndex < action.SubActions.Count)
+				{
+					selectedName = action.SubActions[localSubIndex]?.Name ?? string.Empty;
+				}
+			}
+			if (string.IsNullOrWhiteSpace(selectedName))
+			{
+				selectedName = action?.Name ?? string.Empty;
+			}
+		}
+
+		if (shouldShow && !string.IsNullOrWhiteSpace(selectedName) && _previewCoreSelectionOverlay != null && _previewCoreSelectionText != null)
+		{
+			_previewCoreSelectionText.Text = selectedName;
+			_previewCoreSelectionOverlay.Visibility = Visibility.Visible;
+			_previewCoreSelectionText.Visibility = Visibility.Visible;
+			if (_previewCoreIconElement != null)
+			{
+				_previewCoreIconElement.Opacity = _previewCoreUsesCustomImage ? _previewCoreIconDefaultOpacity : 0.18;
+				_previewCoreIconElement.Effect = _previewCoreUsesCustomImage
+					? new BlurEffect { Radius = 5.5, RenderingBias = RenderingBias.Performance }
+					: _previewCoreIconDefaultEffect;
+			}
+			return;
+		}
+
+		if (_previewCoreSelectionOverlay != null)
+		{
+			_previewCoreSelectionOverlay.Visibility = Visibility.Collapsed;
+		}
+		if (_previewCoreSelectionText != null)
+		{
+			_previewCoreSelectionText.Visibility = Visibility.Collapsed;
+		}
+		if (_previewCoreIconElement != null)
+		{
+			_previewCoreIconElement.Visibility = _previewCoreIconDefaultVisibility;
+			_previewCoreIconElement.Opacity = _previewCoreIconDefaultOpacity;
+			_previewCoreIconElement.Effect = _previewCoreIconDefaultEffect;
+		}
+	}
+
+	private void LiveWheelPreviewCanvas_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+	{
+		if (_previewSectorPaths.Count == 0 || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		try
+		{
+			Point position = e.GetPosition(LiveWheelPreviewCanvas);
+			double num = position.X - 150.0;
+			double num2 = position.Y - 150.0;
+			double num3 = Math.Sqrt(num * num + num2 * num2);
+			bool enableMultiTier = ConfigManager.CurrentConfig.EnableMultiTier;
+			double num4 = ((ConfigManager.CurrentConfig.SubWheelRadiusRatio > 1.1) ? ConfigManager.CurrentConfig.SubWheelRadiusRatio : 1.45);
+			WheelProfile wheelProfile = _selectedProfile ?? ConfigManager.CurrentConfig.Profiles.FirstOrDefault();
+			bool num5 = enableMultiTier && wheelProfile?.Actions != null && wheelProfile.Actions.Any((ActionItem a) => a != null && a.SubActions != null && a.SubActions.Count > 0);
+			double num6 = Math.Max(80.0, ConfigManager.CurrentConfig.WheelRadius);
+			double num7 = ((ConfigManager.CurrentConfig.SubWheelOuterRadius > 0.0) ? ConfigManager.CurrentConfig.SubWheelOuterRadius : (ConfigManager.CurrentConfig.WheelRadius * num4));
+			double val = (num5 ? (Math.Max(num6, num7) + 10.0) : num6);
+			double num8 = 135.0 / Math.Max(135.0, val);
+			double num9 = ConfigManager.CurrentConfig.WheelRadius * num8;
+			double num10 = ConfigManager.CurrentConfig.InnerRadius * num8;
+			double num11 = ConfigManager.CurrentConfig.CoreRadius * num8;
+			double num12 = Math.Max(0.0, ((ConfigManager.CurrentConfig.SubWheelInnerGap >= 0.0) ? ConfigManager.CurrentConfig.SubWheelInnerGap : 7.0) * num8);
+			double num13 = num9 + num12 + 2.0;
+			double num14 = Math.Max(num13 + 10.0, num7 * num8);
+			int num15 = -2;
+			int num16 = -1;
+			bool isFan = string.Equals(ConfigManager.CurrentConfig.SubmenuStyle, "Fan", StringComparison.OrdinalIgnoreCase);
+			bool isTier2Mode = (Tier2ConfigSegmentRadio != null && Tier2ConfigSegmentRadio.IsChecked == true);
+
+			if (num3 <= num11)
+			{
+				num15 = -1;
+			}
+			else if (num3 >= num10 * 0.75)
+			{
+				double num17 = (Math.Atan2(num2, num) * (180.0 / Math.PI) + 360.0) % 360.0;
+				double num18 = 360.0 / (double)_previewSectorPaths.Count;
+				num15 = (int)Math.Floor((num17 + num18 / 2.0) / num18) % _previewSectorPaths.Count;
+
+				if (enableMultiTier && num15 >= 0)
+				{
+					for (int num22 = 0; num22 < _previewSubSectorPaths.Count; num22++)
+					{
+						if (_previewSubParentIndices[num22] == num15)
+						{
+							System.Windows.Shapes.Path path = _previewSubSectorPaths[num22];
+							if (path.Data != null && path.Data.FillContains(position))
+							{
+								num16 = num22;
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			if (num15 == _lastHoveredSector && num16 == _lastHoveredSubIndex)
+			{
+				return;
+			}
+			int prevSec = _lastHoveredSector;
+			int prevSub = _lastHoveredSubIndex;
+			_lastHoveredSector = num15;
+			_lastHoveredSubIndex = num16;
+			if ((num15 != prevSec && num15 >= 0) || (num16 != prevSub && num16 >= 0))
+			{
+				SoundEffectManager.Play(SoundType.SectorHover);
+			}
+			UpdatePreviewCoreSelection(num15, num16, wheelProfile);
+
+			for (int num23 = 0; num23 < _previewSectorPaths.Count; num23++)
+			{
+				System.Windows.Shapes.Path path2 = _previewSectorPaths[num23];
+				TranslateTransform translateTransform = _previewTransforms[num23];
+				double num24 = _previewAngles[num23];
+				if (num23 == num15)
+				{
+					path2.Fill = _previewHighlightBrush;
+					path2.Stroke = _previewHighlightBorderBrush;
+					path2.StrokeThickness = _previewStyleRenderer?.HighlightBorderThickness ?? 2.0;
+					_previewStyleRenderer?.ApplySectorHighlight(path2, isHighlighted: true);
+					translateTransform.X = Math.Cos(num24) * 4.0;
+					translateTransform.Y = Math.Sin(num24) * 4.0;
+				}
+				else
+				{
+					path2.Fill = _previewDefaultBrush;
+					path2.Stroke = _previewBorderBrush;
+					path2.StrokeThickness = _previewStyleRenderer?.BorderThickness ?? 1.5;
+					_previewStyleRenderer?.ApplySectorHighlight(path2, isHighlighted: false);
+					translateTransform.X = 0.0;
+					translateTransform.Y = 0.0;
+				}
+			}
+			ApplyPreviewSelectedVisuals();
+
+			for (int num25 = 0; num25 < _previewSubSectorPaths.Count; num25++)
+			{
+				System.Windows.Shapes.Path path3 = _previewSubSectorPaths[num25];
+				TranslateTransform translateTransform2 = _previewSubTransforms[num25];
+				int num26 = _previewSubParentIndices[num25];
+				double num27 = _previewSubAngles[num25];
+				Grid grid = ((num25 < _previewSubContainers.Count) ? _previewSubContainers[num25] : null);
+
+				if (num25 == num16)
+				{
+					path3.Fill = _previewSubHighlightBrush ?? _previewHighlightBrush;
+					path3.Stroke = _previewSubHighlightBorderBrush ?? _previewHighlightBorderBrush;
+					path3.StrokeThickness = (_previewSubStyleRenderer?.HighlightBorderThickness ?? _previewStyleRenderer?.HighlightBorderThickness ?? 2.0);
+					_previewSubStyleRenderer?.ApplySectorHighlight(path3, isHighlighted: true);
+					path3.Opacity = 1.0;
+					if (grid != null) grid.Opacity = 1.0;
+					System.Windows.Controls.Panel.SetZIndex(path3, 20);
+					translateTransform2.X = Math.Cos(num27) * 4.0;
+					translateTransform2.Y = Math.Sin(num27) * 4.0;
+					ApplySubSectorGlow(path3, isHighlighted: true);
+					if (grid != null)
+					{
+						System.Windows.Controls.Panel.SetZIndex(grid, 50);
+						if (grid.Children.Count > 0 && grid.Children[0] is StackPanel stackPanel)
+						{
+							foreach (object child in stackPanel.Children)
+							{
+								if (child is System.Windows.Shapes.Path path4)
+								{
+									path4.Fill = Brushes.White;
+								}
+								else if (child is TextBlock textBlock)
+								{
+									textBlock.Foreground = Brushes.White;
+									textBlock.FontWeight = FontWeights.SemiBold;
+								}
+							}
+						}
+					}
+					continue;
+				}
+
+				if (num26 == num15)
+				{
+					path3.Fill = _previewSubDefaultBrush ?? _previewDefaultBrush;
+					path3.Stroke = _previewSubHighlightBorderBrush ?? _previewHighlightBorderBrush;
+					path3.StrokeThickness = (_previewSubStyleRenderer?.BorderThickness ?? _previewStyleRenderer?.BorderThickness ?? 1.5);
+					_previewSubStyleRenderer?.ApplySectorHighlight(path3, isHighlighted: false);
+					path3.Opacity = 1.0;
+					if (grid != null) grid.Opacity = 1.0;
+					System.Windows.Controls.Panel.SetZIndex(path3, 15);
+					translateTransform2.X = 0.0;
+					translateTransform2.Y = 0.0;
+					ApplySubSectorGlow(path3, isHighlighted: false);
+					if (grid != null)
+					{
+						System.Windows.Controls.Panel.SetZIndex(grid, 50);
+						if (grid.Children.Count > 0 && grid.Children[0] is StackPanel stackPanel2)
+						{
+							foreach (object child2 in stackPanel2.Children)
+							{
+								if (child2 is System.Windows.Shapes.Path path5)
+								{
+									path5.Fill = _previewSubTextBrush ?? _previewTextBrush;
+								}
+								else if (child2 is TextBlock textBlock2)
+								{
+									textBlock2.Foreground = _previewSubTextBrush ?? _previewTextBrush;
+									textBlock2.FontWeight = FontWeights.Normal;
+								}
+							}
+						}
+					}
+					continue;
+				}
+
+				path3.Fill = _previewSubDefaultBrush ?? _previewDefaultBrush;
+				path3.Stroke = _previewSubBorderBrush ?? _previewBorderBrush;
+				path3.StrokeThickness = (_previewSubStyleRenderer?.BorderThickness ?? _previewStyleRenderer?.BorderThickness ?? 1.2);
+				_previewSubStyleRenderer?.ApplySectorHighlight(path3, isHighlighted: false);
+				path3.Opacity = (isFan ? (isTier2Mode ? 0.95 : 0.0) : 0.85);
+				if (grid != null) grid.Opacity = (isFan ? (isTier2Mode ? 1.0 : 0.0) : 0.85);
+				System.Windows.Controls.Panel.SetZIndex(path3, 15);
+				translateTransform2.X = 0.0;
+				translateTransform2.Y = 0.0;
+				ApplySubSectorGlow(path3, isHighlighted: false);
+				if (grid != null)
+				{
+					System.Windows.Controls.Panel.SetZIndex(grid, 50);
+					if (grid.Children.Count > 0 && grid.Children[0] is StackPanel stackPanel3)
+					{
+						foreach (object child3 in stackPanel3.Children)
+						{
+							if (child3 is System.Windows.Shapes.Path path6)
+							{
+								path6.Fill = _previewSubTextBrush ?? _previewTextBrush;
+							}
+							else if (child3 is TextBlock textBlock3)
+							{
+								textBlock3.Foreground = _previewSubTextBrush ?? _previewTextBrush;
+								textBlock3.FontWeight = FontWeights.Normal;
+							}
+						}
+					}
+				}
+			}
+			ApplyPreviewSelectedVisuals();
+		}
+		catch (Exception)
+		{
+		}
+	}
+
+	private void LiveWheelPreviewCanvas_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+	{
+		try
+		{
+			_lastHoveredSector = -2;
+			_lastHoveredSubIndex = -2;
+			UpdatePreviewCoreSelection(-1, -1, _selectedProfile ?? ConfigManager.CurrentConfig?.Profiles.FirstOrDefault());
+			for (int i = 0; i < _previewSectorPaths.Count; i++)
+			{
+				System.Windows.Shapes.Path path = _previewSectorPaths[i];
+				TranslateTransform translateTransform = _previewTransforms[i];
+				path.Fill = _previewDefaultBrush;
+				path.Stroke = _previewBorderBrush;
+				path.StrokeThickness = _previewStyleRenderer?.BorderThickness ?? 1.5;
+				_previewStyleRenderer?.ApplySectorHighlight(path, isHighlighted: false);
+				translateTransform.X = 0.0;
+				translateTransform.Y = 0.0;
+			}
+
+			bool isFan = (ConfigManager.CurrentConfig?.SubmenuStyle ?? "Wheel") == "Fan";
+			bool isTier2Mode = (Tier2ConfigSegmentRadio?.IsChecked == true);
+			for (int num28 = 0; num28 < _previewSubSectorPaths.Count; num28++)
+			{
+				System.Windows.Shapes.Path path4 = _previewSubSectorPaths[num28];
+				path4.Fill = _previewSubDefaultBrush ?? _previewDefaultBrush;
+				path4.Stroke = _previewSubBorderBrush ?? _previewBorderBrush;
+				path4.StrokeThickness = (_previewSubStyleRenderer?.BorderThickness ?? _previewStyleRenderer?.BorderThickness ?? 1.2);
+				_previewSubStyleRenderer?.ApplySectorHighlight(path4, isHighlighted: false);
+				ApplySubSectorGlow(path4, isHighlighted: false);
+				path4.Opacity = (isFan ? (isTier2Mode ? 0.95 : 0.0) : 0.85);
+				if (num28 < _previewSubContainers.Count && _previewSubContainers[num28] != null)
+				{
+					_previewSubContainers[num28].Opacity = (isFan ? (isTier2Mode ? 1.0 : 0.0) : 0.85);
+				}
+			}
+			ApplyPreviewSelectedVisuals();
+
+			if (_previewCoreCircle != null)
+			{
+				_previewCoreCircle.Fill = _previewCoreBgBrush;
+			}
+			if (_previewExitIcon != null)
+			{
+				_previewExitIcon.Fill = _previewTextBrush;
+			}
+			if (_previewCoreScale != null)
+			{
+				DoubleAnimation animation = new DoubleAnimation(1.0, TimeSpan.FromMilliseconds(120.0));
+				_previewCoreScale.BeginAnimation(ScaleTransform.ScaleXProperty, animation);
+				_previewCoreScale.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	private void ApplyPreviewSelectedVisuals()
+	{
+		bool isSlotMode = (LayoutTargetSlotRadio != null && LayoutTargetSlotRadio.IsChecked == true && _selectedLayoutSlotIndex >= 0);
+		
+		if (_previewSectorPaths != null)
+		{
+			for (int i = 0; i < _previewSectorPaths.Count; i++)
+			{
+				System.Windows.Shapes.Path path = _previewSectorPaths[i];
+				if (isSlotMode && _selectedLayoutTier == 1 && i == _selectedLayoutSlotIndex)
+				{
+					path.Stroke = new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248));
+					path.StrokeThickness = 2.4;
+					path.Effect = new DropShadowEffect
+					{
+						Color = System.Windows.Media.Color.FromRgb(56, 189, 248),
+						BlurRadius = 14.0,
+						ShadowDepth = 0.0,
+						Opacity = 0.95
+					};
+					System.Windows.Controls.Panel.SetZIndex(path, 10);
+				}
+				else if (isSlotMode && _selectedLayoutTier == 2 && i == _selectedLayoutSlotIndex)
+				{
+					// 二级定制时，父级扇区带有柔和天蓝关联指示轮廓
+					path.Stroke = new SolidColorBrush(System.Windows.Media.Color.FromArgb(200, 56, 189, 248));
+					path.StrokeThickness = 1.8;
+					path.Effect = new DropShadowEffect
+					{
+						Color = System.Windows.Media.Color.FromRgb(56, 189, 248),
+						BlurRadius = 8.0,
+						ShadowDepth = 0.0,
+						Opacity = 0.55
+					};
+					System.Windows.Controls.Panel.SetZIndex(path, 8);
+				}
+				else if (i != _lastHoveredSector)
+				{
+					path.Stroke = _previewBorderBrush;
+					path.StrokeThickness = _previewStyleRenderer?.BorderThickness ?? 1.5;
+					path.Effect = null;
+					System.Windows.Controls.Panel.SetZIndex(path, 0);
+				}
+			}
+		}
+
+		if (_previewSubSectorPaths != null)
+		{
+			for (int j = 0; j < _previewSubSectorPaths.Count; j++)
+			{
+				System.Windows.Shapes.Path subPath = _previewSubSectorPaths[j];
+				int pIdx = (j < _previewSubParentIndices.Count) ? _previewSubParentIndices[j] : -1;
+				int sIdx = (j < _previewSubIndices.Count) ? _previewSubIndices[j] : -1;
+
+				if (isSlotMode && _selectedLayoutTier == 2 && pIdx == _selectedLayoutSlotIndex && sIdx == _selectedLayoutSubSlotIndex)
+				{
+					subPath.Stroke = new SolidColorBrush(System.Windows.Media.Color.FromRgb(56, 189, 248));
+					subPath.StrokeThickness = 2.4;
+					subPath.Effect = new DropShadowEffect
+					{
+						Color = System.Windows.Media.Color.FromRgb(56, 189, 248),
+						BlurRadius = 14.0,
+						ShadowDepth = 0.0,
+						Opacity = 0.95
+					};
+					System.Windows.Controls.Panel.SetZIndex(subPath, 25);
+				}
+				else if (j != _lastHoveredSubIndex)
+				{
+					subPath.Stroke = _previewSubBorderBrush ?? _previewBorderBrush;
+					subPath.StrokeThickness = (_previewSubStyleRenderer?.BorderThickness ?? _previewStyleRenderer?.BorderThickness ?? 1.2);
+					subPath.Effect = null;
+					System.Windows.Controls.Panel.SetZIndex(subPath, 15);
+				}
+			}
+		}
+	}
+
+	private void ApplySubSectorGlow(System.Windows.Shapes.Path path, bool isHighlighted)
+	{
+		if (!isHighlighted)
+		{
+			path.Effect = null;
+			return;
+		}
+		string text = ConfigManager.CurrentConfig?.SubWheelHighlightGlowPreset ?? "FollowPrimary";
+		if (text == "FollowPrimary")
+		{
+			text = ConfigManager.CurrentConfig?.HighlightGlowPreset ?? "Auto";
+		}
+		if (text == "None")
+		{
+			path.Effect = null;
+			return;
+		}
+		System.Windows.Media.Color color;
+		if (!(text == "Custom") || string.IsNullOrEmpty(ConfigManager.CurrentConfig?.SubWheelHighlightGlowColor))
+		{
+			color = text switch
+			{
+				"Lilac" => System.Windows.Media.Color.FromRgb(168, 85, 247), 
+				"Blue" => System.Windows.Media.Color.FromRgb(59, 130, 246), 
+				"Emerald" => System.Windows.Media.Color.FromRgb(16, 185, 129), 
+				"Rose" => System.Windows.Media.Color.FromRgb(236, 72, 153), 
+				"Amber" => System.Windows.Media.Color.FromRgb(245, 158, 11), 
+				"Red" => System.Windows.Media.Color.FromRgb(239, 68, 68), 
+				"White" => System.Windows.Media.Color.FromRgb(byte.MaxValue, byte.MaxValue, byte.MaxValue), 
+				_ => (_previewSubHighlightBorderBrush is SolidColorBrush { Color: { A: >0 } } solidColorBrush) ? solidColorBrush.Color : ((_previewSubHighlightBrush is SolidColorBrush { Color: { A: >0 } } solidColorBrush2) ? solidColorBrush2.Color : ((!(_previewHighlightBorderBrush is SolidColorBrush { Color: { A: >0 } } solidColorBrush3)) ? System.Windows.Media.Color.FromRgb(59, 130, 246) : solidColorBrush3.Color)), 
+			};
+		}
+		else
+		{
+			try
+			{
+				color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ConfigManager.CurrentConfig.SubWheelHighlightGlowColor);
+			}
+			catch
+			{
+				color = System.Windows.Media.Color.FromRgb(168, 85, 247);
+			}
+		}
+		double num;
+		if (!(ConfigManager.CurrentConfig?.SubWheelHighlightGlowPreset == "FollowPrimary"))
+		{
+			AppConfig currentConfig = ConfigManager.CurrentConfig;
+			num = ((currentConfig != null && currentConfig.SubWheelHighlightGlowRadius > 0.0) ? ConfigManager.CurrentConfig.SubWheelHighlightGlowRadius : 24.0);
+		}
+		else
+		{
+			AppConfig currentConfig2 = ConfigManager.CurrentConfig;
+			num = ((currentConfig2 != null && currentConfig2.HighlightGlowRadius > 0.0) ? ConfigManager.CurrentConfig.HighlightGlowRadius : 24.0);
+		}
+		double blurRadius = num;
+		double num2;
+		if (!(ConfigManager.CurrentConfig?.SubWheelHighlightGlowPreset == "FollowPrimary"))
+		{
+			AppConfig currentConfig3 = ConfigManager.CurrentConfig;
+			num2 = ((currentConfig3 != null && currentConfig3.SubWheelHighlightGlowOpacity >= 0.0) ? ConfigManager.CurrentConfig.SubWheelHighlightGlowOpacity : 0.85);
+		}
+		else
+		{
+			AppConfig currentConfig4 = ConfigManager.CurrentConfig;
+			num2 = ((currentConfig4 != null && currentConfig4.HighlightGlowOpacity >= 0.0) ? ConfigManager.CurrentConfig.HighlightGlowOpacity : 0.85);
+		}
+		double opacity = num2;
+		path.Effect = new DropShadowEffect
+		{
+			Color = color,
+			BlurRadius = blurRadius,
+			ShadowDepth = 0.0,
+			Opacity = opacity
+		};
+	}
+
+	private void SubmenuStyleComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_isUpdatingUi && SubmenuStyleComboBox != null && ConfigManager.CurrentConfig != null)
+		{
+			string val = (SubmenuStyleComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Wheel";
+			ConfigManager.CurrentConfig.SubmenuStyle = val;
+			bool isFan = string.Equals(val, "Fan", StringComparison.OrdinalIgnoreCase);
+			if (LivePreviewTierSegmentBorder != null)
+			{
+				LivePreviewTierSegmentBorder.Visibility = isFan ? Visibility.Visible : Visibility.Collapsed;
+			}
+			if (AutoExpandSubRingsPanel != null)
+			{
+				AutoExpandSubRingsPanel.Visibility = (ConfigManager.CurrentConfig.EnableMultiTier && !isFan) ? Visibility.Visible : Visibility.Collapsed;
+			}
+			TierDimensionRadio_Checked(Tier1ConfigSegmentRadio, new RoutedEventArgs());
+			Grid appearanceSettingsGrid = AppearanceSettingsGrid;
+			if (appearanceSettingsGrid != null && appearanceSettingsGrid.Visibility == Visibility.Visible)
+			{
+				RenderLiveWheelPreview();
+			}
+			RefreshFocusSubActionsChips();
+			RenderMappingsWheelPreview();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void LongPressTriggerCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		bool enabled = LongPressTriggerCheckBox.IsChecked == true;
+		ConfigManager.CurrentConfig.LongPressTrigger = enabled;
+		if (LongPressDelayPanel != null)
+		{
+			LongPressDelayPanel.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	private void LongPressDelaySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.LongPressDelayMs = e.NewValue;
+		if (LongPressDelayLabel != null)
+		{
+			LongPressDelayLabel.Text = $"{e.NewValue:0} ms";
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	// ==================== 鼠标手势 ====================
+
+	private void RefreshGestureMappings()
+	{
+		if (GestureMappingsItemsControl == null || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		List<GestureMappingViewModel> list = new List<GestureMappingViewModel>();
+		foreach (GestureMapping m in ConfigManager.CurrentConfig.GestureMappings ?? new List<GestureMapping>())
+		{
+			list.Add(new GestureMappingViewModel(m));
+		}
+		GestureMappingsItemsControl.ItemsSource = list;
+	}
+
+	private void TouchGestureEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null ||
+			TouchGestureEnabledCheckBox == null || TouchPenGuardCheckBox == null) return;
+		var config = ConfigManager.CurrentConfig;
+		config.TouchGestureEnabled = TouchGestureEnabledCheckBox.IsChecked == true;
+		config.TouchPenGuardEnabled = TouchPenGuardCheckBox.IsChecked == true;
+		ConfigManager.SaveConfig();
+		App.RefreshTouchGestureProvider();
+	}
+
+	private void TouchApplyButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null) return;
+		var config = ConfigManager.CurrentConfig;
+		if (!int.TryParse(TouchHoldTextBox.Text, out int hold) || hold < 100 || hold > 500 ||
+			!int.TryParse(TouchMinSeparationTextBox.Text, out int min) || min < 20 || min > 150 ||
+			!int.TryParse(TouchMaxSeparationTextBox.Text, out int max) || max < 150 || max > 500 || min >= max ||
+			!int.TryParse(TouchSensitivityTextBox.Text, out int sensitivity) || sensitivity < 20 || sensitivity > 150)
+		{
+			System.Windows.MessageBox.Show(I18n.T("TouchInvalidParameters"), I18n.T("TouchGestureTitle"));
+			return;
+		}
+		config.TouchTwoFingerHoldMs = hold;
+		config.TouchMinimumFingerSeparation = min;
+		config.TouchMaximumFingerSeparation = max;
+		config.TouchGestureSensitivity = sensitivity;
+		ConfigManager.SaveConfig();
+		App.RefreshTouchGestureProvider();
+	}
+
+	private void GestureEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		bool isEnabled = GestureEnabledCheckBox.IsChecked == true;
+		if (GestureSettingsDetailsPanel != null)
+		{
+			GestureSettingsDetailsPanel.Visibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.GestureEnabled = isEnabled;
+		SyncUiToConfigAndSave();
+	}
+
+	private void GestureTriggerButtonComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		if (GestureTriggerButtonComboBox.SelectedItem is ComboBoxItem item && item.Tag is string tag)
+		{
+			ConfigManager.CurrentConfig.GestureTriggerButton = tag;
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void GestureHintPlacementComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		if (GestureHintPlacementComboBox.SelectedItem is ComboBoxItem item && item.Tag is string tag)
+		{
+			ConfigManager.CurrentConfig.GestureHintPlacement = tag;
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void GestureSensitivitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.GestureSegmentSensitivity = e.NewValue;
+		if (GestureSensitivityLabel != null)
+		{
+			GestureSensitivityLabel.Text = $"{e.NewValue:0} px";
+		}
+		SyncUiToConfigAndSave();
+	}
+
+	private void AddGestureMappingButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.GestureMappings ??= new List<GestureMapping>();
+		ConfigManager.CurrentConfig.GestureMappings.Add(new GestureMapping
+		{
+			Pattern = "D",
+			Action = new ActionItem { Type = "Hotkey", Name = "手势动作", Parameter = "" }
+		});
+		RefreshGestureMappings();
+		SyncUiToConfigAndSave();
+	}
+
+	private void DeleteGestureMapping_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null || sender is not FrameworkElement fe || fe.DataContext is not GestureMappingViewModel vm)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.GestureMappings?.RemoveAll((GestureMapping m) => ReferenceEquals(m, vm.Mapping));
+		RefreshGestureMappings();
+		SyncUiToConfigAndSave();
+	}
+
+	private void TestGesture_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is FrameworkElement fe && fe.DataContext is GestureMappingViewModel vm)
+		{
+			ActionExecutor.Execute(vm.Mapping.Action);
+		}
+	}
+
+	// ==================== 取消后动作 ====================
+
+	private void RefreshCancelActionEditor()
+	{
+		if (ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		if (EnableCancelActionCheckBox != null)
+		{
+			EnableCancelActionCheckBox.IsChecked = ConfigManager.CurrentConfig.EnableCancelAction;
+		}
+		if (CancelActionEditorHost != null && CancelActionEditorHost.DataContext == null)
+		{
+			GestureMappingViewModel vm = new GestureMappingViewModel(new GestureMapping
+			{
+				Pattern = "",
+				Action = ConfigManager.CurrentConfig.CancelAction ?? new ActionItem { Type = "Hotkey", Name = "取消动作", Parameter = "" }
+			});
+			CancelActionEditorHost.DataContext = vm;
+		}
+		UpdateCancelActionAvailability();
+	}
+
+	private void EnableCancelActionCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.EnableCancelAction = EnableCancelActionCheckBox.IsChecked == true;
+		UpdateCancelActionAvailability();
+		SyncUiToConfigAndSave();
+	}
+
+	private void TestCancelAction_Click(object sender, RoutedEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig?.CancelAction != null)
+		{
+			ActionExecutor.Execute(ConfigManager.CurrentConfig.CancelAction);
+		}
+	}
+
+	private void CancelPresetDesktop_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			vm.Type = "System";
+			vm.Parameter = "ShowDesktop";
+			vm.Name = "显示桌面 (Win+D)";
+			vm.Mapping.Action.IconKey = "ShowDesktop";
+			vm.NotifyAllPropertiesChanged();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CancelPresetTaskView_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			vm.Type = "System";
+			vm.Parameter = "TaskView";
+			vm.Name = "任务视图 (Win+Tab)";
+			vm.Mapping.Action.IconKey = "TaskView";
+			vm.NotifyAllPropertiesChanged();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CancelPresetEsc_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			vm.Type = "Hotkey";
+			vm.Parameter = "Escape";
+			vm.Name = "取消/返回 (Esc)";
+			vm.Mapping.Action.IconKey = "CloseWindow";
+			vm.NotifyAllPropertiesChanged();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CancelPresetSnipping_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			vm.Type = "Hotkey";
+			vm.Parameter = "LWin + LShiftKey + S";
+			vm.Name = "系统截屏";
+			vm.Mapping.Action.IconKey = "Snipping";
+			vm.NotifyAllPropertiesChanged();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CancelPresetTile_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			vm.Type = "Tile";
+			vm.Parameter = "2L";
+			vm.Name = "平铺: 左右对半";
+			vm.Mapping.Action.IconKey = "Tile";
+			vm.NotifyAllPropertiesChanged();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CancelPresetSettings_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			vm.Type = "System";
+			vm.Parameter = "OpenSettings";
+			vm.Name = "StarPie 控制台";
+			vm.Mapping.Action.IconKey = "Settings";
+			vm.NotifyAllPropertiesChanged();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void CancelBuildHotkey_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			HotkeyBuilderDialog dlg = new HotkeyBuilderDialog(vm.Parameter);
+			dlg.Owner = this;
+			if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.ResultHotkey))
+			{
+				vm.Parameter = dlg.ResultHotkey;
+				if (ActionNameDefaults.IsAutoFilled(vm.Name))
+				{
+					vm.Name = dlg.ResultHotkey;
+				}
+				vm.NotifyAllPropertiesChanged();
+				SyncUiToConfigAndSave();
+			}
+		}
+	}
+
+	private void CancelPickProgramFromLibrary_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			ProgramPickerWindow picker = new ProgramPickerWindow
+			{
+				Owner = this
+			};
+			if (picker.ShowDialog() == true && !string.IsNullOrEmpty(picker.SelectedPath))
+			{
+				vm.Parameter = picker.SelectedPath;
+				if (ActionNameDefaults.IsAutoFilled(vm.Name))
+				{
+					vm.Name = !string.IsNullOrEmpty(picker.SelectedName)
+						? picker.SelectedName
+						: System.IO.Path.GetFileNameWithoutExtension(picker.SelectedPath);
+				}
+				vm.NotifyAllPropertiesChanged();
+				SyncUiToConfigAndSave();
+			}
+		}
+	}
+
+	private void CancelCaptureRunningWindow_Click(object sender, RoutedEventArgs e)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			WindowPickerWindow winPicker = new WindowPickerWindow(WindowPickerMode.ExecutablePath)
+			{
+				Owner = this
+			};
+			if (winPicker.ShowDialog() == true && !string.IsNullOrEmpty(winPicker.SelectedPath))
+			{
+				vm.Parameter = winPicker.SelectedPath;
+				if (ActionNameDefaults.IsAutoFilled(vm.Name))
+				{
+					vm.Name = !string.IsNullOrEmpty(winPicker.SelectedTitle) 
+						? winPicker.SelectedTitle 
+						: (!string.IsNullOrEmpty(winPicker.SelectedProcessName) ? winPicker.SelectedProcessName : System.IO.Path.GetFileNameWithoutExtension(winPicker.SelectedPath));
+				}
+				vm.NotifyAllPropertiesChanged();
+				SyncUiToConfigAndSave();
+			}
+		}
+	}
+
+	private void CancelWebUrlPreset_GitHub(object sender, RoutedEventArgs e) => ApplyCancelWebUrl("https://github.com", "GitHub");
+	private void CancelWebUrlPreset_Bilibili(object sender, RoutedEventArgs e) => ApplyCancelWebUrl("https://www.bilibili.com", "Bilibili");
+	private void CancelWebUrlPreset_Bing(object sender, RoutedEventArgs e) => ApplyCancelWebUrl("https://www.bing.com", "Bing 搜索");
+	private void CancelWebUrlPreset_Google(object sender, RoutedEventArgs e) => ApplyCancelWebUrl("https://www.google.com", "Google");
+
+	private void ApplyCancelWebUrl(string url, string name)
+	{
+		if (CancelActionEditorHost?.DataContext is GestureMappingViewModel vm)
+		{
+			vm.Type = "WebUrl";
+			vm.Parameter = url;
+			if (ActionNameDefaults.IsAutoFilled(vm.Name) || vm.Name.StartsWith("http"))
+			{
+				vm.Name = name;
+			}
+			vm.NotifyAllPropertiesChanged();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	// ==================== 平铺窗口 ====================
+
+	private void TilePresetSubs_Click(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		if (sender is FrameworkElement fe && fe.DataContext is SlotViewModel vm)
+		{
+			vm.PopulateTileSubActions();
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void ToggleTileSettingsCard_Click(object sender, MouseButtonEventArgs e)
+	{
+		if (ConfigManager.CurrentConfig == null) return;
+		bool isExpanded = !ConfigManager.CurrentConfig.TileSettingsExpanded;
+		ConfigManager.CurrentConfig.TileSettingsExpanded = isExpanded;
+		SetTileSettingsExpanded(isExpanded);
+		SyncUiToConfigAndSave();
+	}
+
+	private void SetTileSettingsExpanded(bool isExpanded)
+	{
+		if (TileSettingsContentPanel != null)
+		{
+			TileSettingsContentPanel.Visibility = isExpanded ? Visibility.Visible : Visibility.Collapsed;
+		}
+		if (TileSettingsStatusText != null)
+		{
+			TileSettingsStatusText.Text = isExpanded ? I18n.T("TileSettingsExpanded") : I18n.T("TileSettingsCollapsed");
+		}
+		if (TileSettingsToggleLabel != null)
+		{
+			TileSettingsToggleLabel.Text = isExpanded ? I18n.T("TileSettingsToggleCollapse") : I18n.T("TileSettingsToggleExpand");
+		}
+		if (TileSettingsExpandArrow != null)
+		{
+			TileSettingsExpandArrow.Text = isExpanded ? "▲" : "▼";
+		}
+	}
+
+	private void TileIncludeMinimizedCheckBox_Changed(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.TileIncludeMinimized = TileIncludeMinimizedCheckBox.IsChecked == true;
+		SyncUiToConfigAndSave();
+	}
+
+	private void TileExcludeProcessesTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.TileExcludeProcesses = TileExcludeProcessesTextBox.Text ?? "";
+		SyncUiToConfigAndSave();
+	}
+
+	/// <summary>解析文本框为夹紧到 [min,max] 的整数（非法/空输入回落默认值）。</summary>
+	private static int ParseClampedInt(string? text, int min, int max, int fallback)
+	{
+		if (!int.TryParse((text ?? "").Trim(), out int v))
+		{
+			v = fallback;
+		}
+		return Math.Clamp(v, min, max);
+	}
+
+	private void TileMarginTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		if (sender is System.Windows.Controls.TextBox tb && tb.Tag is string field)
+		{
+			int v = ParseClampedInt(tb.Text, 0, 1000, 0);
+			switch (field)
+			{
+				case "Top": ConfigManager.CurrentConfig.TileMarginTop = v; break;
+				case "Bottom": ConfigManager.CurrentConfig.TileMarginBottom = v; break;
+				case "Left": ConfigManager.CurrentConfig.TileMarginLeft = v; break;
+				case "Right": ConfigManager.CurrentConfig.TileMarginRight = v; break;
+			}
+			SyncUiToConfigAndSave();
+		}
+	}
+
+	private void TileGapTextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		ConfigManager.CurrentConfig.TileGap = ParseClampedInt(TileGapTextBox?.Text, 0, 500, 0);
+		SyncUiToConfigAndSave();
+	}
+
+	// ==================== 循环布局选择器 ====================
+
+	private sealed class LayoutCycleItem : INotifyPropertyChanged
+	{
+		public string Key { get; }
+		public string Display { get; }
+		private bool _isChecked;
+
+		public bool IsChecked
+		{
+			get
+			{
+				return _isChecked;
+			}
+			set
+			{
+				if (_isChecked != value)
+				{
+					_isChecked = value;
+					PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsChecked)));
+				}
+			}
+		}
+
+		public LayoutCycleItem(string key, string display, bool isChecked)
+		{
+			Key = key;
+			Display = display;
+			_isChecked = isChecked;
+		}
+
+		public event PropertyChangedEventHandler? PropertyChanged;
+	}
+
+	private List<LayoutCycleItem> _cycleItems = new List<LayoutCycleItem>();
+
+	private void RefreshTileCycleList()
+	{
+		List<string> cfg = new List<string>();
+		string? raw = ConfigManager.CurrentConfig?.TileCycleLayouts;
+		if (!string.IsNullOrWhiteSpace(raw))
+		{
+			foreach (string t in raw.Split(new[] { ',', ';', '，', '；', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+			{
+				string k = t.Trim();
+				if (WindowTiler.IsValidLayout(k) && !cfg.Contains(k))
+				{
+					cfg.Add(k);
+				}
+			}
+		}
+		List<LayoutCycleItem> items = new List<LayoutCycleItem>();
+		foreach (string key in cfg)
+		{
+			LayoutCycleItem item = new LayoutCycleItem(key, WindowTiler.LayoutDisplayName(key), true);
+			item.PropertyChanged += LayoutCycleItem_PropertyChanged;
+			items.Add(item);
+		}
+		foreach (string key in WindowTiler.LayoutKeys)
+		{
+			if (!cfg.Contains(key))
+			{
+				LayoutCycleItem item = new LayoutCycleItem(key, WindowTiler.LayoutDisplayName(key), false);
+				item.PropertyChanged += LayoutCycleItem_PropertyChanged;
+				items.Add(item);
+			}
+		}
+		DetachTileCycleItems();
+		_cycleItems = items;
+		if (TileCycleListBox != null)
+		{
+			TileCycleListBox.ItemsSource = null;
+			TileCycleListBox.ItemsSource = _cycleItems;
+		}
+	}
+
+	// WPF 默认集合视图可能延长 ItemsSource 生命周期；必须先解除项事件，避免其反向保活整个窗口。
+	private void DetachTileCycleItems()
+	{
+		if (TileCycleListBox != null)
+		{
+			TileCycleListBox.ItemsSource = null;
+		}
+		foreach (LayoutCycleItem item in _cycleItems)
+		{
+			item.PropertyChanged -= LayoutCycleItem_PropertyChanged;
+		}
+		_cycleItems.Clear();
+	}
+
+	/// <summary>勾选/取消任意一项立即持久化（循环范围即时生效）。</summary>
+	private void LayoutCycleItem_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		if (e.PropertyName == nameof(LayoutCycleItem.IsChecked))
+		{
+			PersistTileCycleSelection();
+		}
+	}
+
+	private void PersistTileCycleSelection()
+	{
+		ConfigManager.CurrentConfig.TileCycleLayouts = string.Join(",", _cycleItems.Where((LayoutCycleItem i) => i.IsChecked).Select((LayoutCycleItem i) => i.Key));
+		SyncUiToConfigAndSave();
+	}
+
+	private void TileCycleUp_Click(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || TileCycleListBox?.SelectedItem is not LayoutCycleItem sel)
+		{
+			return;
+		}
+		int idx = _cycleItems.IndexOf(sel);
+		if (idx > 0)
+		{
+			LayoutCycleItem tmp = _cycleItems[idx - 1];
+			_cycleItems[idx - 1] = sel;
+			_cycleItems[idx] = tmp;
+			RefreshTileCycleItemsOnly();
+			TileCycleListBox.SelectedItem = sel;
+			PersistTileCycleSelection();
+		}
+	}
+
+	private void TileCycleDown_Click(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null || TileCycleListBox?.SelectedItem is not LayoutCycleItem sel)
+		{
+			return;
+		}
+		int idx = _cycleItems.IndexOf(sel);
+		if (idx >= 0 && idx < _cycleItems.Count - 1)
+		{
+			LayoutCycleItem tmp = _cycleItems[idx + 1];
+			_cycleItems[idx + 1] = sel;
+			_cycleItems[idx] = tmp;
+			RefreshTileCycleItemsOnly();
+			TileCycleListBox.SelectedItem = sel;
+			PersistTileCycleSelection();
+		}
+	}
+
+	private void RefreshTileCycleItemsOnly()
+	{
+		List<LayoutCycleItem> snapshot = new List<LayoutCycleItem>(_cycleItems);
+		TileCycleListBox.ItemsSource = null;
+		TileCycleListBox.ItemsSource = snapshot;
+		_cycleItems = snapshot;
+	}
+
+	private void TileCycleAll_Click(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		foreach (LayoutCycleItem item in _cycleItems)
+		{
+			item.IsChecked = true;
+		}
+		PersistTileCycleSelection();
+	}
+
+	private void TileCycleNone_Click(object sender, RoutedEventArgs e)
+	{
+		if (_isUpdatingUi || ConfigManager.CurrentConfig == null)
+		{
+			return;
+		}
+		foreach (LayoutCycleItem item in _cycleItems)
+		{
+			item.IsChecked = false;
+		}
+		PersistTileCycleSelection();
+	}
+
+	private void GestureBrowse_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is FrameworkElement fe && fe.DataContext is GestureMappingViewModel vm)
+		{
+			ProgramPickerWindow picker = new ProgramPickerWindow();
+			picker.Owner = this;
+			if (picker.ShowDialog() == true && !string.IsNullOrEmpty(picker.SelectedPath))
+			{
+				vm.Parameter = picker.SelectedPath;
+				if (string.IsNullOrEmpty(vm.Name))
+				{
+					vm.Name = !string.IsNullOrEmpty(picker.SelectedName) ? picker.SelectedName : System.IO.Path.GetFileNameWithoutExtension(picker.SelectedPath);
+				}
+			}
+		}
+	}
+
+	private void GestureBrowseFolder_Click(object sender, RoutedEventArgs e)
+	{
+		if (sender is FrameworkElement fe && fe.DataContext is GestureMappingViewModel vm)
+		{
+			using (System.Windows.Forms.FolderBrowserDialog dialog = new System.Windows.Forms.FolderBrowserDialog())
+			{
+				dialog.Description = "选择要打开的本地文件夹";
+				dialog.UseDescriptionForTitle = true;
+				dialog.ShowNewFolderButton = true;
+				if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+				{
+					vm.Parameter = dialog.SelectedPath;
+					if (string.IsNullOrEmpty(vm.Name))
+					{
+						vm.Name = System.IO.Path.GetFileName(dialog.SelectedPath);
+					}
+				}
+			}
+		}
+	}
+
+		private void HotkeyBuilderButton_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			if (sender is Button btn && btn.DataContext is SlotViewModel slotVm)
+			{
+				HotkeyBuilderDialog dlg = new HotkeyBuilderDialog(slotVm.Parameter ?? "")
+				{
+					Owner = this
+				};
+				if (dlg.ShowDialog() == true)
+				{
+					slotVm.Parameter = dlg.ResultHotkey;
+					SyncUiToConfigAndSave();
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			System.Windows.MessageBox.Show(this, "打开按键拼装器失败: " + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+	}
+
+	private bool _isPanning;
+	private Point _panStartPoint;
+	private double _startTranslateX;
+	private double _startTranslateY;
+
+	private void PreviewViewport_MouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+	{
+		if (PreviewScaleTransform == null)
+		{
+			return;
+		}
+		double zoomStep = (e.Delta > 0) ? 1.15 : (1.0 / 1.15);
+		double currentScale = PreviewScaleTransform.ScaleX;
+		double newScale = Math.Clamp(currentScale * zoomStep, 0.4, 3.0);
+		PreviewScaleTransform.ScaleX = newScale;
+		PreviewScaleTransform.ScaleY = newScale;
+		UpdateZoomLabel();
+		e.Handled = true;
+	}
+
+	private void PreviewViewport_MouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+	{
+		if (e.ClickCount == 2)
+		{
+			ResetPreviewViewport();
+			e.Handled = true;
+			return;
+		}
+
+		if (e.MiddleButton == System.Windows.Input.MouseButtonState.Pressed || e.RightButton == System.Windows.Input.MouseButtonState.Pressed)
+		{
+			_isPanning = true;
+			_panStartPoint = e.GetPosition(PreviewViewportContainer);
+			_startTranslateX = PreviewTranslateTransform?.X ?? 0.0;
+			_startTranslateY = PreviewTranslateTransform?.Y ?? 0.0;
+			PreviewViewportContainer?.CaptureMouse();
+			if (PreviewViewportContainer != null)
+			{
+				PreviewViewportContainer.Cursor = System.Windows.Input.Cursors.SizeAll;
+			}
+			e.Handled = true;
+		}
+	}
+
+	private void PreviewViewport_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+	{
+		if (!_isPanning || PreviewViewportContainer == null || PreviewTranslateTransform == null)
+		{
+			return;
+		}
+		Point currentPoint = e.GetPosition(PreviewViewportContainer);
+		PreviewTranslateTransform.X = _startTranslateX + (currentPoint.X - _panStartPoint.X);
+		PreviewTranslateTransform.Y = _startTranslateY + (currentPoint.Y - _panStartPoint.Y);
+	}
+
+	private void PreviewViewport_MouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+	{
+		if (_isPanning)
+		{
+			_isPanning = false;
+			PreviewViewportContainer?.ReleaseMouseCapture();
+			if (PreviewViewportContainer != null)
+			{
+				PreviewViewportContainer.Cursor = System.Windows.Input.Cursors.Arrow;
+			}
+			e.Handled = true;
+		}
+	}
+
+	private void PreviewZoomInBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (PreviewScaleTransform == null) return;
+		double newScale = Math.Min(3.0, PreviewScaleTransform.ScaleX + 0.15);
+		PreviewScaleTransform.ScaleX = newScale;
+		PreviewScaleTransform.ScaleY = newScale;
+		UpdateZoomLabel();
+	}
+
+	private void PreviewZoomOutBtn_Click(object sender, RoutedEventArgs e)
+	{
+		if (PreviewScaleTransform == null) return;
+		double newScale = Math.Max(0.4, PreviewScaleTransform.ScaleX - 0.15);
+		PreviewScaleTransform.ScaleX = newScale;
+		PreviewScaleTransform.ScaleY = newScale;
+		UpdateZoomLabel();
+	}
+
+	private void PreviewZoomLabel_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+	{
+		ResetPreviewViewport();
+	}
+
+	private void PreviewResetViewBtn_Click(object sender, RoutedEventArgs e)
+	{
+		ResetPreviewViewport();
+	}
+
+	public void ResetPreviewViewport()
+	{
+		if (PreviewScaleTransform != null)
+		{
+			PreviewScaleTransform.ScaleX = 1.0;
+			PreviewScaleTransform.ScaleY = 1.0;
+		}
+		if (PreviewTranslateTransform != null)
+		{
+			PreviewTranslateTransform.X = 0.0;
+			PreviewTranslateTransform.Y = 0.0;
+		}
+		UpdateZoomLabel();
+	}
+
+	private void UpdateZoomLabel()
+	{
+		if (PreviewZoomLabel != null && PreviewScaleTransform != null)
+		{
+			int pct = (int)Math.Round(PreviewScaleTransform.ScaleX * 100.0);
+			PreviewZoomLabel.Text = $"{pct}%";
+		}
+	}
+}
+
+public class GitHubContributorInfo
+{
+	[JsonPropertyName("login")]
+	public string Login { get; set; } = string.Empty;
+
+	[JsonPropertyName("avatar_url")]
+	public string AvatarUrl { get; set; } = string.Empty;
+
+	[JsonPropertyName("html_url")]
+	public string HtmlUrl { get; set; } = string.Empty;
+
+	[JsonPropertyName("contributions")]
+	public int Contributions { get; set; }
+}

@@ -1,0 +1,496 @@
+{
+  "Language": "zh-CN",
+  "TriggerButton": "RightButton",
+  "Trigger": {
+    "TriggerType": "Mouse",
+    "MouseButton": "RightButton",
+    "Key": "None",
+    "VkCode": 0,
+    "RequireCtrl": false,
+    "RequireShift": false,
+    "RequireAlt": false,
+    "RequireWin": false,
+    "DisplayText": "\uD83D\uDDB1\uFE0F \u9F20\u6807\u53F3\u952E (Right Button)"
+  },
+  "DragThreshold": 16,
+  "AnimationSpeed": "Custom",
+  "CustomAnimationDurationMs": 250,
+  "EnableOuterEscapeCancel": true,
+  "OuterEscapeDistance": 265,
+  "AppTheme": "Light",
+  "Theme": "Light",
+  "UiStyle": "CleanSectors",
+  "SubmenuStyle": "Fan",
+  "EnableMultiTier": true,
+  "SubWheelRadiusRatio": 1.55,
+  "SubWheelTriggerDistance": 95,
+  "SubWheelOuterRadius": 188,
+  "SubWheelInnerGap": 10,
+  "SubWheelCornerRadius": 19,
+  "SubWheelIconSize": 19,
+  "SubWheelFontSize": 9.5,
+  "UseIndependentSubWheelTheme": true,
+  "SubWheelUiStyle": "ClassicRing",
+  "SubWheelTheme": "Light",
+  "SubWheelCustomSectorBg": "#9016161A",
+  "SubWheelCustomSectorBorder": "#35FFFFFF",
+  "SubWheelCustomHighlightBg": "#E06C4DFF",
+  "SubWheelCustomHighlightBorder": "#A0FFFFFF",
+  "SubWheelCustomText": "#E0FFFFFF",
+  "SubWheelHighlightGlowPreset": "FollowPrimary",
+  "SubWheelHighlightGlowColor": "",
+  "SubWheelHighlightGlowRadius": 24,
+  "SubWheelHighlightGlowOpacity": 0.85,
+  "AutoStartAsAdmin": false,
+  "ShowText": false,
+  "WheelRadius": 127,
+  "InnerRadius": 69,
+  "CoreRadius": 37,
+  "Shape": "Original",
+  "SectorGap": 2,
+  "SectorCornerRadius": 12,
+  "IconLayoutMode": "IconOnly",
+  "WheelFontFamily": "Microsoft YaHei UI, Segoe UI",
+  "SectorIconSize": 20,
+  "SectorFontSize": 12,
+  "ShowCoreIcon": true,
+  "CoreIconType": "Exit",
+  "CoreCustomIconKey": "custom:9942cbdc4af5a33a_20260829080527",
+  "CoreCustomIconSvg": "",
+  "CoreCustomImagePath": "G:\\Users\\2 Better\\Pictures\\Saved Pictures\\20260331183637.png",
+  "CoreCustomImageStretch": "UniformToFill",
+  "CoreIconScale": 1,
+  "CoreImageOffsetX": 0,
+  "CoreImageOffsetY": 0,
+  "HighlightGlowPreset": "Auto",
+  "HighlightGlowColor": "",
+  "HighlightGlowRadius": 24,
+  "HighlightGlowOpacity": 0.85,
+  "CustomSectorBg": "#F0F8FAFC",
+  "CustomSectorBorder": "#3064748B",
+  "CustomHighlightBg": "#FF2563EB",
+  "CustomHighlightBorder": "#FF60A5FA",
+  "CustomText": "#FF0F172A",
+  "CustomColorPresets": [
+    {
+      "Id": "01ec899c-2b33-41e7-bf4c-27c343ae2c2c",
+      "Name": "\u5168\u900F\u660E",
+      "SectorBg": "#006366F0",
+      "SectorBorder": "#002B4788",
+      "HighlightBg": "#0083ADD1",
+      "HighlightBorder": "#0073819E",
+      "TextColor": "#FFEBBF36"
+    },
+    {
+      "Id": "4248b861-be3d-471f-9946-3960dc790f9c",
+      "Name": "\u51D1\u4F01\u9E45",
+      "SectorBg": "#FFFFFFFF",
+      "SectorBorder": "#FF918779",
+      "HighlightBg": "#FF21211D",
+      "HighlightBorder": "#FF753E20",
+      "TextColor": "#FFE2DBC9"
+    },
+    {
+      "Id": "d93632e3-6309-4dbe-a081-200632e98264",
+      "Name": "\u7766\u5934\u4EBA",
+      "SectorBg": "#FFFFFFFF",
+      "SectorBorder": "#FFAF9DA2",
+      "HighlightBg": "#FFB6C8C0",
+      "HighlightBorder": "#FFB9C2D3",
+      "TextColor": "#FF3E6981"
+    },
+    {
+      "Id": "8bd28bf5-19bf-4462-9d51-db6462cad7f8",
+      "Name": "\u5343\u65E9\u7231\u97F3",
+      "SectorBg": "#FFFFFFFF",
+      "SectorBorder": "#FF9BA4A2",
+      "HighlightBg": "#FFF9B09C",
+      "HighlightBorder": "#FFF4AB78",
+      "TextColor": "#FF212216"
+    },
+    {
+      "Id": "a89c0b94-0097-4009-a89c-4bf9aa8dfe25",
+      "Name": "\u5361\u5BC6",
+      "SectorBg": "#FFE0DFE5",
+      "SectorBorder": "#FFEACBB0",
+      "HighlightBg": "#FF83B0D3",
+      "HighlightBorder": "#FF637392",
+      "TextColor": "#FF113253"
+    },
+    {
+      "Id": "dac35656-b7f8-4bc4-bcca-5bd4b5d41379",
+      "Name": "\u5976\u9F99",
+      "SectorBg": "#FFFFFFFF",
+      "SectorBorder": "#FFCBB488",
+      "HighlightBg": "#FFF5E26D",
+      "HighlightBorder": "#FF97C87E",
+      "TextColor": "#FF010101"
+    }
+  ],
+  "WheelBgImagePath": "",
+  "WheelBgOpacity": 1,
+  "WheelBgStretch": "Uniform",
+  "CoreBgImagePath": "",
+  "CoreBgOpacity": 1,
+  "CoreBgStretch": "UniformToFill",
+  "HighlightTexturePath": "",
+  "HighlightTextureOpacity": 0.7,
+  "Profiles": [
+    {
+      "ProcessName": "Global",
+      "SectorCount": 8,
+      "Actions": [
+        {
+          "Type": "System",
+          "Name": "\u7C98\u8D34 ",
+          "Parameter": "ClipboardHistory",
+          "Arguments": null,
+          "IconKey": "ClipboardHistory",
+          "CustomIconSvg": "",
+          "SubActions": [
+            {
+              "Type": "Hotkey",
+              "Name": "\u590D\u5236",
+              "Parameter": "Ctrl\u002BC",
+              "Arguments": "",
+              "IconKey": "Copy",
+              "CustomIconSvg": "",
+              "SubActions": []
+            },
+            {
+              "Type": "Hotkey",
+              "Name": "\u7C98\u8D34",
+              "Parameter": "Ctrl \u002B V",
+              "Arguments": "",
+              "IconKey": "Paste",
+              "CustomIconSvg": "",
+              "SubActions": []
+            },
+            {
+              "Type": "Hotkey",
+              "Name": "\u526A\u5207",
+              "Parameter": "Ctrl \u002B X",
+              "Arguments": "",
+              "IconKey": "Cut",
+              "CustomIconSvg": "",
+              "SubActions": []
+            }
+          ]
+        },
+        {
+          "Type": "System",
+          "Name": "\u9501\u5B9A\u7535\u8111",
+          "Parameter": "PlayPause",
+          "Arguments": null,
+          "IconKey": "PlayPause",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "System",
+          "Name": "\u663E\u793A\u684C\u9762",
+          "Parameter": "Minimize",
+          "Arguments": null,
+          "IconKey": "Minimize",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "System",
+          "Name": "\u5C4F\u5E55\u622A\u56FE ",
+          "Parameter": "CloseWindow",
+          "Arguments": null,
+          "IconKey": "CloseWindow",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Launch",
+          "Name": "\u590D\u5236",
+          "Parameter": "G:\\Users\\2 Better\\Desktop\\design\\releases\\v1.4.1\\StarPie-v1.4.1-Lightweight\\StarPie.exe",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": [
+            {
+              "Type": "System",
+              "Name": "\u5168\u5C4F\u5207\u6362",
+              "Parameter": "FullScreen",
+              "Arguments": "",
+              "IconKey": "FullScreen",
+              "CustomIconSvg": "",
+              "SubActions": []
+            },
+            {
+              "Type": "System",
+              "Name": "\u9759\u97F3\u5207\u6362",
+              "Parameter": "VolumeMute",
+              "Arguments": "",
+              "IconKey": "VolumeMute",
+              "CustomIconSvg": "",
+              "SubActions": []
+            }
+          ]
+        },
+        {
+          "Type": "Folder",
+          "Name": "\u5B66\u4E60\u8D44\u6599",
+          "Parameter": "G:\\Users\\2 Better\\Desktop\\design\\releases",
+          "Arguments": null,
+          "IconKey": "Folder",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Launch",
+          "Name": "\u8BB0\u4E8B\u672C",
+          "Parameter": "K:\\QQ\\QQ.exe",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": [
+            {
+              "Type": "Launch",
+              "Name": "\u8BA1\u7B97\u5668",
+              "Parameter": "H:\\\u5FAE\u4FE1\\Weixin\\Weixin.exe",
+              "Arguments": "",
+              "IconKey": "",
+              "CustomIconSvg": "",
+              "SubActions": []
+            },
+            {
+              "Type": "Launch",
+              "Name": "\u4EFB\u52A1\u7BA1\u7406\u5668",
+              "Parameter": "H:\\bilibili\\\u54D4\u54E9\u54D4\u54E9.exe",
+              "Arguments": "",
+              "IconKey": "",
+              "CustomIconSvg": "",
+              "SubActions": []
+            },
+            {
+              "Type": "Launch",
+              "Name": "Microsoft Edge",
+              "Parameter": "G:\\Program Files (x86)\\Microsoft\\Edge\\Application\\152.0.4191.53\\msedge.exe",
+              "Arguments": "",
+              "IconKey": "",
+              "CustomIconSvg": "",
+              "SubActions": []
+            }
+          ]
+        },
+        {
+          "Type": "System",
+          "Name": "\u97F3\u91CF\u589E",
+          "Parameter": "TaskView",
+          "Arguments": null,
+          "IconKey": "TaskView",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "System",
+          "Name": "\u97F3\u91CF\u51CF\u5C0F (Vol-)",
+          "Parameter": "VolumeDown",
+          "Arguments": "",
+          "IconKey": "VolumeDown",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "System",
+          "Name": "\u5173\u95ED\u7A97\u53E3 (Close)",
+          "Parameter": "CloseWindow",
+          "Arguments": "",
+          "IconKey": "CloseWindow",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "System",
+          "Name": "\u97F3\u91CF\u589E\u52A0 (Vol\u002B)",
+          "Parameter": "VolumeUp",
+          "Arguments": "",
+          "IconKey": "VolumeUp",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "System",
+          "Name": "\u4EFB\u52A1\u7BA1\u7406\u5668 (TaskMgr)",
+          "Parameter": "TaskManager",
+          "Arguments": "",
+          "IconKey": "TaskManager",
+          "CustomIconSvg": "",
+          "SubActions": []
+        }
+      ]
+    },
+    {
+      "ProcessName": "chrome.exe",
+      "SectorCount": 8,
+      "Actions": [
+        {
+          "Type": "Hotkey",
+          "Name": "\u5173\u95ED\u6807\u7B7E (Close Tab)",
+          "Parameter": "Ctrl\u002BW",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5237\u65B0\u9875\u9762 (Refresh)",
+          "Parameter": "Ctrl\u002BR",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u540E\u9000 (Back)",
+          "Parameter": "Alt\u002BLeft",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u65B0\u5EFA\u6807\u7B7E (New Tab)",
+          "Parameter": "Ctrl\u002BT",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C 5",
+          "Parameter": "",
+          "Arguments": "",
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C 6",
+          "Parameter": "",
+          "Arguments": "",
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C 7",
+          "Parameter": "",
+          "Arguments": "",
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C 8",
+          "Parameter": "",
+          "Arguments": "",
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        }
+      ]
+    },
+    {
+      "ProcessName": "newapp.exe",
+      "SectorCount": 8,
+      "Actions": [
+        {
+          "Type": "Launch",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C",
+          "Parameter": "",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C",
+          "Parameter": "Shift \u002B F4",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C",
+          "Parameter": "Ctrl",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C",
+          "Parameter": "Alt",
+          "Arguments": null,
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C 5",
+          "Parameter": "Alt",
+          "Arguments": "",
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C 6",
+          "Parameter": "Alt",
+          "Arguments": "",
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u5FEB\u6377\u52A8\u4F5C 7",
+          "Parameter": "",
+          "Arguments": "",
+          "IconKey": "",
+          "CustomIconSvg": "",
+          "SubActions": []
+        },
+        {
+          "Type": "Hotkey",
+          "Name": "\u6253\u5F00\u6587\u4EF6\u5939",
+          "Parameter": "",
+          "Arguments": "",
+          "IconKey": "Folder",
+          "CustomIconSvg": "",
+          "SubActions": []
+        }
+      ]
+    }
+  ],
+  "IsolationMode": "Blacklist",
+  "BlacklistedProcesses": [
+    "sldworks.exe"
+  ],
+  "WhitelistedProcesses": [
+    "msedge.exe"
+  ],
+  "DisableOnCtrl": false,
+  "DisableOnShift": false,
+  "DisableOnAlt": false,
+  "DisableOnFullScreen": false
+}

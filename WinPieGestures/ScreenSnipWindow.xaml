@@ -1,0 +1,77 @@
+<Window x:Class="WinPieGestures.ScreenSnipWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="StarPie 截屏框选"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Black"
+        Topmost="True"
+        ShowInTaskbar="False"
+        Cursor="Cross"
+        Focusable="True"
+        Loaded="Window_Loaded"
+        KeyDown="Window_KeyDown"
+        MouseLeftButtonDown="Window_MouseLeftButtonDown"
+        MouseMove="Window_MouseMove"
+        MouseLeftButtonUp="Window_MouseLeftButtonUp"
+        MouseRightButtonDown="Window_MouseRightButtonDown">
+    <Grid>
+        <!-- 冻结全屏底图 (保证截屏选区与真实屏幕 1:1 精确映射) -->
+        <Image Name="BackgroundImage" Stretch="Fill" IsHitTestVisible="False" />
+
+        <!-- 暗色半透明遮罩与镂空选区 -->
+        <Path Name="MaskPath" Fill="#5A000000" IsHitTestVisible="False">
+            <Path.Data>
+                <CombinedGeometry GeometryCombineMode="Exclude">
+                    <CombinedGeometry.Geometry1>
+                        <RectangleGeometry x:Name="ScreenGeometry" />
+                    </CombinedGeometry.Geometry1>
+                    <CombinedGeometry.Geometry2>
+                        <RectangleGeometry x:Name="CutoutGeometry" />
+                    </CombinedGeometry.Geometry2>
+                </CombinedGeometry>
+            </Path.Data>
+        </Path>
+
+        <Canvas Name="SnipCanvas" Background="Transparent">
+            <!-- 选区高亮边框 -->
+            <Rectangle Name="SelectionBorder"
+                       Stroke="#06B6D4"
+                       StrokeThickness="2"
+                       StrokeDashArray="4 2"
+                       Visibility="Collapsed"
+                       IsHitTestVisible="False" />
+
+            <!-- 尺寸与提示浮标 -->
+            <Border Name="InfoBadge"
+                    Background="#EE0F172A"
+                    BorderBrush="#4006B6D4"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="8,4"
+                    Visibility="Collapsed"
+                    IsHitTestVisible="False">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Name="SizeTextBlock" Text="0 × 0" FontSize="11" FontWeight="Bold" Foreground="#38BDF8" Margin="0,0,8,0" />
+                    <TextBlock Text="松开识别 · 右键/ESC 取消" FontSize="10" Foreground="#94A3B8" />
+                </StackPanel>
+            </Border>
+
+            <!-- 顶部操作指南 -->
+            <Border Name="GuideBadge"
+                    Canvas.Top="30"
+                    HorizontalAlignment="Center"
+                    Background="#D90F172A"
+                    BorderBrush="#30FFFFFF"
+                    BorderThickness="1"
+                    CornerRadius="20"
+                    Padding="16,8"
+                    IsHitTestVisible="False">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="✂️ 鼠标拖拽框选文字区域" FontSize="12" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,12,0" />
+                    <TextBlock Text="[右键 / ESC] 退出" FontSize="11" Foreground="#94A3B8" />
+                </StackPanel>
+            </Border>
+        </Canvas>
+    </Grid>
+</Window>

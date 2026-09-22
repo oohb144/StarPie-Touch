@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app_icon.ico</ApplicationIcon>
+    <AssemblyName>StarPie</AssemblyName>
+    <Title>StarPie</Title>
+    <Product>StarPie</Product>
+    <Company>StarPie Studio</Company>
+    <Description>StarPie - 现代化高颜值 Windows 鼠标轮盘笔势与效率管理系统</Description>
+    <Version>1.8.0-touch.1</Version>
+    <AssemblyVersion>1.8.0.0</AssemblyVersion>
+    <FileVersion>1.8.0.0</FileVersion>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <!-- 编译器告警抑制：消除 Win32 Interop 结构体未显式赋值 (CS0649)、历史反编译遗留字段 (CS0169)、非核心 UI 可空引用分析 (CS8600/CS8601/CS8602/CS8604/CS8618/CS8625)、异步非阻塞缓存保存 (CS4014) 以及 WPF 混合 WinForms 时关于 app.manifest 高 DPI 分析器的误报 (WFAC010)，保障 Release 构建严格 0 错误 0 警告 -->
+    <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8604;CS8618;CS8625;CS0169;CS0649;CS4014;WFAC010</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    插件 SDK 契约程序集。
+    铁律：主程序引用 SDK，SDK 绝不引用主程序 —— 这个引用方向是「插件禁止引用 StarPie.dll」的物理保证。
+    必须随主程序一起发布（默认 CopyLocal），插件才能与宿主共享同一份类型身份；
+    若插件目录里出现第二份 Abstractions.dll，会造成类型身份分裂，所有强转都会失败。
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\StarPie.Plugin.Abstractions\StarPie.Plugin.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="app_icon.ico" />
+    <Resource Include="tray_icon.ico" />
+    <Resource Include="logo.png" />
+    <Resource Include="logo_dark.png" />
+    <Resource Include="logo_light.png" />
+    <None Include="app_icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="tray_icon.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+
+</Project>
