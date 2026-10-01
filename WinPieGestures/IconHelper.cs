@@ -475,6 +475,34 @@ public static class IconHelper
 		return null;
 	}
 
+	// Presentation must never extract shell icons or read files. Configuration
+	// loading/saving prewarms these caches; a missing entry uses a vector fallback.
+	internal static BitmapSource? GetCachedIcon(string? path)
+	{
+		if (string.IsNullOrWhiteSpace(path)) return null;
+		string key = path.Trim().Trim('"');
+		return _pinnedIcons.TryGetValue(key, out var pinned) ? pinned
+			: _dynamicIcons.TryGetValue(key, out var cached) ? cached : null;
+	}
+
+	internal static string? GetCachedSvgPathByKey(string? key)
+	{
+		if (string.IsNullOrWhiteSpace(key)) return null;
+		if (IconMap.TryGetValue(key, out string value)) return value;
+		if (key.StartsWith(StarPie.Plugin.PluginApi.IconKeyPrefix, StringComparison.OrdinalIgnoreCase))
+			return Plugins.PluginHost.Catalog.ResolveIcon(key);
+		if (key.TrimStart().StartsWith("M", StringComparison.OrdinalIgnoreCase) && key.Contains(',')) return key;
+		return _cachedCustomIcons?.FirstOrDefault(c => string.Equals(c.Key, key, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(c.DisplayName, key, StringComparison.OrdinalIgnoreCase))?.SvgData;
+	}
+
+	internal static BitmapSource? GetCachedCustomImage(string? key)
+	{
+		if (string.IsNullOrWhiteSpace(key)) return null;
+		string path = _cachedCustomIcons?.FirstOrDefault(c => string.Equals(c.Key, key, StringComparison.OrdinalIgnoreCase))?.FilePath ?? key;
+		return GetCachedIcon("custom_img:" + path);
+	}
+
 	public static Geometry CreateAdvancedSectorGeometry(double cx, double cy, double startAngle, double endAngle, double innerR, double outerR, string shape, double gap = 0.0, double cornerRadius = 0.0)
 	{
 		double num = (startAngle + endAngle) / 2.0;
@@ -859,7 +887,13 @@ public static class IconHelper
 	/// </summary>
 	public static void PinIconsForConfig(AppConfig? config)
 	{
+		// Do file access here, outside the input/display path, and retain only
+		// the custom images referenced by the current configuration.
 		HashSet<string> requiredPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		if (config?.ShowCoreIcon == true && !string.IsNullOrWhiteSpace(config.CoreCustomImagePath))
+			PinCustomImage(config.CoreCustomImagePath, requiredPaths);
+		if (config?.ShowCoreIcon == true && !string.IsNullOrWhiteSpace(config.CoreCustomIconKey))
+			GetSvgPathByKey(config.CoreCustomIconKey);
 		if (config?.Profiles != null)
 		{
 			foreach (var profile in config.Profiles)
@@ -899,6 +933,11 @@ public static class IconHelper
 		foreach (var action in actions)
 		{
 			if (action == null) continue;
+			if (action.IconKey?.StartsWith("custom:", StringComparison.OrdinalIgnoreCase) == true)
+			{
+				GetSvgPathByKey(action.IconKey);
+				PinCustomImage(action.IconKey, paths);
+			}
 			AddPinnedIconPath(paths, action.InheritAppIconPath);
 			if (string.Equals(action.Type, "Launch", StringComparison.OrdinalIgnoreCase))
 			{
@@ -908,6 +947,17 @@ public static class IconHelper
 			{
 				CollectPinnedIconPaths(action.SubActions, paths);
 			}
+		}
+	}
+
+	private static void PinCustomImage(string key, ISet<string> paths)
+	{
+		string path = _cachedCustomIcons?.FirstOrDefault(c => string.Equals(c.Key, key, StringComparison.OrdinalIgnoreCase))?.FilePath ?? key;
+		string cacheKey = "custom_img:" + path;
+		if (GetCustomImageSource(key) is BitmapSource image)
+		{
+			paths.Add(cacheKey);
+			_pinnedIcons[cacheKey] = image;
 		}
 	}
 
@@ -1400,4 +1450,3 @@ public static class IconHelper
 		return null;
 	}
 }
-

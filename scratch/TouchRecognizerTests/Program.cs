@@ -63,3 +63,15 @@ static TouchGestureRecognizer New(out List<TouchGestureEventArgs> events)
     Check(events.Count == 1, "new contacts work after pen cooldown");
 }
 Console.WriteLine("Touch recognizer checks passed.");
+
+static bool Near(Point point, double x, double y) =>
+    Math.Abs(point.X - x) < 0.01 && Math.Abs(point.Y - y) < 0.01;
+
+Check(Near(TouchDisplayMapper.Map(100, 200, 1000, 500, 10, 20, 1000, 500, 1), 110, 220),
+    "landscape raw coordinates stay aligned");
+Check(Near(TouchDisplayMapper.Map(100, 200, 1000, 500, 10, 20, 500, 1000, 2), 310, 120),
+    "portrait clockwise 90 rotates raw axes and preserves display origin");
+Check(Near(TouchDisplayMapper.Map(100, 200, 1000, 500, 10, 20, 500, 1000, 4), 210, 920),
+    "portrait clockwise 270 rotates in the opposite direction");
+Check(Near(TouchDisplayMapper.Map(100, 200, 1000, 500, 10, 20, 1000, 500, 3), 910, 320),
+    "inverted landscape rotates both axes");

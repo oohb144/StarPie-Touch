@@ -140,7 +140,7 @@ public class WheelProfile : INotifyPropertyChanged
 			}
 			Layers.Add(layer0);
 		}
-		else if (Layers.Count == 1 && (Layers[0].Actions == null || Layers[0].Actions.Count == 0 || Layers[0].Actions.All(a => string.IsNullOrEmpty(a.Type) || (a.Type == "Hotkey" && string.IsNullOrEmpty(a.Parameter) && string.IsNullOrEmpty(a.InheritAppIconPath)))))
+		else if (Layers.Count == 1 && !ReferenceEquals(this.Actions, Layers[0].Actions) && (Layers[0].Actions == null || Layers[0].Actions.Count == 0 || Layers[0].Actions.All(a => string.IsNullOrEmpty(a.Type) || (a.Type == "Hotkey" && string.IsNullOrEmpty(a.Parameter) && string.IsNullOrEmpty(a.InheritAppIconPath)))))
 		{
 			// 自愈保护：若仅有第 1 层且层内动作全空，但根属性 Actions 中存在真实自定义配置，则无损同步给第 1 层
 			if (this.Actions != null && this.Actions.Count > 0 && this.Actions.Any(a => !string.IsNullOrEmpty(a.Parameter) || !string.IsNullOrEmpty(a.InheritAppIconPath) || (a.SubActions != null && a.SubActions.Count > 0)))

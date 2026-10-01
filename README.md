@@ -8,7 +8,7 @@
 
 **Lightweight, Fast & Configurable Radial Pie Menu for Windows 10 / 11**
 
-[![Release Version](https://img.shields.io/badge/Release-v1.8.0--touch.1-2563EB.svg?style=flat-square&logo=github)](https://github.com/oohb144/StarPie-Touch/releases)
+[![Release Version](https://img.shields.io/badge/Release-v1.8.0--touch.3-2563EB.svg?style=flat-square&logo=github)](https://github.com/oohb144/StarPie-Touch/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D4.svg?style=flat-square&logo=windows)](https://microsoft.com/windows)
 [![.NET](https://img.shields.io/badge/.NET-8.0%20WPF-512BD4.svg?style=flat-square&logo=dotnet)](https://dotnet.microsoft.com/)
 [![License](https://img.shields.io/badge/License-MIT-10B981.svg?style=flat-square)](LICENSE)
@@ -36,10 +36,11 @@
 
 - **全局双指轮盘**：在普通桌面应用中双指按住约 150 毫秒后同向滑动，可唤出轮盘；支持已有的扇区和二级子动作。
 - **手写笔防误触**：笔贴近或接触屏幕时抑制双指触发；全屏禁用规则继续生效。
+- **智识插件**：固定轮盘入口，识别选区、剪贴板或框选 OCR 内容，提供网页、计算、路径与搜索操作；[安装与使用](docs/content-insight.md)。
 - **较轻的触控显示路径**：触摸默认使用原生软件分层窗口，鼠标轮盘仍走原有 WPF 路径。实测设备完成二级动作后工作集为 81.3 MB；这是单机样本，不代表所有设备或轮盘配置。
 - **抬手后动作更快**：触控结束时跳过鼠标和键盘才需要的修饰键释放步骤；设备复测中，关闭轮盘耗时为 1.5–6.2 毫秒，用户反馈执行感受更快。
 
-触控轮盘目前采用简化的深色扇区和动作名称，尚未复刻原 WPF 轮盘的自定义图标、样式与动画。可使用 `--wpf-touch-wheel` 临时切回原触控外观，或用 `--disable-touch` 禁用触控识别。官方动作插件仍由原项目的插件仓库提供，需按原项目流程手动安装。
+触控轮盘沿用原有主题、图标和圆角形状，支持 4 / 8 / 12 方位与二级菜单。软件绘制共享一份像素缓冲，缓存几何与字体，只重绘变化区域；隐藏 30 秒后释放绘图资源。鼠标路径保留 WPF 动画，软件触控路径使用静态呈现。可使用 `--wpf-touch-wheel` 临时切回 WPF，或用 `--disable-touch` 禁用触控识别。[外观与性能验证](docs/touch-wheel-rendering.md)区分离屏测试和实机结果。官方动作插件仍按原项目流程手动安装。
 
 **StarPie (星盘)** 是一款专为 Windows 10 / 11 打造的轻量级鼠标轮盘手势（Radial / Pie Menu）效率工具。
 

@@ -35,6 +35,8 @@ windowsdesktop-runtime-*.exe
 # Temporary & Working Files
 scratch/*
 !scratch/TouchRecognizerTests/
+!scratch/ContentInsightTests/
+!scratch/WheelRenderTests/
 WinPieGestures/scratch/
 StarPie.Plugin.Abstractions/scratch/
 *.tmp

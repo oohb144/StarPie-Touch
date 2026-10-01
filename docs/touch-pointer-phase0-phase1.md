@@ -1,5 +1,13 @@
 # Touch-screen wheel input: Phase 0 and Phase 1
 
+## Portrait mapping and held Ctrl (2026-09-28)
+
+The raw HID decoder used to cache the display rectangle on the first device report and scale X and Y independently. The first portrait patch refreshed the rectangle but used `DEVMODE.dmDisplayOrientation`, whose 90-degree value is counter-clockwise. On the user's tablet in portrait, `GetPointerDevices` reports the touchscreen as `DISPLAYCONFIG_ROTATION_ROTATE90` (clockwise), so that patch rotated raw contacts in the wrong direction. The mapper now reads `POINTER_DEVICE_INFO.displayOrientation` from the actual touchscreen and applies all four `DISPLAYCONFIG_ROTATION` cases, including inverted landscape. `GetPointerDeviceRects` supplies that device's current display rectangle. Mapping refreshes at the start of each contact sequence, and `WM_DISPLAYCHANGE` cancels an active sequence before the next orientation is read. A display-orientation fallback is used only if pointer metadata is unavailable. `GestureController.ShowRadialUI` also keeps touch movement anchored to the two-finger start point when the visible wheel is shifted away from a screen edge. Deterministic checks cover four directions; live confirmation after this correction is still pending.
+
+A Hotkey action can now be set to `Hold:Ctrl` from the focused action editor's touch hold button. During a two-finger wheel gesture, selecting that sector sends Ctrl down and keeps it down while both fingers remain in contact; moving away, lifting either finger, canceling, display rotation, disabling touch, or normal app exit releases it. The release does not enqueue a second Ctrl tap. Mouse invocation and the editor's Test button use a normal short Ctrl press. Games using exclusive fullscreen still follow the existing fullscreen block and application allowlist settings.
+
+The native software touch wheel now calls `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)` each time it is presented. Its HWND is reused after being hidden, so the topmost extended style set at creation is not sufficient to restore its position above windows created later. This follows the existing WPF wheel behavior while retaining `WS_EX_TRANSPARENT` and `WS_EX_NOACTIVATE`. Live device confirmation of the visible z-order remains pending.
+
 ## Current input architecture
 
 - `App` owns `MouseHook`, `KeyboardHook`, `GestureController`, and the tray. The hooks are started before `GestureController` is created.
@@ -121,3 +129,8 @@ After using build3, the user reported delay specifically **after sliding and rel
 On the same device, the `software-touch-wheel-fast-build` retest showed state capture at 0.0 ms and window dismissal at 1.5–6.2 ms; action resolution remained 0.0 ms and queueing was 0.0–5.4 ms across the recorded samples. The action executor started in the same logged millisecond or the next, and the user reported that execution felt faster. The stable trial output is `scratch/software-touch-wheel-final/StarPie.exe --silent --software-touch-wheel`; it removes temporary timing logs only, retains the measured fix, builds with 0 warnings/errors, and passes the eight recognizer checks. The user-tested fast build remains a valid trial until the next restart. In the `v1.8.0-touch.1` derivative, software rendering is the default for touch gestures; `--wpf-touch-wheel` selects the previous WPF touch renderer. Mouse gestures continue to use WPF.
 
 `GestureController.ShowRadialUI` moves the pointer only for the mouse path when the wheel center is adjusted. Touch has an explicit completion path and leaves the physical pointer alone. Mouse and keyboard hooks retain their existing input paths. The hardware probe remains opt-in.
+
+
+## touch.3 原有外观与绘图资源优化
+
+原生触摸轮盘现已恢复配置的主题色、图标和形状，采用共享 DIB、配置场景缓存、变化区域重绘和隐藏 30 秒释放。鼠标仍使用 WPF。实现、边界与可复现离屏测试见 [touch-wheel-rendering.md](touch-wheel-rendering.md)；上文较早的简化深色轮盘描述及设备内存样本保留为历史记录，不作为新版本的性能测量。

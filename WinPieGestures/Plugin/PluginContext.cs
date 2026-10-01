@@ -12,7 +12,7 @@ namespace WinPieGestures.Plugins;
 /// 插件作者只能针对 SDK 编程，宿主内部怎么重构都不影响他们。
 /// </para>
 /// </summary>
-internal sealed class PluginContext : IPluginContext
+internal sealed class PluginContext : IPluginContext, IContentInsightContext
 {
     public PluginContext(
         PluginMetadata metadata,
@@ -45,6 +45,7 @@ internal sealed class PluginContext : IPluginContext
         Windows = new PluginWindowService(metadata.Id, metadata.Capabilities);
         ScreenCapture = new PluginScreenCaptureService(metadata.Id, metadata.Capabilities);
         System = new PluginSystemService(metadata.Id, metadata.Capabilities);
+        ContentInsight = new PluginContentInsightService(metadata.Id, metadata.Capabilities);
 
         Info = new PluginHostInfo(metadata.Capabilities);
         Notify = new PluginNotificationService(metadata.Id);
@@ -80,6 +81,8 @@ internal sealed class PluginContext : IPluginContext
 
     /// <summary>系统功能（最小化 / 任务视图 / 音量 / 锁屏 / 关机 …）。</summary>
     public IHostSystemService System { get; }
+
+    public IHostContentInsightService ContentInsight { get; }
 
     public IHostInfo Info { get; }
 

@@ -773,8 +773,11 @@ public static string FormatKeyName(string? keyStr, uint vkCode = 0)
 		Add("CoreFontFamily", "中心文字字体:", "中心文字字型:", "Center Font Family:", "中央フォント:");
 		Add("SettingsUiScale", "🔍 界面缩放", "🔍 介面縮放", "🔍 UI Scale", "🔍 表示拡大率");
 		Add("SettingsUiScaleTip", "调节设置控制台界面整体缩放比例 (80% ~ 200%)，高分屏下可放大文字与控件。窗口尺寸保持不变，内容变大后由页面滚动承接；也可随时使用 Ctrl + / Ctrl - 调节，Ctrl 0 复位。", "調整設定控制台介面整體縮放比例 (80% ~ 200%)，高解析度螢幕下可放大文字與控件。視窗尺寸保持不變，內容變大後由頁面捲動承接；亦可隨時使用 Ctrl + / Ctrl - 調整，Ctrl 0 復位。", "Scale the whole settings console between 80% and 200% for better readability on high-resolution screens. The window size stays untouched - enlarged content simply scrolls. Ctrl + / Ctrl - adjusts it anytime, and Ctrl 0 resets.", "設定画面全体の表示拡大率を 80%〜200% で調整できます。高解像度画面での文字・控件の視認性向上に。ウィンドウサイズは変更されず、拡大した内容はスクロールして表示します。Ctrl + / Ctrl - ですぐに調整、Ctrl 0 でリセット。");
+		Add("TouchWheelSubtitle", "双指滑动", "雙指滑動", "Two fingers", "2本指スライド");
 		Add("TouchGestureTitle", "双指触摸轮盘", "雙指觸控輪盤", "Two-finger touch wheel", "2本指タッチホイール");
 		Add("TouchGestureDesc", "双指按住并同向滑动即可唤出轮盘；抬手执行选中动作。全屏禁用与应用白名单沿用现有设置。", "雙指按住並同向滑動即可叫出輪盤；放開時執行選取動作。全螢幕停用與應用程式白名單沿用現有設定。", "Hold two fingers and slide together to open the wheel. Lift to run the selected action. Full-screen blocking and app allowlists use existing settings.", "2本指で押さえて同じ方向にスライドするとホイールが開きます。指を離すと選択した操作を実行します。全画面の無効化とアプリの許可リストは既存の設定を使います。");
+		Add("TouchHoldCtrlButton", "触控按住 Ctrl（GAL 快进）", "觸控按住 Ctrl（GAL 快進）", "Hold Ctrl by touch (visual novels)", "タッチで Ctrl を長押し（ノベルゲーム）");
+		Add("TouchHoldCtrlTip", "双指滑到此扇区并保持按压时持续按下 Ctrl；任一手指抬起或取消时释放。鼠标触发只轻按一次 Ctrl。", "雙指滑到此扇區並保持按壓時持續按下 Ctrl；任一手指放開或取消時釋放。滑鼠觸發只輕按一次 Ctrl。", "Slide two fingers to this sector and keep holding to hold Ctrl. Release either finger or cancel to release Ctrl. A mouse gesture taps Ctrl once.", "2本指でこのセクターに滑らせて押し続ける間 Ctrl を保持します。片方の指を離すかキャンセルすると解除します。マウス操作では Ctrl を短く押します。");
 		Add("TouchGestureEnable", "启用双指触摸轮盘", "啟用雙指觸控輪盤", "Enable two-finger touch wheel", "2本指タッチホイールを有効化");
 		Add("TouchPenGuard", "手写笔接近或书写时禁用双指手势", "手寫筆接近或書寫時停用雙指手勢", "Block touch gestures while a pen is near or writing", "ペンの接近中や筆記中はタッチジェスチャーを無効化");
 		Add("TouchHoldLabel", "按住时间 (ms)", "按住時間 (ms)", "Hold time (ms)", "保持時間 (ms)");

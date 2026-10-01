@@ -1241,3 +1241,9 @@ StarPie.Plugin.Abstractions/IStarPiePlugin.cs
 → PluginInvoker.cs
 → PluginSelfTest.cs
 ```
+
+## 智识可选服务（SDK 1.5）
+
+`IContentInsightContext` 为新增可选接口，保持既有 `IPluginContext` 成员不变。宿主 `PluginContext` 实现此接口，通过 `PluginContentInsightService` 取得选区、剪贴板或 OCR 内容并显示原生 WPF 结果卡。`samples/ContentInsight` 是单独安装的社区插件，仅提供纯识别规则和三条 Background 动作，不属于官方在线模块或主程序随包 DLL。
+
+服务调用会等待卡片关闭，使统一运行时的插件调用租约覆盖分类器的使用期。取消或停用关闭卡片和框选，撤销分类器引用。手势原窗口与触点位置作为运行时 `ActionContext` 经请求快照和调用器传递，不写配置。UI、Clipboard、ScreenCapture、InputSimulation、Process 和路径的 FileSystem 按实际操作分别检查声明。详细流程、参数和验证边界见 [content-insight.md](content-insight.md)。

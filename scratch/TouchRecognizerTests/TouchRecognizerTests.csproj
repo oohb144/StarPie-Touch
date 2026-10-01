@@ -3,10 +3,12 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\WinPieGestures\Input\TouchGestureRecognizer.cs" Link="TouchGestureRecognizer.cs" />
+    <Compile Include="..\..\WinPieGestures\Input\TouchDisplayMapper.cs" Link="TouchDisplayMapper.cs" />
   </ItemGroup>
 </Project>

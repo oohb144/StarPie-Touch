@@ -83,6 +83,10 @@ public class MouseHook
 
 	private const uint XBUTTON2 = 2u;
 
+	private const uint PromotedPointerSignatureMask = 0xFFFFFF00u;
+
+	private const uint PromotedPointerSignature = 0xFF515700u;
+
 	public const nint StarPieExtraInfo = 0x53544152;
 
 	private readonly LowLevelMouseProc _proc;
@@ -378,6 +382,14 @@ public class MouseHook
 			if (mSLLHOOKSTRUCT.dwExtraInfo == StarPieExtraInfo)
 			{
 				// StarPie 自发模拟的鼠标事件直接快速放行，杜绝自身捕获与竞争
+				return CallNextHookEx(_hookId, nCode, wParam, lParam);
+			}
+			if ((((uint)(nuint)mSLLHOOKSTRUCT.dwExtraInfo) & PromotedPointerSignatureMask)
+				== PromotedPointerSignature)
+			{
+				// Windows promotes pen and touch input to mouse messages. Leave those
+				// messages with their target app, including native press-and-hold right-click.
+				// The independent raw digitizer provider handles StarPie's touch wheel.
 				return CallNextHookEx(_hookId, nCode, wParam, lParam);
 			}
 

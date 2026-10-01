@@ -1959,6 +1959,11 @@ public partial class SettingsWindow : Window
 			TouchSensitivityLabelText.Text = I18n.T("TouchSensitivityLabel");
 			TouchApplyButton.Content = I18n.T("TouchApply");
 		}
+		if (FocusTouchHoldCtrlBtn != null)
+		{
+			FocusTouchHoldCtrlBtn.Content = I18n.T("TouchHoldCtrlButton");
+			FocusTouchHoldCtrlBtn.ToolTip = I18n.T("TouchHoldCtrlTip");
+		}
 		if (GestureDescText != null)
 		{
 			GestureDescText.Text = I18n.T("GestureDesc");
@@ -8543,6 +8548,17 @@ public partial class SettingsWindow : Window
 			RenderMappingsWheelPreview();
 			ScheduleAutoSave();
 		}
+	}
+
+	private void FocusTouchHoldCtrl_Click(object sender, RoutedEventArgs e)
+	{
+		ActionItem? item = GetCurrentFocusActionItem();
+		if (item?.Type != "Hotkey") return;
+		item.Parameter = ActionExecutor.TouchHoldCtrlHotkey;
+		FocusHotkeyRecorder.HotkeyText = item.Parameter;
+		RefreshSlots();
+		RenderMappingsWheelPreview();
+		ScheduleAutoSave();
 	}
 
 	private void StartExclusiveRecording()

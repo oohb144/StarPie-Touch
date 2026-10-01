@@ -14,7 +14,8 @@
         MouseLeftButtonDown="Window_MouseLeftButtonDown"
         MouseMove="Window_MouseMove"
         MouseLeftButtonUp="Window_MouseLeftButtonUp"
-        MouseRightButtonDown="Window_MouseRightButtonDown">
+        MouseRightButtonDown="Window_MouseRightButtonDown"
+        TouchDown="Window_TouchDown" TouchMove="Window_TouchMove" TouchUp="Window_TouchUp" LostTouchCapture="Window_LostTouchCapture">
     <Grid>
         <!-- 冻结全屏底图 (保证截屏选区与真实屏幕 1:1 精确映射) -->
         <Image Name="BackgroundImage" Stretch="Fill" IsHitTestVisible="False" />
@@ -53,13 +54,13 @@
                     IsHitTestVisible="False">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Name="SizeTextBlock" Text="0 × 0" FontSize="11" FontWeight="Bold" Foreground="#38BDF8" Margin="0,0,8,0" />
-                    <TextBlock Text="松开识别 · 右键/ESC 取消" FontSize="10" Foreground="#94A3B8" />
+                    <TextBlock Name="SnipHintText" Text="松开识别 · 右键/ESC 取消" FontSize="10" Foreground="#94A3B8" />
                 </StackPanel>
             </Border>
 
             <!-- 顶部操作指南 -->
             <Border Name="GuideBadge"
-                    Canvas.Top="30"
+                    Canvas.Top="90"
                     HorizontalAlignment="Center"
                     Background="#D90F172A"
                     BorderBrush="#30FFFFFF"
@@ -67,11 +68,14 @@
                     CornerRadius="20"
                     Padding="16,8"
                     IsHitTestVisible="False">
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="✂️ 鼠标拖拽框选文字区域" FontSize="12" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,12,0" />
-                    <TextBlock Text="[右键 / ESC] 退出" FontSize="11" Foreground="#94A3B8" />
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Name="SnipGuideText" Text="拖动框选文字区域 · 松开识别" TextWrapping="Wrap" TextAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                    <TextBlock Name="SnipExitText" Text="[右键 / ESC] 退出" TextAlignment="Center" FontSize="11" Foreground="#94A3B8" Margin="0,4,0,0" />
                 </StackPanel>
             </Border>
         </Canvas>
+        <Button Name="SnipCancelButton" Content="取消" HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,24,24,0" MinWidth="90" Height="48" FontSize="15" Background="#EE0F172A"
+                Foreground="White" Click="Cancel_Click"/>
     </Grid>
 </Window>

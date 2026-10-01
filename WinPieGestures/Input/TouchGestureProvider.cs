@@ -10,6 +10,7 @@ namespace WinPieGestures.Input;
 /// </summary>
 internal sealed class TouchGestureProvider : IDisposable
 {
+    private const uint WmDisplayChange = 0x007E;
     private const uint WsPopup = 0x80000000;
     private const uint WsExToolWindow = 0x00000080;
     private readonly WindowProcedure _windowProcedure;
@@ -81,6 +82,8 @@ internal sealed class TouchGestureProvider : IDisposable
     {
         if (message == RawDigitizerProbe.WmInput)
             _input?.OnRawInput(lParam, wParam);
+        else if (message == WmDisplayChange)
+            _input?.OnDisplayChanged();
         // DefWindowProc performs the required WM_INPUT cleanup for foreground reports.
         return DefWindowProc(window, message, wParam, lParam);
     }

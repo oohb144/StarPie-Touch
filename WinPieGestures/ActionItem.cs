@@ -4,6 +4,9 @@ namespace WinPieGestures;
 
 public class ActionItem
 {
+	/// <summary>Trigger-time origin snapshot; never persisted or exposed in parameter forms.</summary>
+	[System.Text.Json.Serialization.JsonIgnore]
+	internal StarPie.Plugin.ActionContext? InvocationContext { get; set; }
 	public string Type { get; set; } = "Hotkey";
 
 	public string Name { get; set; } = "快捷动作";
@@ -92,6 +95,7 @@ public class ActionItem
 	{
 		ActionItem clone = new ActionItem
 		{
+			InvocationContext = this.InvocationContext,
 			IsInherited = this.IsInherited,
 			Type = this.Type,
 			Name = this.Name,

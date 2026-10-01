@@ -143,6 +143,11 @@ public abstract class BaseStyleRenderer : IRadialStyleRenderer
 			}
 		}
 		PostInitialize();
+		// Derived styles may replace brushes in PostInitialize. Freeze the final
+		// palette once so repeated highlights share immutable drawing resources.
+		foreach (Brush brush in new[] { DefaultSectorBrush, HighlightSectorBrush,
+			SectorBorderBrush, HighlightBorderBrush, TextColorBrush, CoreBgBrush, CoreBorderBrush })
+			if (brush.CanFreeze && !brush.IsFrozen) brush.Freeze();
 	}
 
 	protected SolidColorBrush CreateSolidBrush(string hex)

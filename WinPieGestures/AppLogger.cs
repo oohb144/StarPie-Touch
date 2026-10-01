@@ -99,7 +99,7 @@ public static class AppLogger
 		{
 			try
 			{
-				LogSignal.WaitOne(2000);
+				LogSignal.WaitOne(); // Enqueue and shutdown both signal; idle needs no polling.
 				FlushQueueToFile();
 			}
 			catch

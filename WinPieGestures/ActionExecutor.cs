@@ -160,6 +160,9 @@ public static class ActionExecutor
 	private const ushort VK_RETURN = 13;
 
 	private const ushort VK_TAB = 9;
+	internal const string TouchHoldCtrlHotkey = "Hold:Ctrl";
+	private static readonly object s_touchHoldCtrlSync = new();
+	private static bool s_touchHoldCtrlInjected;
 
 	private const ushort VK_SPACE = 32;
 
@@ -209,7 +212,8 @@ public static class ActionExecutor
 	[DllImport("user32.dll", SetLastError = true)]
 	private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
-	private static readonly Channel<ActionItem> s_actionChannel = Channel.CreateUnbounded<ActionItem>(new UnboundedChannelOptions
+	private sealed record ActionWorkItem(ActionItem? Action, Func<bool>? Input = null, TaskCompletionSource<bool>? Completion = null);
+	private static readonly Channel<ActionWorkItem> s_actionChannel = Channel.CreateUnbounded<ActionWorkItem>(new UnboundedChannelOptions
 	{
 		SingleReader = true,
 		SingleWriter = false
@@ -226,12 +230,21 @@ public static class ActionExecutor
 		worker.Start();
 	}
 
-	public static void EnqueueAction(ActionItem action)
+	public static void EnqueueAction(ActionItem action, StarPie.Plugin.ActionContext? context = null)
 	{
 		if (action != null)
 		{
-			s_actionChannel.Writer.TryWrite(action);
+			ActionItem snapshot = action.Clone();
+			snapshot.InvocationContext = context ?? Insight.InsightOrigin.Capture();
+			s_actionChannel.Writer.TryWrite(new ActionWorkItem(snapshot));
 		}
+	}
+
+	internal static Task<bool> RunSerializedInputAsync(Func<bool> input)
+	{
+		var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		s_actionChannel.Writer.TryWrite(new ActionWorkItem(null, input, completion));
+		return completion.Task;
 	}
 
 	private static void ProcessActionQueue()
@@ -243,8 +256,15 @@ public static class ActionExecutor
 			{
 				if (reader.WaitToReadAsync().AsTask().Result)
 				{
-					while (reader.TryRead(out ActionItem? action))
+					while (reader.TryRead(out ActionWorkItem? work))
 					{
+						if (work.Input != null)
+						{
+							try { work.Completion!.TrySetResult(work.Input()); }
+							catch (Exception ex) { work.Completion!.TrySetException(ex); }
+							continue;
+						}
+						ActionItem? action = work.Action;
 						if (action != null)
 						{
 							try
@@ -1478,6 +1498,38 @@ public static class ActionExecutor
 
 	public const nint StarPieExtraInfo = 0x53544152;
 
+	internal static bool IsTouchHoldCtrl(ActionItem? action) =>
+		action?.Type == "Hotkey" &&
+		string.Equals(action.Parameter?.Trim(), TouchHoldCtrlHotkey, StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>Keep Ctrl down only while a selected touch action remains held.</summary>
+	internal static bool SetTouchHoldCtrl(bool hold)
+	{
+		lock (s_touchHoldCtrlSync)
+		{
+			if (hold == s_touchHoldCtrlInjected) return hold;
+			if (hold)
+			{
+				// A physical Ctrl already pressed by the user belongs to them.
+				if ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) return false;
+				if (SendInput(1, [CreateKeyInput(VK_LCONTROL, down: true)], Marshal.SizeOf<INPUT>()) != 1)
+				{
+					AppLogger.LogWarn("Touch Ctrl hold: key down was not injected");
+					return false;
+				}
+				s_touchHoldCtrlInjected = true;
+				return true;
+			}
+			try
+			{
+				if (SendInput(1, [CreateKeyInput(VK_LCONTROL, down: false)], Marshal.SizeOf<INPUT>()) != 1)
+					AppLogger.LogWarn("Touch Ctrl hold: key up was not injected");
+			}
+			finally { s_touchHoldCtrlInjected = false; }
+			return false;
+		}
+	}
+
 	public static void ReleaseStuckModifiers()
 	{
 		try
@@ -1600,6 +1652,10 @@ public static class ActionExecutor
 		{
 			return;
 		}
+		// Mouse execution and the settings Test button use an ordinary Ctrl tap.
+		// Sustained hold is driven by the touch session before finger release.
+		if (string.Equals(hotkeyString.Trim(), TouchHoldCtrlHotkey, StringComparison.OrdinalIgnoreCase))
+			hotkeyString = "Ctrl";
 
 		HotkeyDetails hotkeyDetails = ParseHotkey(hotkeyString);
 		if (hotkeyDetails.Modifiers.Count == 0 && hotkeyDetails.MainKey == 0 && hotkeyDetails.Steps.Count == 0)

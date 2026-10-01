@@ -1,0 +1,62 @@
+<Window x:Class="WinPieGestures.InsightWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="460" SizeToContent="Height" MaxHeight="680" ResizeMode="NoResize"
+        WindowStyle="ToolWindow" ShowInTaskbar="False" Topmost="True" ShowActivated="False"
+        Background="{DynamicResource CardBackgroundBrush}" KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="48"/>
+            <Setter Property="MinWidth" Value="90"/>
+            <Setter Property="Margin" Value="0,0,8,8"/>
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource SubtleCardBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value><ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentPrimaryBrush}"/></Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate></Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="Padding" Value="10"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource SubtleCardBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+    </Window.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="20">
+            <TextBlock Name="SourceText" FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+            <TextBlock Name="AnalysisTitle" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,10"/>
+            <Border Background="{DynamicResource SubtleCardBrush}" Padding="12" CornerRadius="10" Margin="0,0,0,12">
+                <TextBlock Name="PreviewText" FontSize="15" MaxHeight="150" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextPrimaryBrush}"/>
+            </Border>
+            <TextBox Name="ContentEditor" Visibility="Collapsed" Height="130" MaxLength="8192" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" TextChanged="Editor_TextChanged" Margin="0,0,0,10"/>
+            <Button Name="AnalyzeButton" Visibility="Collapsed" HorizontalAlignment="Left" Click="Analyze_Click"/>
+            <TextBlock Name="ResultText" FontSize="26" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+            <WrapPanel Name="OperationsPanel"/>
+            <TextBlock Name="StatusText" FontSize="13" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" Margin="0,2,0,14"/>
+            <Border Height="1" Background="{DynamicResource CardBorderBrush}" Margin="0,0,0,14"/>
+            <WrapPanel>
+                <Button Name="CaptureButton" Click="Capture_Click"/>
+                <Button Name="ClipboardButton" Click="Clipboard_Click"/>
+                <Button Name="EditButton" Click="Edit_Click"/>
+                <Button Name="CloseButton" Click="Close_Click"/>
+            </WrapPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Window>

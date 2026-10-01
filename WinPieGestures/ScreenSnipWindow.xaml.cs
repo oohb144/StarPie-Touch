@@ -34,10 +34,16 @@ public partial class ScreenSnipWindow : Window
 	private readonly Action<Bitmap?> _onCaptured;
 	private Bitmap? _fullScreenBmp;
 	private bool _resourcesReleased;
+	private bool _callbackInvoked;
 
 	public ScreenSnipWindow(Action<Bitmap?> onCaptured)
 	{
 		InitializeComponent();
+		SnipGuideText.Text = Insight.InsightText.T("SnipGuide");
+		SnipHintText.Text = Insight.InsightText.T("SnipHint");
+		SnipExitText.Text = Insight.InsightText.T("SnipExit");
+		Title = Insight.InsightText.T("Screen");
+		SnipCancelButton.Content = Insight.InsightText.T("Cancel");
 		_onCaptured = onCaptured;
 
 		// 1. 获取真实多显示器全景物理边界
@@ -80,12 +86,14 @@ public partial class ScreenSnipWindow : Window
 	private void Window_Loaded(object sender, RoutedEventArgs e)
 	{
 		Focus();
-		CaptureMouse();
+		Mouse.Capture(this, CaptureMode.SubTree);
 		double w = Math.Max(1.0, ActualWidth);
 		double h = Math.Max(1.0, ActualHeight);
 		ScreenGeometry.Rect = new Rect(0, 0, w, h);
 		CutoutGeometry.Rect = Rect.Empty;
-		Canvas.SetLeft(GuideBadge, Math.Max(10, (w - 260) / 2));
+		SnipGuideText.MaxWidth = Math.Max(120, w - 80);
+		GuideBadge.UpdateLayout();
+		Canvas.SetLeft(GuideBadge, Math.Max(10, (w - GuideBadge.ActualWidth) / 2));
 	}
 
 	private void Window_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -105,7 +113,13 @@ public partial class ScreenSnipWindow : Window
 
 	private void Window_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
 	{
-		_startPoint = e.GetPosition(this);
+		if (SnipCancelButton.IsMouseOver) return;
+		BeginSelection(e.GetPosition(this));
+	}
+
+	private void BeginSelection(System.Windows.Point point)
+	{
+		_startPoint = point;
 		_isSelecting = true;
 
 		SelectionBorder.Visibility = Visibility.Visible;
@@ -121,12 +135,16 @@ public partial class ScreenSnipWindow : Window
 
 	private void Window_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
 	{
+		MoveSelection(e.GetPosition(this));
+	}
+
+	private void MoveSelection(System.Windows.Point currentPoint)
+	{
 		if (!_isSelecting)
 		{
 			return;
 		}
 
-		System.Windows.Point currentPoint = e.GetPosition(this);
 		double x = Math.Min(_startPoint.X, currentPoint.X);
 		double y = Math.Min(_startPoint.Y, currentPoint.Y);
 		double w = Math.Abs(currentPoint.X - _startPoint.X);
@@ -146,6 +164,11 @@ public partial class ScreenSnipWindow : Window
 
 	private void Window_MouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
 	{
+		FinishSelection(e.GetPosition(this));
+	}
+
+	private void FinishSelection(System.Windows.Point endPoint)
+	{
 		if (!_isSelecting)
 		{
 			return;
@@ -153,7 +176,6 @@ public partial class ScreenSnipWindow : Window
 		_isSelecting = false;
 		ReleaseMouseCapture();
 
-		System.Windows.Point endPoint = e.GetPosition(this);
 		double x = Math.Min(_startPoint.X, endPoint.X);
 		double y = Math.Min(_startPoint.Y, endPoint.Y);
 		double w = Math.Abs(endPoint.X - _startPoint.X);
@@ -200,8 +222,42 @@ public partial class ScreenSnipWindow : Window
 		CleanupAndClose(capturedSnippet);
 	}
 
+	private int? _touchId;
+	private void Window_TouchDown(object sender, TouchEventArgs e)
+	{
+		Point buttonPoint = e.GetTouchPoint(SnipCancelButton).Position;
+		if (buttonPoint.X >= 0 && buttonPoint.Y >= 0 && buttonPoint.X <= SnipCancelButton.ActualWidth && buttonPoint.Y <= SnipCancelButton.ActualHeight) return;
+		if (_touchId != null) { e.Handled = true; CleanupAndClose(null); return; }
+		_touchId = e.TouchDevice.Id;
+		CaptureTouch(e.TouchDevice);
+		BeginSelection(e.GetTouchPoint(this).Position);
+		e.Handled = true;
+	}
+	private void Window_TouchMove(object sender, TouchEventArgs e)
+	{
+		if (_touchId == e.TouchDevice.Id) { MoveSelection(e.GetTouchPoint(this).Position); e.Handled = true; }
+	}
+	private void Window_TouchUp(object sender, TouchEventArgs e)
+	{
+		if (_touchId != e.TouchDevice.Id) return;
+		_touchId = null;
+		ReleaseTouchCapture(e.TouchDevice);
+		FinishSelection(e.GetTouchPoint(this).Position);
+		e.Handled = true;
+	}
+	private void Window_LostTouchCapture(object sender, TouchEventArgs e)
+	{
+		if (_touchId != e.TouchDevice.Id) return;
+		_touchId = null;
+		CleanupAndClose(null);
+		e.Handled = true;
+	}
+	private void Cancel_Click(object sender, RoutedEventArgs e) { e.Handled = true; CleanupAndClose(null); }
+
 	private void CleanupAndClose(Bitmap? result)
 	{
+		if (_callbackInvoked) { result?.Dispose(); return; }
+		_callbackInvoked = true;
 		ReleaseCaptureResources();
 
 		try
@@ -225,6 +281,8 @@ public partial class ScreenSnipWindow : Window
 		}
 
 		_resourcesReleased = true;
+		_touchId = null;
+		try { ReleaseAllTouchCaptures(); } catch { }
 
 		try { ReleaseMouseCapture(); } catch { }
 		try { BackgroundImage.Source = null; } catch { }
@@ -248,6 +306,11 @@ public partial class ScreenSnipWindow : Window
 	{
 		// Alt+F4、应用退出等非标准关闭路径同样必须释放全屏快照和 WPF 图像引用。
 		ReleaseCaptureResources();
+		if (!_callbackInvoked)
+		{
+			_callbackInvoked = true;
+			_onCaptured(null);
+		}
 		base.OnClosed(e);
 	}
 
@@ -270,4 +333,3 @@ public partial class ScreenSnipWindow : Window
 		}
 	}
 }
-

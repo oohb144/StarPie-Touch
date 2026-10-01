@@ -79,7 +79,17 @@ public static class OcrManager
 		});
 	}
 
-	public static async Task ProcessSnippetAsync(Bitmap bmp)
+	public static Task ProcessSnippetAsync(Bitmap bmp) => RecognizeSnippetCoreAsync(bmp);
+
+	/// <summary>Returns recognition data without legacy auto-copy/search/result-window side effects.</summary>
+	internal static async Task<OcrTextResult> RecognizeForInsightAsync(Bitmap bmp)
+	{
+		OcrTextResult? result = null;
+		await RecognizeSnippetCoreAsync(bmp, value => result = value);
+		return result ?? new OcrTextResult("", "", false);
+	}
+
+	private static async Task RecognizeSnippetCoreAsync(Bitmap bmp, Action<OcrTextResult>? returnResult = null)
 	{
 		OcrSettings config = ConfigManager.CurrentConfig?.OcrConfig ?? new OcrSettings();
 		int imageWidth = bmp.Width;
@@ -150,6 +160,11 @@ public static class OcrManager
 #endif
 
 		bool isDiagnosticText = recognizedText.StartsWith("[");
+		if (returnResult != null)
+		{
+			returnResult(new OcrTextResult(recognizedText, engineName, !isDiagnosticText && !string.IsNullOrWhiteSpace(recognizedText)));
+			return;
+		}
 
 		// 调度回 UI 线程分发结果
 		Application.Current?.Dispatcher.Invoke(() =>
@@ -1395,3 +1410,5 @@ public static class OcrManager
 	}
 #endif
 }
+
+internal sealed record OcrTextResult(string Text, string Engine, bool Success);

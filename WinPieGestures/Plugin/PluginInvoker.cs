@@ -96,7 +96,8 @@ internal static class PluginInvoker
         PluginInstance instance,
         PluginActionRegistration registration,
         IReadOnlyDictionary<string, string> parameters,
-        PluginCallCoordinator calls)
+        PluginCallCoordinator calls,
+        ActionContext? origin = null)
     {
         if (instance == null || registration == null) return PluginExecuteOutcome.NotHandled;
 
@@ -128,7 +129,7 @@ internal static class PluginInvoker
             {
                 ContributionId = registration.FullId,
                 Parameters = parameters ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-                Context = BuildActionContext(instance),
+                Context = origin ?? BuildActionContext(instance),
             };
         }
         catch (Exception ex)

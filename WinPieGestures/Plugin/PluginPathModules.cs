@@ -29,12 +29,14 @@ internal sealed class PluginActionRequest
         string pluginId,
         string contributionId,
         string actionName,
-        IReadOnlyDictionary<string, string> parameters)
+        IReadOnlyDictionary<string, string> parameters,
+        ActionContext? context)
     {
         PluginId = pluginId;
         ContributionId = contributionId;
         ActionName = actionName;
         Parameters = parameters;
+        Context = context;
     }
 
     public string PluginId { get; }
@@ -42,6 +44,7 @@ internal sealed class PluginActionRequest
     public string FullId => $"{PluginId}.{ContributionId}";
     public string ActionName { get; }
     public IReadOnlyDictionary<string, string> Parameters { get; }
+    public ActionContext? Context { get; }
 
     public static PluginActionRequest CreateClaimed(ActionItem action, PluginTypeClaimBinding binding)
     {
@@ -61,7 +64,7 @@ internal sealed class PluginActionRequest
             binding.PluginId,
             binding.ContributionId,
             string.IsNullOrWhiteSpace(action.Name) ? binding.TypeName : action.Name,
-            new ReadOnlyDictionary<string, string>(parameters));
+            new ReadOnlyDictionary<string, string>(parameters), action.InvocationContext);
     }
     public static bool TryCreate(ActionItem? action, out PluginActionRequest? request)
     {
@@ -77,7 +80,7 @@ internal sealed class PluginActionRequest
             reference.PluginId.Trim(),
             reference.ContributionId.Trim(),
             action.Name ?? "",
-            new ReadOnlyDictionary<string, string>(parameters));
+            new ReadOnlyDictionary<string, string>(parameters), action.InvocationContext);
         return true;
     }
 }
@@ -215,7 +218,7 @@ internal sealed class ActionExecutionPathModule : PluginPathModule
             };
         }
 
-        return PluginInvoker.Invoke(instance, registration, request.Parameters, _calls);
+        return PluginInvoker.Invoke(instance, registration, request.Parameters, _calls, request.Context);
     }
     private PluginActionValidation ValidateResolved(
         PluginActionRegistration registration,

@@ -6,7 +6,7 @@
 
 ### Lightweight, Fast & Configurable Radial Pie Menu for Windows 10 / 11
 
-[![Release Version](https://img.shields.io/badge/Release-v1.8.0--touch.1-2563EB.svg?style=flat-square&logo=github)](https://github.com/oohb144/StarPie-Touch/releases)
+[![Release Version](https://img.shields.io/badge/Release-v1.8.0--touch.3-2563EB.svg?style=flat-square&logo=github)](https://github.com/oohb144/StarPie-Touch/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D4.svg?style=flat-square&logo=windows)](https://microsoft.com/windows)
 [![.NET](https://img.shields.io/badge/.NET-8.0%20WPF-512BD4.svg?style=flat-square&logo=dotnet)](https://dotnet.microsoft.com/)
 [![License](https://img.shields.io/badge/License-MIT-10B981.svg?style=flat-square)](LICENSE)
@@ -37,7 +37,7 @@
 - **Lighter touch rendering:** touch uses a native software layered window by default, while mouse input keeps the WPF wheel. The measured working set after a nested action was 81.3 MB on one device; this is not a guarantee for other devices or configurations.
 - **Faster action dispatch after release:** touch skips modifier-key cleanup intended for mouse and keyboard input. In a device retest, wheel dismissal took 1.5–6.2 ms and the user reported a faster response.
 
-The touch wheel currently uses simplified dark sectors and action labels. It does not yet reproduce custom icons, styles, or animations from the WPF wheel. `--wpf-touch-wheel` restores the previous touch renderer for a run; `--disable-touch` disables touch recognition. Official action plugins still come from the original project's plugin repository and require manual installation.
+The touch wheel reuses existing themes, icons and rounded geometry for 4 / 8 / 12 directions and nested actions. Software rendering shares one pixel surface, caches geometry/fonts and repaints changed regions. Hidden drawing resources are released after 30 seconds. Mouse input retains WPF animations; software touch rendering is static. `--wpf-touch-wheel` selects WPF for a run; `--disable-touch` disables touch recognition. [Rendering validation](docs/touch-wheel-rendering.md) separates offscreen tests from device measurements. Official action plugins require manual installation.
 
 **StarPie** is a lightweight radial mouse gesture (Radial / Pie Menu) productivity tool built exclusively for Windows 10 / 11.
 

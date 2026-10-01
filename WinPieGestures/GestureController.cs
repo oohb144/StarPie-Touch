@@ -36,6 +36,7 @@ public class GestureController : IDisposable
 	private volatile bool _isGestureActive;
 	private bool _touchGestureActive;
 	private bool _touchExecuteActions;
+	private bool _touchCtrlHeld;
 
 	// 长按触发（可选）：钩子跑在独立后台线程，用 System.Threading.Timer（不依赖线程 Dispatcher），
 	// 代数(Generation)防止旧回调触发到新手势；激活经主线程 Dispatcher 执行。
@@ -283,8 +284,11 @@ public class GestureController : IDisposable
 		}
 	}
 
+	private nint _gestureOrigin;
 	private long BeginGestureTracking()
 	{
+		// Only a Win32 handle snapshot in input callbacks; no UI Automation or IO here.
+		_gestureOrigin = Insight.InsightOrigin.CaptureWindow();
 		lock (_uiUpdateSync)
 		{
 			_gestureVersion++;
@@ -330,12 +334,12 @@ public class GestureController : IDisposable
 		if (releaseModifiers) ActionExecutor.ReleaseStuckModifiers();
 	}
 
-	private (int Sector, int SubSector, WheelProfile? Profile, IWheelPresenter? Window, bool IsEscaped, long PresentationVersion) EndActiveGesture(bool releaseModifiers = true)
+	private (int Sector, int SubSector, WheelProfile? Profile, IWheelPresenter? Window, bool IsEscaped, long PresentationVersion, nint Origin, Point Anchor) EndActiveGesture(bool releaseModifiers = true)
 	{
 		lock (_uiUpdateSync)
 		{
 			long presentationVersion = _gestureVersion;
-			var result = (_selectedSectorIndex, _selectedSubSectorIndex, _activeProfile, _radialWindow, _lastEscapedState, presentationVersion);
+			var result = (_selectedSectorIndex, _selectedSubSectorIndex, _activeProfile, _radialWindow, _lastEscapedState, presentationVersion, _gestureOrigin, _startPoint);
 			_isGestureActive = false;
 			_isWaitingForThreshold = false;
 			_gestureVersion++;
@@ -782,6 +786,7 @@ public class GestureController : IDisposable
 
 	private bool CheckIsIsolated(out string processName, TriggerConfig? activeTrigger = null)
 	{
+		if (InsightWindow.IsSessionOpen) { processName = "StarPie"; return true; }
 		processName = ActiveWindowHelper.GetActiveWindowInfo(out nint fgHwnd);
 		string cleanProcess = (processName ?? "").Trim().ToLowerInvariant();
 
@@ -1520,7 +1525,7 @@ public class GestureController : IDisposable
 			}
 			if (targetAction != null)
 			{
-				ActionExecutor.EnqueueAction(targetAction);
+				ActionExecutor.EnqueueAction(targetAction, Insight.InsightOrigin.FromWindow(finalState.Origin, finalState.Anchor));
 			}
 		}, DispatcherPriority.Normal, Array.Empty<object>());
 		return true;
@@ -1880,7 +1885,7 @@ public class GestureController : IDisposable
 				if (targetAction != null)
 				{
 					SoundEffectManager.Play(SoundType.ActionExecute);
-					ActionExecutor.EnqueueAction(targetAction);
+					ActionExecutor.EnqueueAction(targetAction, Insight.InsightOrigin.FromWindow(finalState.Origin, finalState.Anchor));
 				}
 				else
 				{
@@ -2015,6 +2020,7 @@ public class GestureController : IDisposable
 			{
 				ApplyPendingHighlight();
 				ApplyVolumePreview();
+				UpdateTouchHeldCtrl();
 			}
 			else CancelTouchGesture();
 		}
@@ -2031,12 +2037,25 @@ public class GestureController : IDisposable
 		if (contactCount < 2) { CompleteTouchGesture(); return; }
 		if (contactCount > 2) { CancelTouchGesture(); return; }
 		ProcessMove(center);
+		UpdateTouchHeldCtrl();
+	}
+
+	private void UpdateTouchHeldCtrl()
+	{
+		ActionItem? selected = _touchGestureActive && !_lastEscapedState && _selectedSectorIndex >= 0
+			? _activeProfile?.GetEffectiveAction(_selectedSectorIndex, _selectedSubSectorIndex)
+			: null;
+		bool shouldHold = _touchExecuteActions && ActionExecutor.IsTouchHoldCtrl(selected);
+		if (shouldHold == _touchCtrlHeld) return;
+		_touchCtrlHeld = ActionExecutor.SetTouchHoldCtrl(shouldHold);
 	}
 
 	internal void CancelTouchGesture()
 	{
 		if (!_touchGestureActive) return;
 		_touchGestureActive = false;
+		ActionExecutor.SetTouchHoldCtrl(false);
+		_touchCtrlHeld = false;
 		if (_volumeGestureTookOver && _volumeBaseline >= 0f)
 			SystemVolume.SetVolume(_volumeBaseline);
 		_volumeAdjustActive = false;
@@ -2048,6 +2067,8 @@ public class GestureController : IDisposable
 	{
 		if (!_touchGestureActive) return;
 		_touchGestureActive = false;
+		ActionExecutor.SetTouchHoldCtrl(false);
+		_touchCtrlHeld = false;
 		var state = EndActiveGesture(releaseModifiers: false);
 		bool volumeTookOver = _volumeGestureTookOver;
 		float volumeBaseline = _volumeBaseline;
@@ -2074,12 +2095,13 @@ public class GestureController : IDisposable
 		ActionItem? action = state.Sector >= 0
 			? state.Profile.GetEffectiveAction(state.Sector, state.SubSector)
 			: state.Sector == -1 ? state.Profile.GetEffectiveCenterAction() : null;
+		if (ActionExecutor.IsTouchHoldCtrl(action)) return;
 		if (action != null)
 		{
 			if (_touchExecuteActions)
 			{
 				SoundEffectManager.Play(SoundType.ActionExecute);
-				ActionExecutor.EnqueueAction(action);
+				ActionExecutor.EnqueueAction(action, Insight.InsightOrigin.FromWindow(state.Origin, state.Anchor));
 			}
 			else AppLogger.LogInfo($"Touch wheel experiment selected sector={state.Sector} subSector={state.SubSector}; action execution disabled");
 		}
@@ -2269,8 +2291,12 @@ public class GestureController : IDisposable
 			Point actualCenter = window.ActualPhysicalCenter;
 			if (Math.Abs(actualCenter.X - _startPoint.X) > 1.0 || Math.Abs(actualCenter.Y - _startPoint.Y) > 1.0)
 			{
-				_startPoint = actualCenter;
-				var (newDpiX, newDpiY) = RadialWindow.GetMonitorDpiScale(_startPoint);
+				// A touch wheel can be shifted to keep it visible near a screen edge.
+				// That is only a presentation offset: the gesture vector must remain
+				// anchored at the original two-finger midpoint. Rebasing it to the
+				// shifted wheel center skews directions, especially in portrait mode.
+				if (!_touchGestureActive) _startPoint = actualCenter;
+				var (newDpiX, newDpiY) = RadialWindow.GetMonitorDpiScale(actualCenter);
 				if (newDpiX > 0.0 && newDpiY > 0.0)
 				{
 					_currentDpiScaleX = newDpiX;
@@ -2425,6 +2451,8 @@ public class GestureController : IDisposable
 
 	public void Dispose()
 	{
+		ActionExecutor.SetTouchHoldCtrl(false);
+		_touchCtrlHeld = false;
 		CancelMouseReleaseDebounce();
 		CancelLongPressTimer();
 		_mouseHook.OnTriggerButtonDown -= Hook_OnTriggerButtonDown;

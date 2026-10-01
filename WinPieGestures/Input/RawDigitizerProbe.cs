@@ -26,6 +26,7 @@ internal sealed class RawDigitizerProbe : IDisposable
     private readonly Dictionary<nint, (ushort page, ushort usage)> _devices = new();
     private readonly Dictionary<nint, HidContactDecoder?> _decoders = new();
     private readonly Dictionary<nint, NativeRect> _displayRects = new();
+    private readonly Dictionary<nint, int> _displayOrientations = new();
     private readonly Dictionary<nint, HashSet<int>> _activeTouches = new();
     private readonly Dictionary<nint, long> _pensInRange = new();
     private readonly TouchGestureRecognizer _recognizer;
@@ -33,6 +34,13 @@ internal sealed class RawDigitizerProbe : IDisposable
     private readonly HashSet<nint> _invalidTouchDevices = new();
     private readonly bool _detailedLog;
     private nint _trackingTouchDevice;
+    // WM_INPUT is dispatched serially on the owner thread. Retain one bounded
+    // native report buffer and scratch set instead of allocating each report.
+    private nint _reportBuffer;
+    private int _reportCapacity;
+    private bool _disposed;
+    private readonly HashSet<int> _currentTouches = new();
+    private readonly List<nint> _stalePens = new();
 
     public long ReportCount => _reportCount;
     public event EventHandler<TouchGestureEventArgs>? GestureDetected;
@@ -109,8 +117,17 @@ internal sealed class RawDigitizerProbe : IDisposable
             byteCount < headerSize + 8 || byteCount > 65536)
             return "raw-data=unavailable";
 
-        nint buffer = Marshal.AllocHGlobal((int)byteCount);
-        try
+        if (_disposed) return "disposed";
+        if (_reportCapacity < byteCount)
+        {
+            int capacity = 512;
+            while (capacity < byteCount) capacity *= 2;
+            nint next = Marshal.AllocHGlobal(capacity);
+            if (_reportBuffer != 0) Marshal.FreeHGlobal(_reportBuffer);
+            _reportBuffer = next;
+            _reportCapacity = capacity;
+        }
+        nint buffer = _reportBuffer;
         {
             if (GetRawInputData(rawHandle, RidInput, buffer, ref byteCount, headerSize) == uint.MaxValue)
                 return "raw-data=unavailable";
@@ -123,8 +140,7 @@ internal sealed class RawDigitizerProbe : IDisposable
                     AppLogger.LogInfo($"[raw-digitizer-probe] Device handle=0x{header.Device:X} HID=0x{usage.page:X2}/0x{usage.usage:X2} "
                         + $"mapping: {DescribeDeviceRects(header.Device)} caps: {HidCapsInspector.Describe(header.Device)}");
                 _decoders[header.Device] = HidContactDecoder.Create(header.Device);
-                if (GetPointerDeviceRects(header.Device, out _, out NativeRect display))
-                    _displayRects[header.Device] = display;
+                RefreshDisplayMapping(header.Device);
             }
             if (header.Type != 2) return $"type={header.Type} device=0x{header.Device:X}";
 
@@ -150,10 +166,6 @@ internal sealed class RawDigitizerProbe : IDisposable
             return $"HID=0x{usage.page:X2}/0x{usage.usage:X2} reportBytes={reportSize} "
                 + $"reports={reportCount} sample={Convert.ToHexString(sample)} {lastDecoded}";
         }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
     }
 
     private void TrackSnapshot(nint device, HidContactDecoder.ReportSnapshot snapshot, long now)
@@ -171,17 +183,26 @@ internal sealed class RawDigitizerProbe : IDisposable
                 PenPresenceChanged?.Invoke(_pensInRange.Count != 0);
             return;
         }
-        if (!snapshot.IsTouch || !_displayRects.TryGetValue(device, out NativeRect display)) return;
+        if (!snapshot.IsTouch) return;
         // Some devices stop reporting when the pen leaves proximity instead of
         // sending an explicit out-of-range frame. Release a stale pen lease.
         bool hadPen = _pensInRange.Count != 0;
-        foreach (nint stale in _pensInRange.Where(pair => now - pair.Value > 1000)
-                     .Select(pair => pair.Key).ToArray())
-            _pensInRange.Remove(stale);
+        if (hadPen)
+        {
+            _stalePens.Clear();
+            foreach (var pair in _pensInRange)
+                if (now - pair.Value > 1000) _stalePens.Add(pair.Key);
+            foreach (nint stale in _stalePens) _pensInRange.Remove(stale);
+        }
         if (hadPen && _pensInRange.Count == 0) _recognizer.PenUp(now);
         if (hadPen && _pensInRange.Count == 0) PenPresenceChanged?.Invoke(false);
         if (!_activeTouches.TryGetValue(device, out HashSet<int>? previous))
             _activeTouches[device] = previous = new HashSet<int>();
+        // Refresh on each new contact sequence. Rotation can happen while the
+        // process stays resident and GetPointerDeviceRects changes at runtime.
+        if (previous.Count == 0 && snapshot.Contacts.Count > 0)
+            RefreshDisplayMapping(device);
+        if (!_displayRects.TryGetValue(device, out NativeRect display)) return;
 
         // Accept only complete, confident frames. An incomplete frame cannot
         // safely update the contact lifetime tracked by the recognizer.
@@ -221,20 +242,22 @@ internal sealed class RawDigitizerProbe : IDisposable
             return;
         if (snapshot.Contacts.Count != 0) _trackingTouchDevice = device;
 
-        var current = new HashSet<int>(snapshot.Contacts.Select(contact => (int)contact.Id));
+        var current = _currentTouches;
+        current.Clear();
+        foreach (var contact in snapshot.Contacts) current.Add((int)contact.Id);
         if (current.Count != _lastTouchContactCount)
         {
             _lastTouchContactCount = current.Count;
             AppLogger.LogInfo($"[touch-wheel] Contacts={current.Count}");
         }
-        foreach (int oldId in previous.Where(id => !current.Contains(id)).ToArray())
-            _recognizer.TouchUp(oldId);
+        foreach (int oldId in previous)
+            if (!current.Contains(oldId)) _recognizer.TouchUp(oldId);
+        double totalX = 0, totalY = 0;
         foreach (HidContactDecoder.ContactSample contact in snapshot.Contacts)
         {
             int id = (int)contact.Id;
-            var point = new Point(
-                display.Left + contact.X * (double)(display.Right - display.Left) / contact.XMax,
-                display.Top + contact.Y * (double)(display.Bottom - display.Top) / contact.YMax);
+            Point point = MapContact(device, display, contact);
+            totalX += point.X; totalY += point.Y;
             if (previous.Contains(id)) _recognizer.TouchMove(id, point, now);
             else _recognizer.TouchDown(id, point, now);
         }
@@ -243,13 +266,46 @@ internal sealed class RawDigitizerProbe : IDisposable
         if (current.Count == 0) _trackingTouchDevice = 0;
         if (snapshot.Contacts.Count > 0)
         {
-            double x = snapshot.Contacts.Average(contact =>
-                display.Left + contact.X * (double)(display.Right - display.Left) / contact.XMax);
-            double y = snapshot.Contacts.Average(contact =>
-                display.Top + contact.Y * (double)(display.Bottom - display.Top) / contact.YMax);
+            double x = totalX / snapshot.Contacts.Count;
+            double y = totalY / snapshot.Contacts.Count;
             TouchFrameChanged?.Invoke(new Point(x, y), current.Count);
         }
         else TouchFrameChanged?.Invoke(default, 0);
+    }
+
+    private Point MapContact(nint device, NativeRect display, HidContactDecoder.ContactSample contact) =>
+        TouchDisplayMapper.Map(contact.X, contact.Y, contact.XMax, contact.YMax,
+            display.Left, display.Top, display.Right - display.Left, display.Bottom - display.Top,
+            _displayOrientations.GetValueOrDefault(device));
+
+    private void RefreshDisplayMapping(nint device)
+    {
+        if (!GetPointerDeviceRects(device, out _, out NativeRect display)) return;
+        int orientation = TouchDisplayMapper.GetOrientation(device,
+            display.Left, display.Top, display.Right - display.Left, display.Bottom - display.Top);
+        if (!_displayRects.TryGetValue(device, out NativeRect oldDisplay) ||
+            oldDisplay.Left != display.Left || oldDisplay.Top != display.Top ||
+            oldDisplay.Right != display.Right || oldDisplay.Bottom != display.Bottom ||
+            !_displayOrientations.TryGetValue(device, out int oldOrientation) || oldOrientation != orientation)
+            AppLogger.LogInfo($"[touch-wheel] Display mapping device=0x{device:X} "
+                + $"rect=({display.Left},{display.Top})-({display.Right},{display.Bottom}) "
+                + $"digitizerRotation={orientation}");
+        _displayRects[device] = display;
+        _displayOrientations[device] = orientation;
+    }
+
+    public void OnDisplayChanged()
+    {
+        foreach (var pair in _activeTouches)
+        {
+            if (pair.Value.Count > 0) _invalidTouchDevices.Add(pair.Key);
+            foreach (int id in pair.Value) _recognizer.TouchUp(id);
+            pair.Value.Clear();
+        }
+        _trackingTouchDevice = 0;
+        _displayRects.Clear();
+        _displayOrientations.Clear();
+        TouchFrameInvalidated?.Invoke();
     }
 
     private static (ushort page, ushort usage) ReadDeviceUsage(nint device)
@@ -281,6 +337,11 @@ internal sealed class RawDigitizerProbe : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+        if (_reportBuffer != 0) Marshal.FreeHGlobal(_reportBuffer);
+        _reportBuffer = 0;
+        _reportCapacity = 0;
         foreach (HidContactDecoder? decoder in _decoders.Values) decoder?.Dispose();
         _decoders.Clear();
         foreach (ushort usage in _registered)
