@@ -7449,18 +7449,17 @@ public partial class SettingsWindow : Window
 			_officialPluginCatalog = await OfficialPluginClient.FetchCatalogAsync();
 			_officialPluginsError = null;
 			RenderOfficialPluginItems();
-			RenderOfficialPluginsStatus();
 		}
 		catch (Exception ex)
 		{
 			AppLogger.LogWarn($"[plugin] 刷新官方插件目录失败：{ex.Message}");
 			_officialPluginsError = ex.Message;
-			RenderOfficialPluginsStatus();
 		}
 		finally
 		{
 			_officialPluginsLoading = false;
 			if (RefreshOfficialPluginsButton != null) RefreshOfficialPluginsButton.IsEnabled = true;
+			RenderOfficialPluginsStatus();
 		}
 	}
 
@@ -7480,13 +7479,13 @@ public partial class SettingsWindow : Window
 		{
 			OfficialPluginsStatusText.Text = I18n.T("PluginsOfficialLoading");
 		}
-		else if (_officialPluginCatalog != null)
-		{
-			OfficialPluginsStatusText.Text = I18n.TF("PluginsOfficialCatalogInfo", _officialPluginCatalog.CatalogVersion, _officialPluginCatalog.Modules.Count);
-		}
 		else if (!string.IsNullOrWhiteSpace(_officialPluginsError))
 		{
 			OfficialPluginsStatusText.Text = I18n.TF("PluginsOfficialUnavailable", _officialPluginsError);
+		}
+		else if (_officialPluginCatalog != null)
+		{
+			OfficialPluginsStatusText.Text = I18n.TF("PluginsOfficialCatalogInfo", _officialPluginCatalog.CatalogVersion, _officialPluginCatalog.Modules.Count);
 		}
 		else
 		{

@@ -1228,6 +1228,32 @@ public static class ActionExecutor
 		}
 	}
 
+	internal static bool ExecuteLaunchWithMode(string path, string arguments, StarPie.Plugin.ProcessLaunchMode mode)
+	{
+		if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+		if (string.IsNullOrWhiteSpace(path)) return false;
+		if (mode == StarPie.Plugin.ProcessLaunchMode.Default)
+		{
+			ExecuteLaunch(path, arguments, false);
+			return true;
+		}
+		string file = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"'));
+		bool appId = file.StartsWith("shell:AppsFolder", StringComparison.OrdinalIgnoreCase) ||
+			(file.Contains('!') && !file.Contains(":\\") && !file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+		if (appId && mode == StarPie.Plugin.ProcessLaunchMode.Administrator)
+			throw new NotSupportedException("Packaged application activation does not support administrator launch.");
+		if (appId)
+		{
+			arguments = file.StartsWith("shell:AppsFolder", StringComparison.OrdinalIgnoreCase) ? file : "shell:AppsFolder\\" + file;
+			file = "explorer.exe";
+		}
+		return ProcessLaunchExecutor.Start(new ProcessStartInfo
+		{
+			FileName = file, Arguments = arguments ?? "", UseShellExecute = true,
+			WorkingDirectory = File.Exists(file) ? Path.GetDirectoryName(file) ?? "" : "",
+		}, mode);
+	}
+
 	internal static void ExecuteLaunch(string path, string arguments, bool runAsStandardUser = false)
 	{
 		if (string.IsNullOrWhiteSpace(path))

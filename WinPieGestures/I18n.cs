@@ -2074,6 +2074,13 @@ Add("AboutCheckUpdate", "🔄 检查更新", "🔄 檢查更新", "🔄 Check fo
 		Add("PluginsNotReady", "插件系统尚未完成初始化。请稍候片刻再试，或重启 StarPie。", "外掛系統尚未完成初始化。請稍候片刻再試，或重新啟動 StarPie。", "The plugin system has not finished initializing yet. Please wait a moment and try again, or restart StarPie.", "プラグインシステムの初期化が完了していません。しばらく待ってから再試行するか、StarPie を再起動してください。");
 		Add("PluginsOfficialActionInstall", "⬇️ 下载并安装", "⬇️ 下載並安裝", "⬇️ Download and install", "⬇️ ダウンロードしてインストール");
 		Add("PluginsOfficialActionInstalled", "已安装", "已安裝", "Installed", "インストール済み");
+		Add("PluginsOfficialActionIncompatible", "需要升级主程序", "需要升級主程式", "Host update required", "本体の更新が必要");
+		Add("PluginsOfficialRequiresSdk", "需要 SDK {0}，当前主程序提供 {1}", "需要 SDK {0}，目前主程式提供 {1}", "Requires SDK {0}; this host provides {1}", "SDK {0} が必要です。本体の SDK は {1} です");
+		Add("PluginsOfficialRequiresHost", "需要 StarPie {0} 或更高版本", "需要 StarPie {0} 或更高版本", "Requires StarPie {0} or later", "StarPie {0} 以降が必要です");
+		Add("PluginsOfficialMaxHost", "此插件最高支持 StarPie {0}", "此外掛最高支援 StarPie {0}", "This plugin supports StarPie up to {0}", "このプラグインは StarPie {0} まで対応しています");
+		Add("PluginsOfficialRequiresFramework", "当前主程序不支持此插件的运行框架 {0}", "目前主程式不支援此外掛的執行框架 {0}", "This host does not support the plugin framework {0}", "本体はプラグインのフレームワーク {0} に対応していません");
+		Add("PluginsOfficialNoDowngrade", "已安装更高版本，保留当前插件，不自动降级。", "已安裝更高版本，保留目前外掛，不自動降級。", "A newer version is installed. It will be kept without downgrading.", "新しいバージョンが導入済みです。ダウングレードせず保持します。");
+		Add("PluginsOfficialStateNewerInstalled", "已装 v{0} · 保留当前版本", "已裝 v{0} · 保留目前版本", "v{0} installed; keeping current version", "v{0} 導入済み。現在のバージョンを保持します");
 		Add("PluginsOfficialActionUpdate", "⬆️ 更新", "⬆️ 更新", "⬆️ Update", "⬆️ 更新");
 		Add("PluginsOfficialCatalogInfo", "目录 {0} · {1} 个模块 · 来源 StarPie-Official-Plugins", "目錄 {0} · {1} 個模組 · 來源 StarPie-Official-Plugins", "Catalog {0} · {1} modules · from StarPie-Official-Plugins", "カタログ {0} · {1} モジュール · 提供元 StarPie-Official-Plugins");
 		Add("PluginsOfficialClaimSeparator", "、", "、", ", ", "、");

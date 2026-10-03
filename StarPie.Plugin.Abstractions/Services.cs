@@ -171,6 +171,14 @@ public interface IHostActionInvoker
     /// <summary>启动程序或打开文档。<paramref name="runAsStandardUser"/> 为 true 时通过 Shell 令牌降权启动。</summary>
     bool Launch(string path, string arguments = "", bool runAsStandardUser = false);
 
+    /// <summary>指定启动权限。默认实现保留旧适配器兼容性；显式权限需宿主支持。</summary>
+    bool LaunchWithMode(string path, ProcessLaunchMode mode, string arguments = "")
+    {
+        if (mode != ProcessLaunchMode.Default)
+            throw new NotSupportedException("This host adapter does not support explicit process launch modes.");
+        return Launch(path, arguments, false);
+    }
+
     /// <summary>在资源管理器中打开文件夹（不存在则尝试创建）。</summary>
     bool OpenFolder(string folderPath);
 

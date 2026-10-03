@@ -8,7 +8,7 @@
 
 **Lightweight, Fast & Configurable Radial Pie Menu for Windows 10 / 11**
 
-[![Release Version](https://img.shields.io/badge/Release-v1.8.0--touch.3-2563EB.svg?style=flat-square&logo=github)](https://github.com/oohb144/StarPie-Touch/releases)
+[![Release Version](https://img.shields.io/badge/Release-v1.8.0--touch.5-2563EB.svg?style=flat-square&logo=github)](https://github.com/oohb144/StarPie-Touch/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D4.svg?style=flat-square&logo=windows)](https://microsoft.com/windows)
 [![.NET](https://img.shields.io/badge/.NET-8.0%20WPF-512BD4.svg?style=flat-square&logo=dotnet)](https://dotnet.microsoft.com/)
 [![License](https://img.shields.io/badge/License-MIT-10B981.svg?style=flat-square)](LICENSE)
@@ -33,6 +33,8 @@
 > **项目来源**：本仓库是 [StarPie 原项目（Star-Pie/StarPie）](https://github.com/Star-Pie/StarPie) 的独立衍生版本，由 `oohb144` 维护触控改造；并非原项目官方发布。保留原项目的 [MIT 许可证](LICENSE) 与原作者署名。此版本基于 2026 年 9 月的本地源码快照，未合并原仓库此后的所有改动。
 
 ### 触控版增加了什么
+
+**首次安装无需先装官方主程序。** 下载触控版后，在控制台「插件」页刷新官方目录，点击所需模块的「下载并安装」。`touch.5` 修复了新目录格式导致插件无法下载的问题，并选择兼容版本；详细步骤及兼容范围见 [官方插件安装](docs/official-plugin-installation.md)。
 
 - **全局双指轮盘**：在普通桌面应用中双指按住约 150 毫秒后同向滑动，可唤出轮盘；支持已有的扇区和二级子动作。
 - **手写笔防误触**：笔贴近或接触屏幕时抑制双指触发；全屏禁用规则继续生效。

@@ -1,0 +1,51 @@
+name: Verify official plugin installation
+
+on:
+  push:
+    branches: [main]
+    paths: ['WinPieGestures/**', 'StarPie.Plugin.Abstractions/**', 'scratch/OfficialPluginTests/**', '.github/workflows/official-plugin-regression.yml']
+  pull_request:
+    branches: [main]
+    paths: ['WinPieGestures/**', 'StarPie.Plugin.Abstractions/**', 'scratch/OfficialPluginTests/**', '.github/workflows/official-plugin-regression.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build headless fresh-install regression
+        shell: pwsh
+        run: |
+          dotnet build scratch/OfficialPluginTests/OfficialPluginTests.csproj -c Release --nologo -p:UseArtifactsOutput=true "-p:ArtifactsPath=$env:RUNNER_TEMP/plugin-build" -p:EnableSourceControlManagerQueries=false -p:EnableSourceLink=false
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+      - name: Download and initialize official plugins without official host
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/plugin-build/bin/OfficialPluginTests/release/OfficialPluginTests.exe" "$env:RUNNER_TEMP/plugin-install" "$env:RUNNER_TEMP/plugin-build/bin/WinPieGestures/release/StarPie.dll" --online
+          if ($LASTEXITCODE -ne 0) { throw 'Fresh installation regression failed' }
+      - name: Reload installed plugins offline
+        shell: pwsh
+        run: |
+          $env:HTTP_PROXY = 'http://127.0.0.1:1'
+          $env:HTTPS_PROXY = 'http://127.0.0.1:1'
+          $env:ALL_PROXY = 'http://127.0.0.1:1'
+          & "$env:RUNNER_TEMP/plugin-build/bin/OfficialPluginTests/release/OfficialPluginTests.exe" "$env:RUNNER_TEMP/plugin-reload" "$env:RUNNER_TEMP/plugin-build/bin/WinPieGestures/release/StarPie.dll" --reload "$env:RUNNER_TEMP/plugin-install/plugins"
+          if ($LASTEXITCODE -ne 0) { throw 'Offline reload regression failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: official-plugin-installation-reports
+          path: |
+            ${{ runner.temp }}/plugin-install/report.json
+            ${{ runner.temp }}/plugin-install/catalog.json
+            ${{ runner.temp }}/plugin-reload/report.json

@@ -388,6 +388,14 @@ internal sealed class PluginInstance
             _loadContext = new PluginLoadContext(PluginId, Directory, scan.DllPath);
             Assembly assembly = _loadContext.LoadFromAssemblyPath(Path.GetFullPath(scan.DllPath));
 
+            if (!PluginContractCompatibility.Check(assembly, scan.DllPath, out string contractError))
+            {
+                LastError = failureReason = contractError;
+                Teardown();
+                SetState(PluginRuntimeState.Failed);
+                return false;
+            }
+
             // ③ 定位入口类型
             string entryTypeName = scan.EntryTypeFullName
                                    ?? manifest.EntryType

@@ -69,6 +69,12 @@ public sealed class ParameterField
     /// <summary>默认值（一律用字符串表示，宿主按 <see cref="Type"/> 解释）。</summary>
     public string? DefaultValue { get; init; }
 
+    /// <summary>本键尚未保存时，从另一参数回填旧值；不自动写入配置。</summary>
+    public string? FallbackParameterKey { get; init; }
+
+    /// <summary>旧值到当前字段值的映射；未匹配时使用 DefaultValue。</summary>
+    public IReadOnlyDictionary<string, string>? FallbackValueMap { get; init; }
+
     /// <summary>是否必填。宿主在「测试 / 保存」前会拦截空值。</summary>
     public bool Required { get; init; }
 

@@ -24,7 +24,20 @@ internal sealed class OfficialPluginListItem
     {
         Module = module;
         IsInstalled = !string.IsNullOrWhiteSpace(installedVersion);
-        if (!IsInstalled)
+        if (!string.IsNullOrEmpty(module.CompatibilityError))
+        {
+            StateText = module.CompatibilityError;
+            InstallButtonText = I18n.T("PluginsOfficialActionIncompatible");
+            CanInstall = false;
+        }
+        else if (IsInstalled && SimpleVersion.TryParse(installedVersion, out SimpleVersion installed)
+            && SimpleVersion.TryParse(module.Version, out SimpleVersion available) && installed.CompareTo(available) > 0)
+        {
+            StateText = I18n.TF("PluginsOfficialStateNewerInstalled", installedVersion);
+            InstallButtonText = I18n.T("PluginsOfficialActionInstalled");
+            CanInstall = false;
+        }
+        else if (!IsInstalled)
         {
             StateText = I18n.T("PluginsOfficialStateNotInstalled");
             InstallButtonText = I18n.T("PluginsOfficialActionInstall");

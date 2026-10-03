@@ -461,6 +461,10 @@ internal sealed class PluginParameterForm
 		}
 
 		string fallback = field.DefaultValue ?? "";
+		if (!string.IsNullOrEmpty(field.FallbackParameterKey) && field.FallbackValueMap != null &&
+			stored != null && stored.TryGetValue(field.FallbackParameterKey, out string? legacy) && legacy != null &&
+			field.FallbackValueMap.TryGetValue(legacy, out string? mapped))
+			fallback = mapped;
 		if (field.Type == ParameterFieldType.Bool)
 		{
 			// 布尔项的默认值可能是 "True"/"1"/"yes"，统一归一化成 true/false，

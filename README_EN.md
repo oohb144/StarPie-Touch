@@ -6,7 +6,7 @@
 
 ### Lightweight, Fast & Configurable Radial Pie Menu for Windows 10 / 11
 
-[![Release Version](https://img.shields.io/badge/Release-v1.8.0--touch.3-2563EB.svg?style=flat-square&logo=github)](https://github.com/oohb144/StarPie-Touch/releases)
+[![Release Version](https://img.shields.io/badge/Release-v1.8.0--touch.5-2563EB.svg?style=flat-square&logo=github)](https://github.com/oohb144/StarPie-Touch/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D4.svg?style=flat-square&logo=windows)](https://microsoft.com/windows)
 [![.NET](https://img.shields.io/badge/.NET-8.0%20WPF-512BD4.svg?style=flat-square&logo=dotnet)](https://dotnet.microsoft.com/)
 [![License](https://img.shields.io/badge/License-MIT-10B981.svg?style=flat-square)](LICENSE)
@@ -31,6 +31,8 @@
 > **Origin:** This is an independently maintained derivative of the [original StarPie project (Star-Pie/StarPie)](https://github.com/Star-Pie/StarPie), with touch changes maintained by `oohb144`. It is not an official upstream release. The original [MIT license](LICENSE) and attribution are retained. This version comes from a local source snapshot from September 2026 and does not include every later upstream change.
 
 ### What this touch edition adds
+
+**The official host is not required for a fresh installation.** Open the touch edition's Plugins page, refresh the official catalog, then choose Download and install for each required module. `touch.5` fixes schema 2 catalog downloads and selects compatible versions. See [official plugin installation](docs/official-plugin-installation.md) for steps and compatibility limits.
 
 - **Global two-finger wheel:** hold two fingers for about 150 ms and slide them together in an ordinary desktop app. Existing sectors and nested actions remain available.
 - **Pen guard:** pen hover or contact suppresses the touch trigger; the existing fullscreen exclusion still applies.
@@ -294,7 +296,7 @@ Action execution and display icons are fully decoupled — the same action can i
 
 ### 16. 🧩 Plugin System (Community Extensions, In-Process)
 
-- **Official plugins sync online by default**: StarPie fetches the module catalog from the `StarPie-Official-Plugins` GitHub Releases in the background after startup. Missing or outdated official modules are downloaded as `.spkg`, checked against package and assembly SHA-256 values, then installed and enabled.
+- **Official plugins are installed manually**: refresh the catalog in the Plugins page and choose Download and install. Startup does not download or install official modules. Package and assembly SHA-256 checks remain mandatory; incompatible modules cannot be installed from the catalog.
 - **Community plugins remain locally installable**: drop a community plugin `.dll` into the **`plugin` folder next to the executable** and hit "Rescan", then click Install on the candidate card; or pick it via "Install Community Plugin (.dll)" in settings.
 - **⚠️ A `.dll` in `plugin\` brings only itself**: other files in the plugin package (icons, resources,
   dependency DLLs) are *not* copied along. For a **full-package install**, use "Install Community Plugin (.dll)" and select

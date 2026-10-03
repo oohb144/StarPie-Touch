@@ -37,6 +37,9 @@ scratch/*
 !scratch/TouchRecognizerTests/
 !scratch/ContentInsightTests/
 !scratch/WheelRenderTests/
+!scratch/PluginCompatibilityTests/
+!scratch/LaunchPluginTests/
+!scratch/OfficialPluginTests/
 WinPieGestures/scratch/
 StarPie.Plugin.Abstractions/scratch/
 *.tmp
